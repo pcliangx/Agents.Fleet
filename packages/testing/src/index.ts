@@ -2,12 +2,7 @@ export type { FakeAdapterOptions } from "./fake-adapter.js";
 export { FakeAdapter } from "./fake-adapter.js";
 export type { ByteChunk, FakePtyOptions } from "./fake-pty.js";
 export { FakePty, invalidUtf8, nulBytes, splitMultibyte } from "./fake-pty.js";
-export type {
-  AgentCapabilityProfile,
-  PermissionModeMapping,
-  PermissionModeName,
-  TranscriptSpec,
-} from "./fixtures/agent-capabilities.js";
+export type { AgentCapabilityProfile, TranscriptSpec } from "./fixtures/agent-capabilities.js";
 export {
   AGENT_CAPABILITY_PROFILES,
   CLAUDE_CAPABILITY_PROFILE,

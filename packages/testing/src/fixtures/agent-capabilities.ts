@@ -2,18 +2,13 @@
 // Reference data for the R1 (Claude) / R2 (Codex) Adapter implementations.
 // Sourced from `claude --help` / `codex --help` + local transcript inspection —
 // see docs/probes/r0-04-agent-capability.md.
+//
+// Permission mappings use the canonical contracts PermissionMapping (SV1-PERM-05).
+// Enforcement claims reflect ONLY what --help proves (SV1-PERM-02): controls
+// whose enforcement is unverified are listed in unsupportedControls with a
+// verify-at-runtime warning — never defaulted to safe.
 
-import type { AdapterCapability } from "@agents-fleet/contracts";
-
-export type PermissionModeName = "Manual" | "Balanced" | "YOLO";
-
-export interface PermissionModeMapping {
-  readonly requestedMode: PermissionModeName;
-  readonly argv: readonly string[];
-  readonly enforcedCapabilities: readonly string[];
-  readonly unsupportedControls: readonly string[];
-  readonly warnings: readonly string[];
-}
+import type { AdapterCapability, PermissionMapping } from "@agents-fleet/contracts";
 
 export interface TranscriptSpec {
   readonly locationPattern: string;
@@ -28,11 +23,19 @@ export interface AgentCapabilityProfile {
   readonly tier: "Full" | "Launch-level";
   readonly hookSupport: "settings-hooks" | "none";
   readonly observationChannel: string;
-  readonly permissionMappings: readonly PermissionModeMapping[];
+  readonly permissionMappings: readonly PermissionMapping[];
   readonly resume: { readonly command: string; readonly bySessionId: string };
   readonly transcript: TranscriptSpec;
-  readonly candidateDiscovery: { readonly versionCommand: string; readonly notes: string };
+  readonly candidateDiscovery: { readonly metadataOnly: true; readonly notes: string };
+  readonly verifiedDiscovery: {
+    readonly versionCommand: string;
+    readonly resolves: readonly string[];
+    readonly notes: string;
+  };
 }
+
+const VERIFY_WARNING =
+  "enforcement not verified from --help; verify at R1/R2 runtime (SV1-PERM-02)";
 
 export const CLAUDE_CAPABILITY_PROFILE: AgentCapabilityProfile = {
   agentId: "claude-code",
@@ -45,24 +48,27 @@ export const CLAUDE_CAPABILITY_PROFILE: AgentCapabilityProfile = {
   permissionMappings: [
     {
       requestedMode: "Manual",
-      argv: ["--permission-mode", "default"],
+      effectiveMode: "Manual",
+      launchArgumentsPreview: ["--permission-mode", "default"],
       enforcedCapabilities: [],
-      unsupportedControls: [],
-      warnings: [],
+      unsupportedControls: ["per-tool-approval-enforcement"],
+      warnings: [VERIFY_WARNING],
     },
     {
       requestedMode: "Balanced",
-      argv: ["--permission-mode", "acceptEdits"],
-      enforcedCapabilities: ["acceptEdits"],
-      unsupportedControls: [],
-      warnings: [],
+      effectiveMode: "Balanced",
+      launchArgumentsPreview: ["--permission-mode", "acceptEdits"],
+      enforcedCapabilities: [],
+      unsupportedControls: ["edit-auto-approval-boundary"],
+      warnings: [VERIFY_WARNING],
     },
     {
       requestedMode: "YOLO",
-      argv: ["--dangerously-skip-permissions"],
+      effectiveMode: "YOLO",
+      launchArgumentsPreview: ["--dangerously-skip-permissions"],
       enforcedCapabilities: [],
       unsupportedControls: [],
-      warnings: ["bypasses all permission checks"],
+      warnings: ["bypasses ALL permission checks (per --help) — no boundary enforced by design"],
     },
   ],
   resume: {
@@ -75,8 +81,18 @@ export const CLAUDE_CAPABILITY_PROFILE: AgentCapabilityProfile = {
     sessionIdKey: "uuid-filename",
   },
   candidateDiscovery: {
+    metadataOnly: true,
+    notes: "install metadata + filesystem identity only; no execution pre-Trust (ADR-0002)",
+  },
+  verifiedDiscovery: {
     versionCommand: "claude --version",
-    notes: "version + executable path only; no execution pre-Trust",
+    resolves: [
+      "ExecutableIdentity",
+      "supportedVersionRange",
+      "Capability set",
+      "PermissionMapping",
+    ],
+    notes: "post Active Trust, neutral cwd; agent process only starts at CommitLaunch",
   },
 };
 
@@ -91,24 +107,27 @@ export const CODEX_CAPABILITY_PROFILE: AgentCapabilityProfile = {
   permissionMappings: [
     {
       requestedMode: "Manual",
-      argv: ["--ask-for-approval", "untrusted", "--sandbox", "read-only"],
+      effectiveMode: "Manual",
+      launchArgumentsPreview: ["--ask-for-approval", "untrusted", "--sandbox", "read-only"],
       enforcedCapabilities: [],
-      unsupportedControls: [],
-      warnings: [],
+      unsupportedControls: ["read-only-sandbox-enforcement", "untrusted-approval-enforcement"],
+      warnings: [VERIFY_WARNING],
     },
     {
       requestedMode: "Balanced",
-      argv: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"],
-      enforcedCapabilities: ["workspace-write"],
-      unsupportedControls: [],
-      warnings: [],
+      effectiveMode: "Balanced",
+      launchArgumentsPreview: ["--ask-for-approval", "on-request", "--sandbox", "workspace-write"],
+      enforcedCapabilities: [],
+      unsupportedControls: ["workspace-write-boundary", "on-request-approval"],
+      warnings: [VERIFY_WARNING],
     },
     {
       requestedMode: "YOLO",
-      argv: ["--dangerously-bypass-approvals-and-sandbox"],
+      effectiveMode: "YOLO",
+      launchArgumentsPreview: ["--dangerously-bypass-approvals-and-sandbox"],
       enforcedCapabilities: [],
       unsupportedControls: [],
-      warnings: ["EXTREMELY DANGEROUS: no sandbox, no approvals"],
+      warnings: ["EXTREMELY DANGEROUS: no sandbox, no approvals — no boundary enforced by design"],
     },
   ],
   resume: { command: "codex resume <sessionId|--last>", bySessionId: "codex resume <sessionId>" },
@@ -118,8 +137,18 @@ export const CODEX_CAPABILITY_PROFILE: AgentCapabilityProfile = {
     sessionIdKey: "uuid-field",
   },
   candidateDiscovery: {
+    metadataOnly: true,
+    notes: "install metadata + filesystem identity only; no execution pre-Trust (ADR-0002)",
+  },
+  verifiedDiscovery: {
     versionCommand: "codex --version",
-    notes: "version + executable path only; no execution pre-Trust",
+    resolves: [
+      "ExecutableIdentity",
+      "supportedVersionRange",
+      "Capability set",
+      "PermissionMapping",
+    ],
+    notes: "post Active Trust, neutral cwd; agent process only starts at CommitLaunch",
   },
 };
 
