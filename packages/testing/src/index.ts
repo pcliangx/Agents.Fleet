@@ -9,6 +9,12 @@ export {
   CODEX_CAPABILITY_PROFILE,
 } from "./fixtures/agent-capabilities.js";
 export type {
+  AtMostOnceLaunchProfile,
+  CrashPointResult,
+  LaunchCrashConvergence,
+} from "./fixtures/at-most-once-launch.js";
+export { AT_MOST_ONCE_LAUNCH_PROFILE } from "./fixtures/at-most-once-launch.js";
+export type {
   CrashModeResult,
   DaemonCrashBehaviorProfile,
 } from "./fixtures/daemon-crash-behavior.js";
