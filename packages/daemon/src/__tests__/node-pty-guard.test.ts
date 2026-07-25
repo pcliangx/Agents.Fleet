@@ -1,11 +1,23 @@
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// D8 — node-pty must not be imported anywhere until #9/#10 introduce it
-// (RT-TERM-08 / SV1-AUTH-09).
+// R0-10 — node-pty may be loaded only by the Daemon's private
+// ProcessSupervisor (RT-TERM-08 / SV1-AUTH-09).
 
-const IMPORT_RE = /from\s+['"]node-pty['"]|require\(\s*['"]node-pty['"]\s*\)/;
+const NODE_PTY_LITERAL_RE = /['"]node-pty['"]/;
+const ALLOWED_LOADER = "packages/daemon/src/session-runtime/process-supervisor.ts";
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+const THIS_TEST = fileURLToPath(import.meta.url);
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs", ".cjs", ".html"];
+const DEPENDENCY_SECTIONS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
 
 const safeStat = (p: string): ReturnType<typeof statSync> | undefined => {
   try {
@@ -15,7 +27,7 @@ const safeStat = (p: string): ReturnType<typeof statSync> | undefined => {
   }
 };
 
-const walkTs = (dir: string): string[] => {
+const walkSources = (dir: string): string[] => {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -24,23 +36,104 @@ const walkTs = (dir: string): string[] => {
   }
   const out: string[] = [];
   for (const entry of entries) {
+    if (entry === "node_modules" || entry === "dist") continue;
     const p = join(dir, entry);
     const s = safeStat(p);
     if (s === undefined) continue;
-    if (s.isDirectory()) out.push(...walkTs(p));
-    else if (entry.endsWith(".ts")) out.push(p);
+    if (s.isDirectory()) out.push(...walkSources(p));
+    else if (SOURCE_EXTENSIONS.some((extension) => entry.endsWith(extension))) out.push(p);
   }
   return out;
 };
 
-describe("D8 node-pty guard", () => {
-  it("no source file under packages/ or apps/ imports node-pty", () => {
-    const offenders: string[] = [];
+const workspaceManifestPaths = (): string[] => [
+  "package.json",
+  ...["packages", "apps"].flatMap((root) =>
+    readdirSync(join(REPOSITORY_ROOT, root))
+      .map((entry) => join(root, entry, "package.json"))
+      .filter((path) => safeStat(join(REPOSITORY_ROOT, path))?.isFile()),
+  ),
+];
+
+describe("node-pty package boundary", () => {
+  it.each([
+    'import pty from "node-pty";',
+    'import type { IPty } from "node-pty";',
+    'import "node-pty";',
+    'await import("node-pty");',
+    'require("node-pty");',
+    'const load = createRequire(import.meta.url); load("node-pty");',
+  ])("recognizes node-pty module literals: %s", (source) => {
+    expect(NODE_PTY_LITERAL_RE.test(source)).toBe(true);
+  });
+
+  it("loads node-pty only in the Daemon ProcessSupervisor", () => {
+    const loaders: string[] = [];
     for (const root of ["packages", "apps"]) {
-      for (const file of walkTs(join(process.cwd(), root))) {
-        if (IMPORT_RE.test(readFileSync(file, "utf8"))) offenders.push(file);
+      for (const file of walkSources(join(REPOSITORY_ROOT, root))) {
+        if (file === THIS_TEST || file.includes(`${join("src", "__tests__")}/`)) continue;
+        if (NODE_PTY_LITERAL_RE.test(readFileSync(file, "utf8"))) {
+          loaders.push(relative(REPOSITORY_ROOT, file));
+        }
       }
     }
-    expect(offenders).toEqual([]);
+    expect(loaders).toEqual([ALLOWED_LOADER]);
+  });
+
+  it("pins node-pty as a Daemon-only runtime dependency", () => {
+    const declarations = workspaceManifestPaths().flatMap((manifestPath) => {
+      const manifest = JSON.parse(
+        readFileSync(join(REPOSITORY_ROOT, manifestPath), "utf8"),
+      ) as Record<string, Record<string, string> | undefined>;
+      return DEPENDENCY_SECTIONS.flatMap((section) => {
+        const version = manifest[section]?.["node-pty"];
+        return version === undefined ? [] : [{ manifestPath, section, version }];
+      });
+    });
+
+    expect(declarations).toEqual([
+      {
+        manifestPath: "packages/daemon/package.json",
+        section: "dependencies",
+        version: "1.1.0",
+      },
+    ]);
+  });
+
+  it("prevents the Desktop package from resolving node-pty or the Daemon package", () => {
+    const resolution = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "-e",
+          `
+            const { createRequire } = require("node:module");
+            const desktopRequire = createRequire(process.argv[1]);
+            const result = ["node-pty", "@agents-fleet/daemon"].map((specifier) => {
+              try {
+                return { specifier, resolved: desktopRequire.resolve(specifier) };
+              } catch {
+                return { specifier, resolved: null };
+              }
+            });
+            process.stdout.write(JSON.stringify(result));
+          `,
+          join(REPOSITORY_ROOT, "apps/desktop/package.json"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            HOME: process.env.HOME ?? "/tmp",
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            TMPDIR: process.env.TMPDIR ?? "/tmp",
+          },
+        },
+      ),
+    );
+
+    expect(resolution).toEqual([
+      { specifier: "node-pty", resolved: null },
+      { specifier: "@agents-fleet/daemon", resolved: null },
+    ]);
   });
 });

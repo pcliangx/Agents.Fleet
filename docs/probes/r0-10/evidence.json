@@ -1,0 +1,109 @@
+{
+  "probeId": "r0-10-node-pty-isolation",
+  "capturedAt": "2026-07-25T15:12:31Z",
+  "baseCommit": "ef19471",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "macOS": "26.5.2 (25F84)",
+    "node": "v26.4.0",
+    "pnpm": "10.33.2",
+    "electron": "34.5.8",
+    "electronArtifactSha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248",
+    "nodePty": "1.1.0"
+  },
+  "verdict": {
+    "isolationBoundary": "PASS",
+    "nativeSpawnReadiness": "BLOCKED_BY_ISSUE_22"
+  },
+  "packageBoundary": {
+    "runtimeDependencyOwner": "@agents-fleet/daemon",
+    "versionSpecifier": "1.1.0",
+    "workspaceManifestsChecked": 6,
+    "dependencySectionsChecked": [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies"
+    ],
+    "allowedLoader": "packages/daemon/src/session-runtime/process-supervisor.ts",
+    "desktopRuntimeDependency": false,
+    "desktopDevDependency": false,
+    "desktopResolvesNodePty": false,
+    "desktopResolvesDaemonPackage": false,
+    "desktopApiMethods": ["getConnectionInfo"],
+    "rendererCompromise": {
+      "sandbox": true,
+      "contextIsolation": true,
+      "nodeIntegration": false,
+      "requireType": "undefined",
+      "processType": "undefined",
+      "dynamicNodePtyImport": "rejected"
+    },
+    "lazyNativeLoad": true,
+    "nodePtyTypesCrossSeam": false
+  },
+  "byteBoundary": {
+    "spawnEncoding": null,
+    "nulPreserved": true,
+    "invalidUtf8Preserved": true,
+    "splitMultibyteChunksPreserved": true,
+    "nativeNodePtyFixture": true,
+    "hostileBytesSha256": "0e94bd7e52cb67fb1255a75a0c98112b748d360fa14d96a278a22828aa26ccf8",
+    "displayContainsReplacement": true,
+    "recoveryChecksumUnchangedAfterDisplayDecode": true,
+    "decodedTextFailsClosed": true,
+    "outputPublishedAfterBoundaryFailure": false
+  },
+  "targetedTests": {
+    "filesPassed": 5,
+    "testsPassed": 18,
+    "guardedLoaderSyntaxes": [
+      "static import",
+      "type-only import",
+      "side-effect import",
+      "dynamic import",
+      "CommonJS require",
+      "aliased loader with a node-pty literal"
+    ]
+  },
+  "fullVerification": {
+    "typecheck": "PASS",
+    "testFilesPassed": 22,
+    "testsPassed": 110,
+    "lint": "PASS_WITH_PREEXISTING_NOTICES",
+    "diffCheck": "PASS"
+  },
+  "nativeArtifactObservation": {
+    "moduleLoads": true,
+    "spawnExportType": "function",
+    "helperPath": "prebuilds/darwin-arm64/spawn-helper",
+    "helperMode": "0644",
+    "helperFormat": "Mach-O thin (arm64)",
+    "helperSignature": "adhoc, linker-signed",
+    "spawnAttempt": {
+      "executable": "/bin/echo",
+      "encoding": null,
+      "result": "Error: posix_spawnp failed."
+    },
+    "controlledTemporaryCopyProof": {
+      "helperMode": "0755",
+      "realPtySpawn": "PASS",
+      "hostileBytesPreserved": true,
+      "sourcePackageMutated": false,
+      "temporaryCopyRemoved": true
+    },
+    "mutatedForProbe": false,
+    "trackedInIssue": 22
+  },
+  "scope": {
+    "doesNotProve": [
+      "at-most-once launch protocol",
+      "Session lifecycle persistence or reconciliation",
+      "Input Intent crash durability",
+      "Electron FileBroker and full control boundary",
+      "release artifact helper repair or signing",
+      "frozen SupportedPlatformMatrix acceptance"
+    ]
+  }
+}

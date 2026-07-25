@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@agents-fleet/contracts": "workspace:*",
-    "@agents-fleet/transport": "workspace:*"
+    "@agents-fleet/transport": "workspace:*",
+    "node-pty": "1.1.0"
   },
   "devDependencies": {
     "@agents-fleet/testing": "workspace:*",
