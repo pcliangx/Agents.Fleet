@@ -1,0 +1,136 @@
+{
+  "probeId": "r0-02-launchagent-environment",
+  "capturedAt": "2026-07-25T08:02:15.878Z",
+  "context": {
+    "node": "v26.4.0",
+    "execPath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+    "cwd": "/Users/pc2026/Documents/Agents.Fleet.worktrees/r0-02-launchagent-env",
+    "uid": 501,
+    "gid": 20,
+    "ppid": 59612,
+    "managerName": {
+      "ok": true,
+      "argv": ["/bin/launchctl", "managername"],
+      "stdout": "Aqua"
+    },
+    "swVers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5.2\nBuildVersion:\t\t25F84"
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "COLORFGBG": "15;0",
+    "COLORTERM": "truecolor",
+    "COMMAND_MODE": "unix2003",
+    "FPATH": "/opt/homebrew/share/zsh/site-functions:/usr/local/share/zsh/site-functions:/usr/share/zsh/site-functions:/usr/share/zsh/5.9/functions",
+    "GIT_TERMINAL_PROMPT": "0",
+    "HOME": "/Users/pc2026",
+    "HOMEBREW_CELLAR": "/opt/homebrew/Cellar",
+    "HOMEBREW_PREFIX": "/opt/homebrew",
+    "HOMEBREW_REPOSITORY": "/opt/homebrew",
+    "INFOPATH": "/opt/homebrew/share/info:",
+    "ITERM_PROFILE": "Default",
+    "ITERM_SESSION_ID": "<redacted>",
+    "LANG": "en_AU.UTF-8",
+    "LC_TERMINAL": "iTerm2",
+    "LC_TERMINAL_VERSION": "3.6.11",
+    "LOGNAME": "pc2026",
+    "NO_COLOR": "1",
+    "OLDPWD": "/Users/pc2026/Documents/Agents.Fleet",
+    "OSLogRateLimit": "64",
+    "PATH": "/Users/pc2026/.opencode/bin:/Users/pc2026/.omlx/bin:/Users/pc2026/.kimi-code/bin:/Users/pc2026/.mavis/bin:/Users/pc2026/.mavis/bin:/Users/pc2026/Documents/MyShells:/Users/pc2026/.local/bin:/Users/pc2026/Library/Python/3.9/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Library/Apple/usr/bin:/usr/local/corplink/mdm/opt/corplink-mdm/bin:/Applications/iTerm.app/Contents/Resources/utilities:/Users/pc2026/.lmstudio/bin",
+    "PWD": "/Users/pc2026/Documents/Agents.Fleet.worktrees/r0-02-launchagent-env",
+    "SHELL": "/bin/bash",
+    "SHLVL": "2",
+    "SSH_AUTH_SOCK": "/var/run/com.apple.launchd.mEu2KCnt2n/Listeners",
+    "TERM": "dumb",
+    "TERMINFO_DIRS": "/Applications/iTerm.app/Contents/Resources/terminfo:/usr/share/terminfo",
+    "TERM_FEATURES": "T3LrMSc7UUw9Ts3BFGsSyHNoSxFP",
+    "TERM_PROGRAM": "iTerm.app",
+    "TERM_PROGRAM_VERSION": "3.6.11",
+    "TERM_SESSION_ID": "<redacted>",
+    "TMPDIR": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/",
+    "USER": "pc2026",
+    "XPC_FLAGS": "0x0",
+    "XPC_SERVICE_NAME": "0",
+    "_": "/opt/homebrew/bin/node",
+    "__CFBundleIdentifier": "com.googlecode.iterm2",
+    "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0"
+  },
+  "pathResolution": {
+    "node": "/opt/homebrew/bin/node",
+    "claude": "/Users/pc2026/.local/bin/claude",
+    "codex": "/Users/pc2026/.local/bin/codex",
+    "git": "/usr/bin/git",
+    "security": "/usr/bin/security"
+  },
+  "explicitVersionProbes": {
+    "claude": {
+      "path": "/Users/pc2026/.local/bin/claude",
+      "exists": true,
+      "realpath": "/Users/pc2026/.local/share/claude/versions/2.1.218",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/Users/pc2026/.local/bin/claude", "--version"],
+        "stdout": "2.1.218 (Claude Code)"
+      }
+    },
+    "codex": {
+      "path": "/Users/pc2026/.local/bin/codex",
+      "exists": true,
+      "realpath": "/Users/pc2026/.codex/packages/standalone/releases/0.145.0-aarch64-apple-darwin/bin/codex",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/Users/pc2026/.local/bin/codex", "--version"],
+        "stdout": "codex-cli 0.145.0"
+      }
+    },
+    "nodeSystem": {
+      "path": "/usr/bin/node",
+      "exists": false,
+      "realpath": null,
+      "versionProbe": null
+    },
+    "nodeHomebrew": {
+      "path": "/opt/homebrew/bin/node",
+      "exists": true,
+      "realpath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/opt/homebrew/bin/node", "--version"],
+        "stdout": "v26.4.0"
+      }
+    }
+  },
+  "cleanedEnvUsed": {
+    "HOME": "/Users/pc2026",
+    "USER": "pc2026",
+    "LOGNAME": "pc2026",
+    "TMPDIR": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "LANG": "en_US.UTF-8"
+  },
+  "keychain": {
+    "listKeychains": {
+      "ok": true,
+      "argv": ["/usr/bin/security", "list-keychains"],
+      "stdout": "\"/Users/pc2026/Library/Keychains/login.keychain-db\"\n    \"/Library/Keychains/System.keychain\""
+    },
+    "defaultKeychain": {
+      "ok": true,
+      "argv": ["/usr/bin/security", "default-keychain"],
+      "stdout": "\"/Users/pc2026/Library/Keychains/login.keychain-db\""
+    },
+    "findNonexistent": {
+      "ok": false,
+      "argv": [
+        "/usr/bin/security",
+        "find-generic-password",
+        "-s",
+        "agents-fleet.r0-02.probe.nonexistent"
+      ],
+      "status": 44,
+      "signal": null,
+      "stderr": "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
+      "message": "Command failed: /usr/bin/security find-generic-password -s agents-fleet.r0-02.probe.nonexistent\nsecurity: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n"
+    }
+  }
+}

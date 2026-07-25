@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.agents-fleet.r0-02.probe</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/node</string>
+		<string>/Users/pc2026/Documents/Agents.Fleet.worktrees/r0-02-launchagent-env/docs/probes/r0-02/probe.mjs</string>
+		<string>/Users/pc2026/Documents/Agents.Fleet.worktrees/r0-02-launchagent-env/docs/probes/r0-02/evidence-launchagent.json</string>
+		<string>/tmp/r0-02-raw-launchagent.json</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/r0-02-probe.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/r0-02-probe.stderr.log</string>
+</dict>
+</plist>
