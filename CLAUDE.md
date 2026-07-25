@@ -1,8 +1,12 @@
 ## Agent skills
 
+### Specifications
+
+Canonical PRDs and executable contracts live under `docs/specs/` and are versioned with the code. GitHub issues track implementation slices and must reference the relevant spec requirement IDs.
+
 ### Issue tracker
 
-Issues and PRDs live as GitHub issues (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Implementation issues live in GitHub Issues (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

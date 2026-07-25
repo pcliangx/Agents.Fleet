@@ -1,6 +1,8 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Implementation issues for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+
+Canonical PRDs and runtime/security contracts live in `docs/specs/` and are versioned with the code. An issue must link the relevant spec path and stable requirement ID (for example `TASK-3`, `RT-STATE-05`, or `SV1-TRUST-01`); an issue body is never the only copy of a product contract.
 
 ## Conventions
 
@@ -27,7 +29,7 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a GitHub implementation issue. If the content changes a product or runtime contract, update the canonical file under `docs/specs/` first and link that change from the issue.
 
 ## When a skill says "fetch the relevant ticket"
 
