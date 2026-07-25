@@ -28,3 +28,18 @@ export interface DiscoveryResult {
   readonly supportedVersionRange: string;
   readonly capabilities: readonly AdapterCapability[];
 }
+
+// SV1-PERM-05 — PermissionMode is user intent, NOT a uniform cross-agent safety level.
+export type PermissionMode = "Manual" | "Balanced" | "YOLO";
+
+// SV1-PERM-05 — the canonical permission mapping an Adapter returns.
+export interface PermissionMapping {
+  readonly requestedMode: PermissionMode;
+  readonly effectiveMode: PermissionMode;
+  // SV1-PERM-03 — redacted/structured argv preview; the actual launch uses an argv array, not a shell string.
+  readonly launchArgumentsPreview: readonly string[];
+  readonly enforcedCapabilities: readonly string[];
+  // SV1-PERM-02 — controls whose enforcement cannot be confirmed are listed here, never defaulted to safe.
+  readonly unsupportedControls: readonly string[];
+  readonly warnings: readonly string[];
+}
