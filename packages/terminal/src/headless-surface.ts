@@ -19,6 +19,6 @@ export class HeadlessTerminalSurface extends BaseTerminalSurface {
     // buffer access; there is no stable v6 alternative for cell reads.
     const term = new Terminal({ cols: opts.cols, rows: opts.rows, allowProposedApi: true });
     configureUnicode11(term);
-    super(term);
+    super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
   }
 }

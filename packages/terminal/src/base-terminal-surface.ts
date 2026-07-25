@@ -11,6 +11,15 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 export interface TerminalSurfaceOptions {
   readonly cols: number;
   readonly rows: number;
+  /**
+   * RT-TERM-09 — reject a feed whose bytes exceed this many bytes, before
+   * touching xterm.js. The value comes from
+   * RuntimeLimitProfile.terminal.pendingWriteBytes (frozen by #16); unset
+   * (unbounded) until the profile is wired in, since RT-LIMIT-01 forbids an
+   * unversioned default. The primary untrusted-length boundary remains the
+   * frame decoder (RT-STREAM-05); this is the Terminal Surface's own bound.
+   */
+  readonly maxPendingWriteBytes?: number;
 }
 
 // Structural slice of an xterm.js Terminal the base reads/writes. Both
@@ -55,12 +64,35 @@ export class TerminalSeqGapError extends Error {
   }
 }
 
+// RT-TERM-09 — feed refused because bytes exceed the configured
+// pendingWriteBytes limit. The bytes are NOT written and the cursor is NOT
+// advanced.
+export class TerminalPendingWriteLimitError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly received: number,
+  ) {
+    super(`pendingWriteBytes exceeded: limit ${limit}, received ${received}`);
+    this.name = "TerminalPendingWriteLimitError";
+  }
+}
+
 export abstract class BaseTerminalSurface implements TerminalSurface {
   protected appliedStreamCursor: SessionStreamCursor | undefined;
 
-  constructor(private readonly term: ReadableXtermTerminal) {}
+  constructor(
+    private readonly term: ReadableXtermTerminal,
+    private readonly maxPendingWriteBytes: number = Number.POSITIVE_INFINITY,
+  ) {}
 
   feed(bytes: Uint8Array, frame: SessionStreamCursor): Promise<void> {
+    // RT-TERM-09 — bound the write before touching xterm.js. See
+    // TerminalSurfaceOptions.maxPendingWriteBytes; default unbounded until #16.
+    if (bytes.length > this.maxPendingWriteBytes) {
+      return Promise.reject(
+        new TerminalPendingWriteLimitError(this.maxPendingWriteBytes, bytes.length),
+      );
+    }
     // RT-TERM-02 — within the same {sessionId, generation} the seq must be
     // exactly lastSeq + 1; a gap or regression is refused before writing. A
     // changed sessionId or generation is a new producer and resets the baseline.

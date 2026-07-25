@@ -84,3 +84,27 @@ describe("RT-TERM-02 headless surface — seq contiguity", () => {
     expect(surface.appliedCursor()?.generation).toBe(2);
   });
 });
+
+describe("RT-TERM-09 pendingWriteBytes limit", () => {
+  it("rejects a feed over the configured limit without writing or advancing", async () => {
+    const surface = new HeadlessTerminalSurface({ cols: 80, rows: 24, maxPendingWriteBytes: 4 });
+    await expect(
+      surface.feed(new TextEncoder().encode("ABCDE"), {
+        sessionId: sid,
+        generation: gen,
+        seq: 1 as Seq,
+      }),
+    ).rejects.toThrow();
+    expect(surface.appliedCursor()).toBeUndefined();
+  });
+
+  it("accepts a feed at or under the configured limit", async () => {
+    const surface = new HeadlessTerminalSurface({ cols: 80, rows: 24, maxPendingWriteBytes: 5 });
+    await surface.feed(new TextEncoder().encode("ABCDE"), {
+      sessionId: sid,
+      generation: gen,
+      seq: 1 as Seq,
+    });
+    expect(surface.appliedCursor()?.seq).toBe(1);
+  });
+});

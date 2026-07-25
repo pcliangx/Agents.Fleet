@@ -8,6 +8,7 @@ export * from "./allowlist.js";
 export {
   BaseTerminalSurface,
   configureUnicode11,
+  TerminalPendingWriteLimitError,
   TerminalSeqGapError,
   type TerminalSurfaceOptions,
 } from "./base-terminal-surface.js";

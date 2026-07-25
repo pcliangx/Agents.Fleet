@@ -18,6 +18,6 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
     configureUnicode11(term);
     const element = document.createElement("div");
     term.open(element);
-    super(term);
+    super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
   }
 }

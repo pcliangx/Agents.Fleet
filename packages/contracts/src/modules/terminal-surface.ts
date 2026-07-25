@@ -28,7 +28,9 @@ export interface TerminalSurface {
    * {sessionId, generation} ("缺失 seq 时不得继续解析"): on a gap/regression
    * the bytes are not written and the cursor is not advanced, so the caller
    * (Desktop Bridge) can re-snapshot (RT-ORDER-06). A changed sessionId or
-   * generation is a new producer and resets the seq baseline.
+   * generation is a new producer and resets the seq baseline. Also rejects
+   * when the payload exceeds the surface's configured pendingWriteBytes bound
+   * (RT-TERM-09; value from RuntimeLimitProfile).
    */
   feed(bytes: Uint8Array, frame: SessionStreamCursor): Promise<void>;
 
