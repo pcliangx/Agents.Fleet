@@ -7,7 +7,9 @@ Session streams isolated under the `RT-PERF-08` load, move a slow or hidden
 Renderer onto an explicit Snapshot + delta resync path, and let healthy
 Sessions continue consuming. It assumes every input frame is already durable;
 it does not answer chunk fsync/crash recovery, terminal rendering, Snapshot
-parser safety, or the final `RuntimeLimitProfile` values.
+parser safety, or the final `RuntimeLimitProfile` / `SupportedPlatformMatrix`
+values. Evidence records both placeholder versions as `0` and is not reusable
+after either contract is frozen.
 
 Run the interactive state model:
 
@@ -29,5 +31,13 @@ pnpm --filter @agents-fleet/daemon exec tsx \
   --duration 3 --out ../../docs/probes/r0-06/evidence-short.json
 ```
 
-The portable part is `model.ts`. The TUI and benchmark are disposable shells
-used to expose its state and measure the design.
+The portable seams are:
+
+- `scenario.ts`: typed fixed-load descriptors and the one shared queue profile.
+- `router.ts`: shared multiplex routing with payload identity checks.
+- `model.ts`: bounded Attachment state and fail-closed Snapshot + delta apply.
+- `recovery.ts`: Snapshot cursor / recent durable delta orchestration.
+- `boundaries.ts`: independent byte-cap and frame-cap boundary probes.
+
+The TUI and benchmark are disposable shells used to expose those seams and
+measure the design.

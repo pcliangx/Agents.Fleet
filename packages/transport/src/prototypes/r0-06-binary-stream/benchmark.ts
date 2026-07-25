@@ -7,33 +7,38 @@ import { dirname } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import type { Generation, Seq, SessionId, StreamFrameHeader } from "@agents-fleet/contracts";
 import { decodeFrame, encodeFrame } from "../../binary-frame.js";
+import { runQueueBoundaryProbes } from "./boundaries.js";
 import {
   type AttachmentFlowState,
   consumeQueuedFrames,
   createAttachmentFlowState,
-  ingestDurableFrame,
-  resyncAtDurableHead,
+  type QueuedFrame,
   setAttachmentHidden,
   summarizeAttachmentFlow,
 } from "./model.js";
+import { recoverUsingRecentDurableFrames } from "./recovery.js";
+import {
+  createMultiplexRouter,
+  type MultiplexRouter,
+  replaceRouteState,
+  routeBinaryFrame,
+} from "./router.js";
+import {
+  type BenchmarkSessionScenario,
+  createR006Scenario,
+  type R006Scenario,
+  type SessionRole,
+  targetFrameCount,
+} from "./scenario.js";
 
-const MIB = 1024 * 1024;
-const SESSION_COUNT = 10;
-const FRAME_PAYLOAD_BYTES = 64 * 1024;
-const HOT_SESSION_RATE = 5 * MIB;
-const BACKGROUND_SESSION_RATE = 64 * 1024;
-const SLOW_SESSION_SOURCE_RATE = 1 * MIB;
-const QUEUE_LIMIT_BYTES = 1 * MIB;
-const QUEUE_LIMIT_FRAMES = 32;
-const SLOW_SESSION_INDEX = 1;
-const HIDDEN_SESSION_INDEX = 2;
+const generation = 1 as Generation;
 
-interface BenchmarkOptions {
+export interface BenchmarkOptions {
   readonly durationSeconds: number;
   readonly outputPath: string | null;
 }
 
-interface BenchmarkResult {
+export interface BenchmarkResult {
   readonly prototype: "R0-06";
   readonly verdict: "PASS" | "FAIL";
   readonly question: string;
@@ -44,8 +49,35 @@ interface BenchmarkResult {
   readonly environment: object;
   readonly configuration: object;
   readonly measurements: object;
+  readonly boundaryProbes: object;
+  readonly isolationCanary: object;
+  readonly recoveries: readonly object[];
   readonly acceptance: Readonly<Record<string, boolean>>;
   readonly sessions: readonly object[];
+}
+
+interface SessionRuntime {
+  readonly scenario: BenchmarkSessionScenario;
+  readonly targetFrames: number;
+  readonly payload: Uint8Array;
+  readonly recentDurableFrames: readonly QueuedFrame[];
+  readonly generatedFrames: number;
+  readonly consumerBudget: number;
+  readonly hiddenStarted: boolean;
+  readonly hiddenEnded: boolean;
+}
+
+interface RecoveryRecord {
+  readonly sessionId: SessionId;
+  readonly role: SessionRole;
+  readonly requestedBy: "VisibilityResume" | "SlowConsumerRecovery";
+  readonly method: "SnapshotPlusDelta";
+  readonly snapshotCoversThroughSeq: Seq;
+  readonly deltaFrames: number;
+  readonly suppliedDeltaFrames: number;
+  readonly duplicateDeltaFrames: number;
+  readonly ok: boolean;
+  readonly failureCode: string | null;
 }
 
 const parseOptions = (argv: readonly string[]): BenchmarkOptions => {
@@ -76,163 +108,361 @@ const waitForNextTick = (): Promise<void> =>
     setTimeout(resolve, 5);
   });
 
-const sessionId = (index: number): SessionId => `r0-06-session-${index}` as SessionId;
-const generation = 1 as Generation;
-const seq = (value: number): Seq => value as Seq;
-const at = <T>(items: readonly T[], index: number): T => {
-  const item = items[index];
-  if (item === undefined) throw new Error(`missing benchmark item at index ${index}`);
-  return item;
-};
-
-const makeHeader = (index: number, sequence: number): StreamFrameHeader => ({
+const makeHeader = (
+  session: BenchmarkSessionScenario,
+  sequence: number,
+  payloadLength: number,
+): StreamFrameHeader => ({
   frameType: "output",
-  sessionId: sessionId(index),
+  sessionId: session.sessionId,
   generation,
-  seq: seq(sequence),
-  payloadLength: FRAME_PAYLOAD_BYTES,
+  seq: sequence as Seq,
+  payloadLength,
 });
 
+const routeState = (router: MultiplexRouter, sessionId: SessionId): AttachmentFlowState => {
+  const route = router.routes.get(sessionId);
+  if (route === undefined) throw new Error(`missing route for ${sessionId}`);
+  return route.state;
+};
+
+const runtimeFor = (
+  runtimes: ReadonlyMap<SessionId, SessionRuntime>,
+  sessionId: SessionId,
+): SessionRuntime => {
+  const runtime = runtimes.get(sessionId);
+  if (runtime === undefined) throw new Error(`missing runtime for ${sessionId}`);
+  return runtime;
+};
+
+const sessionWithRole = (
+  scenario: R006Scenario,
+  role: Exclude<SessionRole, "Background">,
+): BenchmarkSessionScenario => {
+  const session = scenario.sessions.find((candidate) => candidate.role === role);
+  if (session === undefined) throw new Error(`missing ${role} Session`);
+  return session;
+};
+
+const recoverRoute = (
+  router: MultiplexRouter,
+  runtime: SessionRuntime,
+  requestedBy: RecoveryRecord["requestedBy"],
+): { readonly router: MultiplexRouter; readonly record: RecoveryRecord } => {
+  const recovery = recoverUsingRecentDurableFrames(
+    routeState(router, runtime.scenario.sessionId),
+    runtime.recentDurableFrames,
+  );
+  const nextRouter = recovery.result.ok ? replaceRouteState(router, recovery.result.state) : router;
+  return {
+    router: nextRouter,
+    record: {
+      sessionId: runtime.scenario.sessionId,
+      role: runtime.scenario.role,
+      requestedBy,
+      ...recovery.evidence,
+      ok: recovery.result.ok,
+      failureCode: recovery.result.ok ? null : recovery.result.code,
+    },
+  };
+};
+
+const runIsolationCanary = (
+  scenario: R006Scenario,
+): {
+  readonly crossSessionDetected: boolean;
+  readonly sequenceGapDetected: boolean;
+  readonly crossSessionFrames: number;
+  readonly sequenceErrors: number;
+} => {
+  const hot = sessionWithRole(scenario, "Hot");
+  const slow = sessionWithRole(scenario, "Slow");
+  let router = createMultiplexRouter(
+    [hot, slow].map((session) => ({
+      state: createAttachmentFlowState(session.sessionId, generation, scenario.queueLimits),
+      expectedPayloadMarker: session.payloadMarker,
+    })),
+  );
+
+  const wrongPayload = new Uint8Array(scenario.framePayloadBytes).fill(slow.payloadMarker);
+  const crossWire = encodeFrame(makeHeader(hot, 1, wrongPayload.byteLength), wrongPayload);
+  router = routeBinaryFrame(router, decodeFrame(crossWire), crossWire).router;
+
+  const correctPayload = new Uint8Array(scenario.framePayloadBytes).fill(hot.payloadMarker);
+  const gapWire = encodeFrame(makeHeader(hot, 2, correctPayload.byteLength), correctPayload);
+  router = routeBinaryFrame(router, decodeFrame(gapWire), gapWire).router;
+  const sequenceErrors = routeState(router, hot.sessionId).sequenceErrors;
+
+  return {
+    crossSessionDetected: router.crossSessionFrames === 1,
+    sequenceGapDetected: sequenceErrors === 1,
+    crossSessionFrames: router.crossSessionFrames,
+    sequenceErrors,
+  };
+};
+
 export const runBenchmark = async (options: BenchmarkOptions): Promise<BenchmarkResult> => {
-  const states: AttachmentFlowState[] = Array.from({ length: SESSION_COUNT }, (_, index) =>
-    createAttachmentFlowState(sessionId(index), generation, {
-      bytes: QUEUE_LIMIT_BYTES,
-      frames: QUEUE_LIMIT_FRAMES,
-    }),
+  const scenario = createR006Scenario(options.durationSeconds);
+  let router = createMultiplexRouter(
+    scenario.sessions.map((session) => ({
+      state: createAttachmentFlowState(session.sessionId, generation, scenario.queueLimits),
+      expectedPayloadMarker: session.payloadMarker,
+    })),
   );
-  const producerBudgets = new Array<number>(SESSION_COUNT).fill(0);
-  const consumerBudgets = new Array<number>(SESSION_COUNT).fill(0);
-  const sourceRates = Array.from({ length: SESSION_COUNT }, (_, index) => {
-    if (index === 0) return HOT_SESSION_RATE;
-    if (index === SLOW_SESSION_INDEX) return SLOW_SESSION_SOURCE_RATE;
-    return BACKGROUND_SESSION_RATE;
-  });
-  const consumerRates = Array.from({ length: SESSION_COUNT }, (_, index) => {
-    if (index === SLOW_SESSION_INDEX) return 16 * 1024;
-    if (index === 0) return 8 * MIB;
-    return 512 * 1024;
-  });
-  const payloads = Array.from({ length: SESSION_COUNT }, (_, index) =>
-    new Uint8Array(FRAME_PAYLOAD_BYTES).fill(index),
+  const runtimes = new Map<SessionId, SessionRuntime>(
+    scenario.sessions.map((session) => [
+      session.sessionId,
+      {
+        scenario: session,
+        targetFrames: targetFrameCount(session, scenario),
+        payload: new Uint8Array(scenario.framePayloadBytes).fill(session.payloadMarker),
+        recentDurableFrames: [],
+        generatedFrames: 0,
+        consumerBudget: 0,
+        hiddenStarted: false,
+        hiddenEnded: false,
+      },
+    ]),
   );
+  const recoveries: RecoveryRecord[] = [];
+  const healthyProgressBaseline = new Map<SessionId, Seq>();
+  let slowBackpressureObserved = false;
+  let queueLimitViolations = 0;
+  let sourcePayloadBytes = 0;
+  let wireBytes = 0;
+  let decodedFrames = 0;
 
   const eventLoop = monitorEventLoopDelay({ resolution: 10 });
   eventLoop.enable();
   const startedAt = performance.now();
+  const endAt = startedAt + scenario.durationSeconds * 1_000;
   const startedRss = process.memoryUsage().rss;
   let peakRss = startedRss;
   let previousAt = startedAt;
-  let sourcePayloadBytes = 0;
-  let wireBytes = 0;
-  let decodedFrames = 0;
-  let crossSessionFrames = 0;
-  let queueLimitViolations = 0;
-  let hiddenStarted = false;
-  let hiddenEnded = false;
-  const endAt = startedAt + options.durationSeconds * 1000;
+  let productionFinishedAt = startedAt;
 
-  while (performance.now() < endAt) {
+  while (true) {
     const now = performance.now();
-    const elapsedSeconds = Math.max(0, (now - previousAt) / 1000);
+    const elapsedSeconds = Math.min(scenario.durationSeconds, (now - startedAt) / 1_000);
+    const tickSeconds = Math.max(0, (now - previousAt) / 1_000);
     previousAt = now;
+    const progress = elapsedSeconds / scenario.durationSeconds;
 
-    const progress = (now - startedAt) / (options.durationSeconds * 1000);
-    if (!hiddenStarted && progress >= 1 / 3) {
-      states[HIDDEN_SESSION_INDEX] = setAttachmentHidden(at(states, HIDDEN_SESSION_INDEX), true);
-      hiddenStarted = true;
+    for (const session of scenario.sessions) {
+      if (session.visibility.kind !== "HiddenInterval") continue;
+      let runtime = runtimeFor(runtimes, session.sessionId);
+      let state = routeState(router, session.sessionId);
+      if (!runtime.hiddenStarted && progress >= session.visibility.startsAtFraction) {
+        state = setAttachmentHidden(state, true);
+        router = replaceRouteState(router, state);
+        runtime = { ...runtime, hiddenStarted: true };
+        runtimes.set(session.sessionId, runtime);
+      }
+      if (!runtime.hiddenEnded && progress >= session.visibility.endsAtFraction) {
+        router = replaceRouteState(router, setAttachmentHidden(state, false));
+        const recovered = recoverRoute(router, runtime, "VisibilityResume");
+        router = recovered.router;
+        recoveries.push(recovered.record);
+        runtimes.set(session.sessionId, { ...runtime, hiddenEnded: true });
+      }
     }
-    if (!hiddenEnded && progress >= 2 / 3) {
-      states[HIDDEN_SESSION_INDEX] = setAttachmentHidden(at(states, HIDDEN_SESSION_INDEX), false);
-      states[HIDDEN_SESSION_INDEX] = resyncAtDurableHead(at(states, HIDDEN_SESSION_INDEX));
-      hiddenEnded = true;
+
+    const dueFrames = new Map<SessionId, number>();
+    for (const session of scenario.sessions) {
+      const runtime = runtimeFor(runtimes, session.sessionId);
+      const scheduledFrames =
+        now >= endAt
+          ? runtime.targetFrames
+          : Math.min(
+              runtime.targetFrames,
+              Math.floor(
+                (session.sourcePayloadBytesPerSecond * elapsedSeconds) / scenario.framePayloadBytes,
+              ),
+            );
+      dueFrames.set(session.sessionId, scheduledFrames - runtime.generatedFrames);
     }
 
-    for (let index = 0; index < SESSION_COUNT; index += 1) {
-      let producerBudget = (producerBudgets[index] ?? 0) + at(sourceRates, index) * elapsedSeconds;
-      let consumerBudget =
-        (consumerBudgets[index] ?? 0) + at(consumerRates, index) * elapsedSeconds;
-      let flow = at(states, index);
-
-      while (producerBudget >= FRAME_PAYLOAD_BYTES) {
-        const sequence = (flow.durableSeq as number) + 1;
-        const encoded = encodeFrame(makeHeader(index, sequence), at(payloads, index));
+    while ([...dueFrames.values()].some((due) => due > 0)) {
+      for (const session of scenario.sessions) {
+        const due = dueFrames.get(session.sessionId) ?? 0;
+        if (due <= 0) continue;
+        const runtime = runtimeFor(runtimes, session.sessionId);
+        const sequence = runtime.generatedFrames + 1;
+        const encoded = encodeFrame(
+          makeHeader(session, sequence, runtime.payload.byteLength),
+          runtime.payload,
+        );
         const decoded = decodeFrame(encoded);
+        const routed = routeBinaryFrame(router, decoded, encoded);
+        router = routed.router;
         decodedFrames += 1;
         sourcePayloadBytes += decoded.payload.byteLength;
         wireBytes += encoded.byteLength;
-        if (decoded.header.sessionId !== flow.sessionId) crossSessionFrames += 1;
 
-        flow = ingestDurableFrame(flow, {
+        const queuedFrame: QueuedFrame = {
           header: decoded.header,
           payloadBytes: decoded.payload.byteLength,
           wireBytes: encoded.byteLength,
-        });
-        producerBudget -= FRAME_PAYLOAD_BYTES;
+        };
+        const nextRuntime: SessionRuntime = {
+          ...runtime,
+          generatedFrames: sequence,
+          recentDurableFrames: [...runtime.recentDurableFrames, queuedFrame].slice(-3),
+        };
+        runtimes.set(session.sessionId, nextRuntime);
+        dueFrames.set(session.sessionId, due - 1);
 
-        if (flow.queueBytes > QUEUE_LIMIT_BYTES || flow.queue.length > QUEUE_LIMIT_FRAMES) {
+        const state = routeState(router, session.sessionId);
+        if (
+          state.queueBytes > scenario.queueLimits.bytes ||
+          state.queue.length > scenario.queueLimits.frames
+        ) {
           queueLimitViolations += 1;
         }
+        if (session.role === "Slow" && state.resyncRequired && !slowBackpressureObserved) {
+          slowBackpressureObserved = true;
+          for (const healthy of scenario.sessions.filter(
+            (candidate) => candidate.mustProgressDuringSlowBackpressure,
+          )) {
+            healthyProgressBaseline.set(
+              healthy.sessionId,
+              routeState(router, healthy.sessionId).appliedSeq,
+            );
+          }
+        }
       }
+    }
 
-      const consumed = consumeQueuedFrames(flow, consumerBudget);
-      flow = consumed.state;
-      consumerBudget -= consumed.consumedWireBytes;
-
-      states[index] = flow;
-      producerBudgets[index] = producerBudget;
-      consumerBudgets[index] = consumerBudget;
+    for (const session of scenario.sessions) {
+      const runtime = runtimeFor(runtimes, session.sessionId);
+      const availableBudget =
+        runtime.consumerBudget + session.consumerWireBytesPerSecond * tickSeconds;
+      const consumed = consumeQueuedFrames(routeState(router, session.sessionId), availableBudget);
+      router = replaceRouteState(router, consumed.state);
+      runtimes.set(session.sessionId, {
+        ...runtime,
+        consumerBudget: availableBudget - consumed.consumedWireBytes,
+      });
     }
 
     peakRss = Math.max(peakRss, process.memoryUsage().rss);
+    const exactScheduleComplete = [...runtimes.values()].every(
+      (runtime) => runtime.generatedFrames === runtime.targetFrames,
+    );
+    if (now >= endAt && exactScheduleComplete) {
+      productionFinishedAt = performance.now();
+      break;
+    }
     await waitForNextTick();
   }
 
-  for (let index = 0; index < SESSION_COUNT; index += 1) {
-    let flow = at(states, index);
-    if (flow.hidden) flow = setAttachmentHidden(flow, false);
-    if (flow.resyncRequired) flow = resyncAtDurableHead(flow);
-    states[index] = consumeQueuedFrames(flow, Number.MAX_SAFE_INTEGER).state;
+  const healthySessionsProgressedDuringSlowBackpressure =
+    slowBackpressureObserved &&
+    scenario.sessions
+      .filter((session) => session.mustProgressDuringSlowBackpressure)
+      .every((session) => {
+        const baseline = healthyProgressBaseline.get(session.sessionId);
+        return (
+          baseline !== undefined &&
+          (routeState(router, session.sessionId).appliedSeq as number) > (baseline as number)
+        );
+      });
+
+  for (const session of scenario.sessions) {
+    let state = routeState(router, session.sessionId);
+    if (state.hidden) {
+      state = setAttachmentHidden(state, false);
+      router = replaceRouteState(router, state);
+    }
+    if (state.resyncRequired) {
+      const recovered = recoverRoute(
+        router,
+        runtimeFor(runtimes, session.sessionId),
+        session.role === "Slow" ? "SlowConsumerRecovery" : "VisibilityResume",
+      );
+      router = recovered.router;
+      recoveries.push(recovered.record);
+    }
+    const consumed = consumeQueuedFrames(
+      routeState(router, session.sessionId),
+      Number.MAX_SAFE_INTEGER,
+    );
+    router = replaceRouteState(router, consumed.state);
   }
 
   const finishedAt = performance.now();
   peakRss = Math.max(peakRss, process.memoryUsage().rss);
   eventLoop.disable();
-  const actualDurationSeconds = (finishedAt - startedAt) / 1000;
-  const totalTargetRate =
-    HOT_SESSION_RATE + SLOW_SESSION_SOURCE_RATE + BACKGROUND_SESSION_RATE * (SESSION_COUNT - 2);
-  const achievedRate = sourcePayloadBytes / actualDurationSeconds;
+  const states = scenario.sessions.map((session) => routeState(router, session.sessionId));
   const identityErrors = states.reduce((sum, state) => sum + state.identityErrors, 0);
   const sequenceErrors = states.reduce((sum, state) => sum + state.sequenceErrors, 0);
   const resyncCount = states.reduce((sum, state) => sum + state.resyncCount, 0);
-  const healthyIndexes = [0, 3, 4, 5, 6, 7, 8, 9];
-  const healthySessionsCaughtUp = healthyIndexes.every(
-    (index) => at(states, index).appliedSeq === at(states, index).durableSeq,
-  );
-  const productionDurationSeconds = (previousAt - startedAt) / 1000;
-  const scheduledPayloadBytes = sourceRates.reduce(
-    (sum, rate) =>
-      sum +
-      Math.floor((rate * productionDurationSeconds) / FRAME_PAYLOAD_BYTES) * FRAME_PAYLOAD_BYTES,
+  const expectedFrames = [...runtimes.values()].reduce(
+    (total, runtime) => total + runtime.targetFrames,
     0,
   );
-  const scheduledHotPayloadBytes =
-    Math.floor((HOT_SESSION_RATE * productionDurationSeconds) / FRAME_PAYLOAD_BYTES) *
-    FRAME_PAYLOAD_BYTES;
-
+  const expectedPayloadBytes = expectedFrames * scenario.framePayloadBytes;
+  const hot = sessionWithRole(scenario, "Hot");
+  const hotRuntime = runtimeFor(runtimes, hot.sessionId);
+  const boundaryProbes = runQueueBoundaryProbes(scenario.queueLimits);
+  const isolationCanary = runIsolationCanary(scenario);
+  const byteCapBoundariesProven =
+    !boundaryProbes.byteCap.limitMinusOne.resyncRequired &&
+    !boundaryProbes.byteCap.limit.resyncRequired &&
+    boundaryProbes.byteCap.limitPlusOne.resyncRequired;
+  const frameCapBoundariesProven =
+    !boundaryProbes.frameCap.limitMinusOne.resyncRequired &&
+    !boundaryProbes.frameCap.limit.resyncRequired &&
+    boundaryProbes.frameCap.limitPlusOne.resyncRequired;
+  const explicitSlowSnapshotDeltaRecovery = recoveries.some(
+    (record) =>
+      record.role === "Slow" &&
+      record.requestedBy === "SlowConsumerRecovery" &&
+      record.ok &&
+      record.deltaFrames > 0,
+  );
+  const explicitHiddenSnapshotDeltaRecovery = recoveries.some(
+    (record) =>
+      record.role === "Hidden" &&
+      record.requestedBy === "VisibilityResume" &&
+      record.ok &&
+      record.deltaFrames > 0,
+  );
   const acceptance = {
-    fixedSessionCount: states.length === SESSION_COUNT,
-    hotSessionReachedSchedule: at(states, 0).durablePayloadBytes === scheduledHotPayloadBytes,
-    aggregatePayloadReachedSchedule: sourcePayloadBytes === scheduledPayloadBytes,
-    noCrossSessionFrames: crossSessionFrames === 0 && identityErrors === 0,
+    fixedSessionCount: states.length === scenario.sessions.length && states.length === 10,
+    exactFixedFrameSchedule:
+      decodedFrames === expectedFrames &&
+      [...runtimes.values()].every((runtime) => runtime.generatedFrames === runtime.targetFrames),
+    hotSessionReachedExactSchedule:
+      routeState(router, hot.sessionId).durablePayloadBytes ===
+      hotRuntime.targetFrames * scenario.framePayloadBytes,
+    aggregatePayloadReachedExactSchedule: sourcePayloadBytes === expectedPayloadBytes,
+    noCrossSessionFrames:
+      router.crossSessionFrames === 0 && router.unknownSessionFrames === 0 && identityErrors === 0,
     noSequenceErrors: sequenceErrors === 0,
+    isolationCanaryDetectsCrossSession: isolationCanary.crossSessionDetected,
+    isolationCanaryDetectsSequenceGap: isolationCanary.sequenceGapDetected,
     boundedQueues: queueLimitViolations === 0,
-    explicitSlowResyncObserved:
-      at(states, SLOW_SESSION_INDEX).backpressureEvents > 0 &&
-      at(states, SLOW_SESSION_INDEX).resyncCount > 0,
-    explicitHiddenResyncObserved: at(states, HIDDEN_SESSION_INDEX).resyncCount > 0,
-    healthySessionsCaughtUp,
+    byteCapBoundariesProven,
+    frameCapBoundariesProven,
+    explicitSlowSnapshotDeltaRecovery,
+    explicitHiddenSnapshotDeltaRecovery,
+    healthySessionsProgressedDuringSlowBackpressure,
+    allSessionsCaughtUpAfterExplicitRecovery: states.every(
+      (state) => state.appliedSeq === state.durableSeq,
+    ),
+    versionProvenanceDeclared:
+      scenario.platformMatrixVersion === 0 &&
+      scenario.runtimeLimitProfileVersion === 0 &&
+      scenario.provenanceStatus === "unfrozen-r0-placeholder",
   };
   const verdict = Object.values(acceptance).every(Boolean) ? "PASS" : "FAIL";
+  const actualDurationSeconds = (finishedAt - startedAt) / 1_000;
+  const productionDurationSeconds = (productionFinishedAt - startedAt) / 1_000;
+  const targetPayloadBytesPerSecond = scenario.sessions.reduce(
+    (total, session) => total + session.sourcePayloadBytesPerSecond,
+    0,
+  );
 
   return {
     prototype: "R0-06",
@@ -241,14 +471,15 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       "Can bounded per-Attachment queues isolate a slow/hidden Renderer under the RT-PERF-08 10-Session binary load without blocking healthy Sessions?",
     scope: {
       proves: [
-        "binary frame encode/decode identity remains isolated under the measured load",
-        "the prototype queue policy stays within its configured byte/frame caps",
-        "slow and hidden consumers use an explicit resync transition",
+        "shared multiplex routing preserves Session identity under interleaved binary frames",
+        "byte and frame queue caps independently pass limit - 1 / limit / limit + 1 probes",
+        "slow and hidden consumers recover through an identity-bound Snapshot cursor plus contiguous delta",
+        "the fixed schedule emits every required frame, including the final 60-second boundary",
       ],
       doesNotProve: [
         "chunk durability, fsync ordering, or published-frame crash recovery (R0-14)",
         "xterm.js WebGL2/DOM rendering or Snapshot parser safety (R0-08/R0-09)",
-        "production RuntimeLimitProfile values or release performance budgets (R0-16)",
+        "frozen RuntimeLimitProfile or SupportedPlatformMatrix release performance budgets (R0-15/R0-16)",
       ],
     },
     environment: {
@@ -261,20 +492,27 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       logicalCpuCount: cpus().length,
       totalMemoryBytes: totalmem(),
       freeMemoryBytesAtEnd: freemem(),
+      platformMatrixVersion: scenario.platformMatrixVersion,
+      runtimeLimitProfileVersion: scenario.runtimeLimitProfileVersion,
+      provenanceStatus: scenario.provenanceStatus,
+      resultReusableAfterProfileOrMatrixFreeze: false,
     },
     configuration: {
-      requestedDurationSeconds: options.durationSeconds,
-      sessionCount: SESSION_COUNT,
-      hotSessionPayloadBytesPerSecond: HOT_SESSION_RATE,
-      backgroundSessionPayloadBytesPerSecond: BACKGROUND_SESSION_RATE,
-      slowSessionPayloadBytesPerSecond: SLOW_SESSION_SOURCE_RATE,
-      slowConsumerWireBytesPerSecond: at(consumerRates, SLOW_SESSION_INDEX),
-      framePayloadBytes: FRAME_PAYLOAD_BYTES,
-      attachmentQueueBytes: QUEUE_LIMIT_BYTES,
-      attachmentQueueFrames: QUEUE_LIMIT_FRAMES,
-      hiddenSessionIndex: HIDDEN_SESSION_INDEX,
-      hiddenStartsAtFraction: 1 / 3,
-      hiddenEndsAtFraction: 2 / 3,
+      requestedDurationSeconds: scenario.durationSeconds,
+      sessionCount: scenario.sessions.length,
+      framePayloadBytes: scenario.framePayloadBytes,
+      attachmentQueueBytes: scenario.queueLimits.bytes,
+      attachmentQueueFrames: scenario.queueLimits.frames,
+      expectedFrames,
+      expectedPayloadBytes,
+      sessions: scenario.sessions.map((session) => ({
+        sessionId: session.sessionId,
+        role: session.role,
+        sourcePayloadBytesPerSecond: session.sourcePayloadBytesPerSecond,
+        consumerWireBytesPerSecond: session.consumerWireBytesPerSecond,
+        visibility: session.visibility,
+        targetFrames: targetFrameCount(session, scenario),
+      })),
     },
     measurements: {
       actualDurationSeconds,
@@ -282,9 +520,10 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       decodedFrames,
       sourcePayloadBytes,
       wireBytes,
-      achievedPayloadBytesPerSecond: achievedRate,
-      targetPayloadBytesPerSecond: totalTargetRate,
-      crossSessionFrames,
+      achievedPayloadBytesPerSecond: sourcePayloadBytes / productionDurationSeconds,
+      targetPayloadBytesPerSecond,
+      productionCrossSessionFrames: router.crossSessionFrames,
+      productionUnknownSessionFrames: router.unknownSessionFrames,
       identityErrors,
       sequenceErrors,
       queueLimitViolations,
@@ -297,8 +536,16 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       eventLoopDelayP99Ms: eventLoop.percentile(99) / 1e6,
       eventLoopDelayMaxMs: eventLoop.max / 1e6,
     },
+    boundaryProbes,
+    isolationCanary,
+    recoveries,
     acceptance,
-    sessions: states.map(summarizeAttachmentFlow),
+    sessions: scenario.sessions.map((session) => ({
+      role: session.role,
+      targetFrames: runtimeFor(runtimes, session.sessionId).targetFrames,
+      generatedFrames: runtimeFor(runtimes, session.sessionId).generatedFrames,
+      ...summarizeAttachmentFlow(routeState(router, session.sessionId)),
+    })),
   };
 };
 

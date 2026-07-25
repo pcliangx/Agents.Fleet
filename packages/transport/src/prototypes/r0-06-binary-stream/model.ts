@@ -133,6 +133,31 @@ export interface ConsumeResult {
   readonly consumedWireBytes: number;
 }
 
+export interface RecoverySnapshot {
+  readonly sessionId: SessionId;
+  readonly generation: Generation;
+  readonly coversThroughSeq: Seq;
+  readonly payloadBytesThroughSeq: number;
+}
+
+export type RecoveryFailureCode =
+  | "IdentityMismatch"
+  | "InvalidSnapshotCursor"
+  | "MissingDelta"
+  | "RecoveryNotRequired";
+
+export type RecoveryResult =
+  | {
+      readonly ok: true;
+      readonly state: AttachmentFlowState;
+      readonly duplicateDeltaFrames: number;
+    }
+  | {
+      readonly ok: false;
+      readonly state: AttachmentFlowState;
+      readonly code: RecoveryFailureCode;
+    };
+
 export const consumeQueuedFrames = (
   state: AttachmentFlowState,
   wireByteBudget: number,
@@ -188,17 +213,61 @@ export const setAttachmentHidden = (
   };
 };
 
-export const resyncAtDurableHead = (state: AttachmentFlowState): AttachmentFlowState => {
-  if (state.hidden || !state.resyncRequired) return state;
+export const recoverFromSnapshotAndDelta = (
+  state: AttachmentFlowState,
+  snapshot: RecoverySnapshot,
+  delta: readonly QueuedFrame[],
+): RecoveryResult => {
+  if (state.hidden || !state.resyncRequired) {
+    return { ok: false, state, code: "RecoveryNotRequired" };
+  }
+  if (snapshot.sessionId !== state.sessionId || snapshot.generation !== state.generation) {
+    return { ok: false, state, code: "IdentityMismatch" };
+  }
+  if (
+    (snapshot.coversThroughSeq as number) < 0 ||
+    (snapshot.coversThroughSeq as number) > (state.durableSeq as number) ||
+    snapshot.payloadBytesThroughSeq < 0
+  ) {
+    return { ok: false, state, code: "InvalidSnapshotCursor" };
+  }
+
+  let cursor = snapshot.coversThroughSeq as number;
+  let appliedPayloadBytes = snapshot.payloadBytesThroughSeq;
+  let duplicateDeltaFrames = 0;
+  for (const frame of delta) {
+    if (
+      frame.header.sessionId !== state.sessionId ||
+      frame.header.generation !== state.generation
+    ) {
+      return { ok: false, state, code: "IdentityMismatch" };
+    }
+    const frameSeq = frame.header.seq as number;
+    if (frameSeq <= cursor) {
+      duplicateDeltaFrames += 1;
+      continue;
+    }
+    if (frameSeq !== cursor + 1) return { ok: false, state, code: "MissingDelta" };
+    cursor = frameSeq;
+    appliedPayloadBytes += frame.payloadBytes;
+  }
+  if (cursor !== (state.durableSeq as number)) {
+    return { ok: false, state, code: "MissingDelta" };
+  }
+
   return {
-    ...state,
-    appliedSeq: state.durableSeq,
-    appliedPayloadBytes: state.durablePayloadBytes,
-    queue: [],
-    queueBytes: 0,
-    resyncRequired: false,
-    resyncReason: null,
-    resyncCount: state.resyncCount + 1,
+    ok: true,
+    duplicateDeltaFrames,
+    state: {
+      ...state,
+      appliedSeq: seq(cursor),
+      appliedPayloadBytes,
+      queue: [],
+      queueBytes: 0,
+      resyncRequired: false,
+      resyncReason: null,
+      resyncCount: state.resyncCount + 1,
+    },
   };
 };
 
