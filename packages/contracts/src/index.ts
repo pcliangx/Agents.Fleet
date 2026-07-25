@@ -24,6 +24,7 @@ export * as Task from "./lifecycle/task.js";
 export * as Worktree from "./lifecycle/worktree.js";
 export type { RuntimeLimitProfile, TerminalLimits } from "./limits.js";
 export type { AgentAdapter, LaunchSpec, PrepareInput } from "./modules/agent-adapter.js";
+export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
 export type {
   MinimumHardware,
   RendererPath,

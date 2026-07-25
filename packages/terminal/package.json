@@ -1,0 +1,25 @@
+{
+  "name": "@agents-fleet/terminal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.11.1"
+  },
+  "dependencies": {
+    "@agents-fleet/contracts": "workspace:*",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0"
+  }
+}

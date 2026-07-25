@@ -4,6 +4,7 @@ import { defineWorkspace } from "vitest/config";
 // so no pre-build is required for vitest or tsc.
 export default defineWorkspace([
   { test: { name: "contracts", include: ["packages/contracts/src/**/*.test.ts"] } },
+  { test: { name: "terminal", include: ["packages/terminal/src/**/*.test.ts"] } },
   { test: { name: "transport", include: ["packages/transport/src/**/*.test.ts"] } },
   { test: { name: "testing", include: ["packages/testing/src/**/*.test.ts"] } },
   { test: { name: "daemon", include: ["packages/daemon/src/**/*.test.ts"] } },
