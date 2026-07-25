@@ -1,0 +1,234 @@
+{
+  "probeId": "r0-03-daemon-crash-behavior",
+  "capturedAt": "2026-07-25T13:40:28.910Z",
+  "context": {
+    "node": "v26.4.0",
+    "execPath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+    "platform": "darwin/arm64",
+    "uid": 501,
+    "swVers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5.2\nBuildVersion:\t\t25F84",
+    "launchctlManager": "Aqua"
+  },
+  "nodePtySetup": {
+    "installDir": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/r0-03-pty-env",
+    "installedVia": "npm-install-1.1.0",
+    "nodePtyVersion": "1.1.0",
+    "prebuiltUsed": true,
+    "helperPath": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/r0-03-pty-env/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+    "helperModeBefore": "0o644",
+    "helperModeAfter": "0o755",
+    "helperChmodApplied": true,
+    "posixSpawnpFailureBeforeChmod": {
+      "attempted": true,
+      "failed": true,
+      "error": "posix_spawnp failed."
+    },
+    "posixSpawnpFailsWithoutChmod": true,
+    "note": "node-pty prebuilt spawn-helper ships mode 0644; npm 11 allow-scripts blocks its lifecycle chmod; a pre-chmod pty.spawn is measured to fail with posix_spawnp (EACCES), so the Daemon install must explicitly chmod + verify signature. Out-of-scope discovery for #3, tracked in a separate issue (feeds RT-DIST-01 / SV1-SUPPLY-02)."
+  },
+  "modes": [
+    {
+      "mode": "exit-normal",
+      "crashTrigger": "exit-normal",
+      "workerExit": {
+        "code": 0,
+        "sig": null
+      },
+      "childPid": 61681,
+      "childPgid": 61681,
+      "childIdentityBefore": {
+        "pid": 61681,
+        "ppid": 61680,
+        "pgid": 61681,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:18 2026",
+        "tty": "??"
+      },
+      "daemonWorkerPid": 61680,
+      "daemonWorkerIdentityBefore": {
+        "pid": 61680,
+        "ppid": 61580,
+        "pgid": 61577,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:18 2026",
+        "tty": "??"
+      },
+      "childSurvived": true,
+      "orphanedToPid1": true,
+      "childPsAfter": {
+        "pid": 61681,
+        "ppid": 1,
+        "pgid": 61681,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:18 2026",
+        "tty": "ttys006"
+      },
+      "signalsDelivered": ["SIGHUP"],
+      "stdoutErrorDelivered": true,
+      "heartbeatContinued": true,
+      "beatsGainedAfterCrash": 9,
+      "recordedLstart": "Sat 25 Jul 21:40:18 2026",
+      "reidentifiedByFullIdentity": true,
+      "pidAloneWouldMatch": true,
+      "stopSequence": [
+        {
+          "label": "sigterm-by-pid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigterm-by-pgid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigkill-by-pid",
+          "sig": "SIGKILL",
+          "sent": true,
+          "aliveAfter": false
+        }
+      ],
+      "finalStopMethod": "sigkill-by-pid",
+      "workerStdout": "<daemon-worker ready childPid=61681>\n"
+    },
+    {
+      "mode": "sigterm",
+      "crashTrigger": "sigterm",
+      "workerExit": {
+        "code": null,
+        "sig": "SIGTERM"
+      },
+      "childPid": 61686,
+      "childPgid": 61686,
+      "childIdentityBefore": {
+        "pid": 61686,
+        "ppid": 61685,
+        "pgid": 61686,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:22 2026",
+        "tty": "ttys006"
+      },
+      "daemonWorkerPid": 61685,
+      "daemonWorkerIdentityBefore": {
+        "pid": 61685,
+        "ppid": 61580,
+        "pgid": 61577,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:22 2026",
+        "tty": "??"
+      },
+      "childSurvived": true,
+      "orphanedToPid1": true,
+      "childPsAfter": {
+        "pid": 61686,
+        "ppid": 1,
+        "pgid": 61686,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:22 2026",
+        "tty": "ttys006"
+      },
+      "signalsDelivered": ["SIGHUP"],
+      "stdoutErrorDelivered": true,
+      "heartbeatContinued": true,
+      "beatsGainedAfterCrash": 8,
+      "recordedLstart": "Sat 25 Jul 21:40:22 2026",
+      "reidentifiedByFullIdentity": true,
+      "pidAloneWouldMatch": true,
+      "stopSequence": [
+        {
+          "label": "sigterm-by-pid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigterm-by-pgid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigkill-by-pid",
+          "sig": "SIGKILL",
+          "sent": true,
+          "aliveAfter": false
+        }
+      ],
+      "finalStopMethod": "sigkill-by-pid",
+      "workerStdout": "<daemon-worker ready childPid=61686>\n"
+    },
+    {
+      "mode": "sigkill",
+      "crashTrigger": "sigkill",
+      "workerExit": {
+        "code": null,
+        "sig": "SIGKILL"
+      },
+      "childPid": 61740,
+      "childPgid": 61740,
+      "childIdentityBefore": {
+        "pid": 61740,
+        "ppid": 61739,
+        "pgid": 61740,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:25 2026",
+        "tty": "ttys006"
+      },
+      "daemonWorkerPid": 61739,
+      "daemonWorkerIdentityBefore": {
+        "pid": 61739,
+        "ppid": 61580,
+        "pgid": 61577,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:25 2026",
+        "tty": "??"
+      },
+      "childSurvived": true,
+      "orphanedToPid1": true,
+      "childPsAfter": {
+        "pid": 61740,
+        "ppid": 1,
+        "pgid": 61740,
+        "sess": 0,
+        "lstart": "Sat 25 Jul 21:40:25 2026",
+        "tty": "ttys006"
+      },
+      "signalsDelivered": ["SIGHUP"],
+      "stdoutErrorDelivered": true,
+      "heartbeatContinued": true,
+      "beatsGainedAfterCrash": 9,
+      "recordedLstart": "Sat 25 Jul 21:40:25 2026",
+      "reidentifiedByFullIdentity": true,
+      "pidAloneWouldMatch": true,
+      "stopSequence": [
+        {
+          "label": "sigterm-by-pid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigterm-by-pgid",
+          "sig": "SIGTERM",
+          "sent": true,
+          "aliveAfter": true
+        },
+        {
+          "label": "sigkill-by-pid",
+          "sig": "SIGKILL",
+          "sent": true,
+          "aliveAfter": false
+        }
+      ],
+      "finalStopMethod": "sigkill-by-pid",
+      "workerStdout": "<daemon-worker ready childPid=61740>\n"
+    }
+  ],
+  "pidReuseObservation": {
+    "attempted": true,
+    "churn": 400,
+    "reused": false
+  }
+}

@@ -8,6 +8,11 @@ export {
   CLAUDE_CAPABILITY_PROFILE,
   CODEX_CAPABILITY_PROFILE,
 } from "./fixtures/agent-capabilities.js";
+export type {
+  CrashModeResult,
+  DaemonCrashBehaviorProfile,
+} from "./fixtures/daemon-crash-behavior.js";
+export { DAEMON_CRASH_BEHAVIOR_PROFILE } from "./fixtures/daemon-crash-behavior.js";
 export type { LaunchAgentEnvironmentProfile } from "./fixtures/launchagent-environment.js";
 export { LAUNCHAGENT_ENVIRONMENT_PROFILE } from "./fixtures/launchagent-environment.js";
 export type { AppDataLayout } from "./temp-fs.js";
