@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agents.Fleet — WebGL2 dual-path harness</title>
+  </head>
+  <body>
+    <script type="module">
+      import { run } from "../src/__browser__/webgl-dual-path.ts";
+
+      run()
+        .then((r) => {
+          window.__afResults = r;
+        })
+        .catch((e) => {
+          window.__afError = (e && e.stack) || String(e);
+        });
+    </script>
+  </body>
+</html>
