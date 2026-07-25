@@ -14,6 +14,8 @@
     "test:e2e:handshake": "vitest run packages/daemon/src/__tests__/handshake-e2e.test.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
+    "prototype:r0-06": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/tui.ts",
+    "prototype:r0-06:benchmark": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/benchmark.ts --duration 60",
     "dev:daemon": "pnpm --filter @agents-fleet/daemon dev",
     "dev:desktop": "pnpm --filter @agents-fleet/desktop dev"
   },
