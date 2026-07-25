@@ -36,10 +36,8 @@
     "attachmentQueueBytes": 1048576,
     "attachmentQueueFrames": 32,
     "hiddenSessionIndex": 2,
-    "hiddenInterval": [
-      "one-third",
-      "two-thirds"
-    ]
+    "hiddenStartsAtFraction": 0.3333333333333333,
+    "hiddenEndsAtFraction": 0.6666666666666666
   },
   "measurements": {
     "actualDurationSeconds": 60.004703500000005,

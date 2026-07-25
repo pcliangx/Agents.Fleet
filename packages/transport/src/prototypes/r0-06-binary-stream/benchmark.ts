@@ -273,7 +273,8 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       attachmentQueueBytes: QUEUE_LIMIT_BYTES,
       attachmentQueueFrames: QUEUE_LIMIT_FRAMES,
       hiddenSessionIndex: HIDDEN_SESSION_INDEX,
-      hiddenInterval: ["one-third", "two-thirds"],
+      hiddenStartsAtFraction: 1 / 3,
+      hiddenEndsAtFraction: 2 / 3,
     },
     measurements: {
       actualDurationSeconds,
