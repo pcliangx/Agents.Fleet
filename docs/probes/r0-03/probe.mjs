@@ -18,9 +18,11 @@
 
 import { spawn, execFileSync } from "node:child_process";
 import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parsePs } from "./ps-helpers.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const agentChild = join(here, "agent-child.mjs");
@@ -37,7 +39,6 @@ const envDirFlag = envDirIdx >= 0 ? args[envDirIdx + 1] : undefined;
 const rawOutIdx = args.indexOf("--raw-out");
 const rawOut = rawOutIdx >= 0 ? args[rawOutIdx + 1] : undefined;
 
-const __dirname = here;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --- ensure node-pty installed + executable helper (the npm 11 allow-scripts gap) ---
@@ -45,22 +46,6 @@ const installDir = envDirFlag ?? join(tmpdir(), "r0-03-pty-env");
 const setup = ensureNodePty(installDir);
 
 // --- helpers ---
-function parsePs(pid) {
-  try {
-    const raw = execFileSync("/bin/ps", ["-o", "pid=,ppid=,pgid=,sess=,lstart=,tty=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 3000,
-    }).trim();
-    if (!raw) return null;
-    const tok = raw.split(/\s+/).filter(Boolean);
-    const [p, pp, pg, sess, ...rest] = tok;
-    const tty = rest[rest.length - 1];
-    const lstart = rest.slice(0, -1).join(" ");
-    return { pid: Number(p), ppid: Number(pp), pgid: Number(pg), sess: Number(sess), lstart, tty };
-  } catch {
-    return null;
-  }
-}
 const isAlive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -312,15 +297,17 @@ function ensureNodePty(dir) {
     installedVia = "preexisting";
   }
   const version = JSON.parse(readFileSync(ptyPj, "utf8")).version;
-  // node-pty ships a prebuilt spawn-helper WITHOUT the exec bit (mode 0644);
-  // npm 11 allow-scripts blocks the lifecycle that would normally fix it, so
-  // we chmod explicitly and record both modes.
   const helper = join(dir, "node_modules", "node-pty", "prebuilds", `${process.platform}-${process.arch}`, "spawn-helper");
   let helperModeBefore = null;
   let helperModeAfter = null;
   let helperChmodApplied = false;
+  // MEASURED (not inferred): attempt a pty.spawn BEFORE chmod. A non-executable
+  // spawn-helper must fail with posix_spawnp (EACCES); capturing the actual
+  // failure here keeps the evidence self-contained rather than inferring it.
+  let posixSpawnpFailureBeforeChmod = { attempted: false };
   if (existsSync(helper)) {
     helperModeBefore = modeOctal(helper);
+    posixSpawnpFailureBeforeChmod = probeSpawnBeforeChmod(dir);
     chmodSync(helper, 0o755);
     helperModeAfter = modeOctal(helper);
     helperChmodApplied = helperModeBefore !== helperModeAfter;
@@ -334,8 +321,25 @@ function ensureNodePty(dir) {
     helperModeBefore,
     helperModeAfter,
     helperChmodApplied,
-    note: "node-pty prebuilt spawn-helper ships mode 0644; npm 11 allow-scripts blocks its lifecycle chmod; explicit chmod is required or posix_spawnp fails with EACCES (finding: feeds RT-DIST-01 / SV1-SUPPLY-02).",
+    posixSpawnpFailureBeforeChmod,
+    posixSpawnpFailsWithoutChmod: posixSpawnpFailureBeforeChmod.failed === true,
+    note: "node-pty prebuilt spawn-helper ships mode 0644; npm 11 allow-scripts blocks its lifecycle chmod; a pre-chmod pty.spawn is measured to fail with posix_spawnp (EACCES), so the Daemon install must explicitly chmod + verify signature. Out-of-scope discovery for #3, tracked in a separate issue (feeds RT-DIST-01 / SV1-SUPPLY-02).",
   };
+}
+function probeSpawnBeforeChmod(dir) {
+  try {
+    const require = createRequire(resolve(dir, "package.json"));
+    const pty = require("node-pty");
+    const p = pty.spawn("/bin/echo", ["pre-chmod-probe"], { encoding: null });
+    // Helper was somehow already executable — clean up the probe child.
+    p.onExit(() => {});
+    try {
+      p.kill();
+    } catch {}
+    return { attempted: true, failed: false };
+  } catch (e) {
+    return { attempted: true, failed: true, error: String(e?.message ?? e).slice(0, 200) };
+  }
 }
 function modeOctal(p) {
   return `0o${(statSync(p).mode & 0o777).toString(8).padStart(3, "0")}`;
@@ -350,7 +354,8 @@ function safeExec(cmd, args = []) {
 function sanitize(obj) {
   // Defense-in-depth: no env/secrets are placed in evidence; strip anything that
   // matches the denylist just in case a future field carries a value.
-  const DENYLIST = /TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE|CREDENTIAL|COOKIE/g;
+  // No /g flag — a stateful lastIndex would make .test() non-deterministic across keys.
+  const DENYLIST = /TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE|CREDENTIAL|COOKIE/i;
   const seen = new WeakSet();
   const walk = (v) => {
     if (v && typeof v === "object") {

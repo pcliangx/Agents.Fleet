@@ -18,9 +18,9 @@
 // Args: <installDir> <agentChildScript> <identityFile> <heartbeatFile> <signalLogFile>
 
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parsePs } from "./ps-helpers.mjs";
 
 const [, , installDir, agentChildScript, identityFile, heartbeatFile, signalLogFile] = process.argv;
 if (!installDir || !agentChildScript || !identityFile || !heartbeatFile || !signalLogFile) {
@@ -90,22 +90,3 @@ ptyProc.onExit(({ exitCode, signal }) => {
 // process, and the kernel closes the PTY master fd. That is the realistic
 // "Daemon crash / launchctl kill" path under test.
 
-function parsePs(pid) {
-  // macOS ps: trailing `=` strips the header. lstart is the only multi-token
-  // field and sits between sess and tty.
-  let raw;
-  try {
-    raw = execFileSync("/bin/ps", ["-o", "pid=,ppid=,pgid=,sess=,lstart=,tty=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 3000,
-    }).trim();
-  } catch (e) {
-    return { pid, error: String(e?.message ?? e) };
-  }
-  if (!raw) return { pid, error: "ps-empty" };
-  const tok = raw.split(/\s+/).filter(Boolean);
-  const [p, pp, pg, sess, ...rest] = tok;
-  const tty = rest[rest.length - 1];
-  const lstart = rest.slice(0, -1).join(" ");
-  return { pid: Number(p), ppid: Number(pp), pgid: Number(pg), sess: Number(sess), lstart, tty };
-}

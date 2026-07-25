@@ -8,7 +8,7 @@ describe("R0-03 daemon crash behavior fixture", () => {
     expect(DAEMON_CRASH_BEHAVIOR_PROFILE.crashModes.map((m) => m.mode)).toEqual([...MODES]);
   });
 
-  it("in EVERY mode the child survives and is orphaned to pid 1 (RT-REC-07/08)", () => {
+  it("in EVERY mode the child survives and is orphaned to pid 1 (RT-REC-07 Daemon crash)", () => {
     for (const m of DAEMON_CRASH_BEHAVIOR_PROFILE.crashModes) {
       expect(m.childSurvived).toBe(true);
       expect(m.orphanedToPid1).toBe(true);
@@ -32,6 +32,14 @@ describe("R0-03 daemon crash behavior fixture", () => {
     expect(s.realAgentSurvivalDependsOnAgentSignalHandling).toBe(true);
   });
 
+  it("records process-group semantics (pgid==pid, negative-pgid signal reaches child)", () => {
+    const g = DAEMON_CRASH_BEHAVIOR_PROFILE.processGroupSemantics;
+    expect(g.childIsOwnProcessGroupLeader).toBe(true);
+    expect(g.pgidEqualsChildPid).toBe(true);
+    expect(g.negativePgidSignalReachesChild).toBe(true);
+    expect(g.sidSemanticsNotIndependentlyVerified).toBe(true);
+  });
+
   it("requires pid+lstart re-identification; pid-alone stays unsafe (RT-REC-12)", () => {
     const r = DAEMON_CRASH_BEHAVIOR_PROFILE.reidentification;
     expect(r.fullIdentityPidPlusLstartReliable).toBe(true);
@@ -52,17 +60,21 @@ describe("R0-03 daemon crash behavior fixture", () => {
       expect(m.stopRequiredSigkill).toBe(true);
   });
 
-  it("captures the node-pty spawn-helper supply-chain finding (RT-DIST-01 / SV1-SUPPLY-02)", () => {
+  it("records the node-pty spawn-helper finding as MEASURED but out-of-scope for #3 (issue #22)", () => {
     const h = DAEMON_CRASH_BEHAVIOR_PROFILE.nodePtySpawnHelper;
+    expect(h.outOfScopeForR003).toBe(true);
+    expect(h.trackedInIssue).toBe(22);
     expect(h.shipsNonExecutable).toBe(true);
     expect(h.modeBeforeChmod).toBe("0o644");
     expect(h.modeAfterChmod).toBe("0o755");
     expect(h.npmAllowScriptsBlocksLifecycle).toBe(true);
+    // MEASURED: a pre-chmod pty.spawn reproduced posix_spawnp failure (not inferred).
     expect(h.posixSpawnpFailsWithoutChmod).toBe(true);
+    expect(h.posixSpawnpErrorObserved).toBe("posix_spawnp failed.");
     expect(h.daemonMustVerifyHelperExecBitAndSignature).toBe(true);
   });
 
-  it("derives Reconciliation / launch / distribution implications referenced by RT-REC / RT-LAUNCH / RT-STATE", () => {
+  it("derives Reconciliation / launch / distribution implications", () => {
     const i = DAEMON_CRASH_BEHAVIOR_PROFILE.implications;
     expect(i).toContain("daemon-crash-leaves-orphan-process");
     expect(i).toContain("orphan-survives-sigkill-of-daemon");
@@ -75,5 +87,19 @@ describe("R0-03 daemon crash behavior fixture", () => {
     expect(i).toContain("node-pty-spawn-helper-ships-non-executable");
     // Must NOT claim the child dies with the daemon — that would contradict every measured mode.
     expect(i).not.toContain("child-dies-with-daemon");
+  });
+
+  it("separates inferred implications and keeps them a subset of implications", () => {
+    const all = DAEMON_CRASH_BEHAVIOR_PROFILE.implications as readonly string[];
+    const inferred = DAEMON_CRASH_BEHAVIOR_PROFILE.inferredImplications;
+    // every inferred entry must also appear in the main implications list
+    for (const key of inferred) expect(all).toContain(key);
+    // the explicitly-inferred subset is present and non-empty
+    expect(inferred).toContain("must-not-auto-spawn-replacement-after-crash");
+    expect(inferred).toContain("pid-alone-not-safe-pid-reuse-remains-risk");
+    expect(inferred).toContain("inert-bootstrap-must-self-timeout-not-rely-on-daemon");
+    // the directly-measured orphan facts are NOT in the inferred subset
+    expect(inferred).not.toContain("orphan-survives-sigkill-of-daemon");
+    expect(inferred).not.toContain("pty-master-close-delivers-sighup");
   });
 });

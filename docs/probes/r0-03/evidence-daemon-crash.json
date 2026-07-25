@@ -1,6 +1,6 @@
 {
   "probeId": "r0-03-daemon-crash-behavior",
-  "capturedAt": "2026-07-25T13:17:49.824Z",
+  "capturedAt": "2026-07-25T13:40:28.910Z",
   "context": {
     "node": "v26.4.0",
     "execPath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
@@ -18,7 +18,13 @@
     "helperModeBefore": "0o644",
     "helperModeAfter": "0o755",
     "helperChmodApplied": true,
-    "note": "node-pty prebuilt spawn-helper ships mode 0644; npm 11 allow-scripts blocks its lifecycle chmod; explicit chmod is required or posix_spawnp fails with EACCES (finding: feeds RT-DIST-01 / SV1-SUPPLY-02)."
+    "posixSpawnpFailureBeforeChmod": {
+      "attempted": true,
+      "failed": true,
+      "error": "posix_spawnp failed."
+    },
+    "posixSpawnpFailsWithoutChmod": true,
+    "note": "node-pty prebuilt spawn-helper ships mode 0644; npm 11 allow-scripts blocks its lifecycle chmod; a pre-chmod pty.spawn is measured to fail with posix_spawnp (EACCES), so the Daemon install must explicitly chmod + verify signature. Out-of-scope discovery for #3, tracked in a separate issue (feeds RT-DIST-01 / SV1-SUPPLY-02)."
   },
   "modes": [
     {
@@ -28,40 +34,40 @@
         "code": 0,
         "sig": null
       },
-      "childPid": 45912,
-      "childPgid": 45912,
+      "childPid": 61681,
+      "childPgid": 61681,
       "childIdentityBefore": {
-        "pid": 45912,
-        "ppid": 45911,
-        "pgid": 45912,
+        "pid": 61681,
+        "ppid": 61680,
+        "pgid": 61681,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:39 2026",
+        "lstart": "Sat 25 Jul 21:40:18 2026",
         "tty": "??"
       },
-      "daemonWorkerPid": 45911,
+      "daemonWorkerPid": 61680,
       "daemonWorkerIdentityBefore": {
-        "pid": 45911,
-        "ppid": 45798,
-        "pgid": 45795,
+        "pid": 61680,
+        "ppid": 61580,
+        "pgid": 61577,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:39 2026",
+        "lstart": "Sat 25 Jul 21:40:18 2026",
         "tty": "??"
       },
       "childSurvived": true,
       "orphanedToPid1": true,
       "childPsAfter": {
-        "pid": 45912,
+        "pid": 61681,
         "ppid": 1,
-        "pgid": 45912,
+        "pgid": 61681,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:39 2026",
-        "tty": "ttys004"
+        "lstart": "Sat 25 Jul 21:40:18 2026",
+        "tty": "ttys006"
       },
       "signalsDelivered": ["SIGHUP"],
       "stdoutErrorDelivered": true,
       "heartbeatContinued": true,
-      "beatsGainedAfterCrash": 8,
-      "recordedLstart": "Sat 25 Jul 21:17:39 2026",
+      "beatsGainedAfterCrash": 9,
+      "recordedLstart": "Sat 25 Jul 21:40:18 2026",
       "reidentifiedByFullIdentity": true,
       "pidAloneWouldMatch": true,
       "stopSequence": [
@@ -85,7 +91,7 @@
         }
       ],
       "finalStopMethod": "sigkill-by-pid",
-      "workerStdout": "<daemon-worker ready childPid=45912>\n"
+      "workerStdout": "<daemon-worker ready childPid=61681>\n"
     },
     {
       "mode": "sigterm",
@@ -94,40 +100,40 @@
         "code": null,
         "sig": "SIGTERM"
       },
-      "childPid": 45945,
-      "childPgid": 45945,
+      "childPid": 61686,
+      "childPgid": 61686,
       "childIdentityBefore": {
-        "pid": 45945,
-        "ppid": 45944,
-        "pgid": 45945,
+        "pid": 61686,
+        "ppid": 61685,
+        "pgid": 61686,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:43 2026",
-        "tty": "ttys004"
+        "lstart": "Sat 25 Jul 21:40:22 2026",
+        "tty": "ttys006"
       },
-      "daemonWorkerPid": 45944,
+      "daemonWorkerPid": 61685,
       "daemonWorkerIdentityBefore": {
-        "pid": 45944,
-        "ppid": 45798,
-        "pgid": 45795,
+        "pid": 61685,
+        "ppid": 61580,
+        "pgid": 61577,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:42 2026",
+        "lstart": "Sat 25 Jul 21:40:22 2026",
         "tty": "??"
       },
       "childSurvived": true,
       "orphanedToPid1": true,
       "childPsAfter": {
-        "pid": 45945,
+        "pid": 61686,
         "ppid": 1,
-        "pgid": 45945,
+        "pgid": 61686,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:43 2026",
-        "tty": "ttys004"
+        "lstart": "Sat 25 Jul 21:40:22 2026",
+        "tty": "ttys006"
       },
       "signalsDelivered": ["SIGHUP"],
       "stdoutErrorDelivered": true,
       "heartbeatContinued": true,
-      "beatsGainedAfterCrash": 9,
-      "recordedLstart": "Sat 25 Jul 21:17:43 2026",
+      "beatsGainedAfterCrash": 8,
+      "recordedLstart": "Sat 25 Jul 21:40:22 2026",
       "reidentifiedByFullIdentity": true,
       "pidAloneWouldMatch": true,
       "stopSequence": [
@@ -151,7 +157,7 @@
         }
       ],
       "finalStopMethod": "sigkill-by-pid",
-      "workerStdout": "<daemon-worker ready childPid=45945>\n"
+      "workerStdout": "<daemon-worker ready childPid=61686>\n"
     },
     {
       "mode": "sigkill",
@@ -160,40 +166,40 @@
         "code": null,
         "sig": "SIGKILL"
       },
-      "childPid": 45958,
-      "childPgid": 45958,
+      "childPid": 61740,
+      "childPgid": 61740,
       "childIdentityBefore": {
-        "pid": 45958,
-        "ppid": 45957,
-        "pgid": 45958,
+        "pid": 61740,
+        "ppid": 61739,
+        "pgid": 61740,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:46 2026",
-        "tty": "ttys004"
+        "lstart": "Sat 25 Jul 21:40:25 2026",
+        "tty": "ttys006"
       },
-      "daemonWorkerPid": 45957,
+      "daemonWorkerPid": 61739,
       "daemonWorkerIdentityBefore": {
-        "pid": 45957,
-        "ppid": 45798,
-        "pgid": 45795,
+        "pid": 61739,
+        "ppid": 61580,
+        "pgid": 61577,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:46 2026",
+        "lstart": "Sat 25 Jul 21:40:25 2026",
         "tty": "??"
       },
       "childSurvived": true,
       "orphanedToPid1": true,
       "childPsAfter": {
-        "pid": 45958,
+        "pid": 61740,
         "ppid": 1,
-        "pgid": 45958,
+        "pgid": 61740,
         "sess": 0,
-        "lstart": "Sat 25 Jul 21:17:46 2026",
-        "tty": "ttys004"
+        "lstart": "Sat 25 Jul 21:40:25 2026",
+        "tty": "ttys006"
       },
       "signalsDelivered": ["SIGHUP"],
       "stdoutErrorDelivered": true,
       "heartbeatContinued": true,
-      "beatsGainedAfterCrash": 8,
-      "recordedLstart": "Sat 25 Jul 21:17:46 2026",
+      "beatsGainedAfterCrash": 9,
+      "recordedLstart": "Sat 25 Jul 21:40:25 2026",
       "reidentifiedByFullIdentity": true,
       "pidAloneWouldMatch": true,
       "stopSequence": [
@@ -217,7 +223,7 @@
         }
       ],
       "finalStopMethod": "sigkill-by-pid",
-      "workerStdout": "<daemon-worker ready childPid=45958>\n"
+      "workerStdout": "<daemon-worker ready childPid=61740>\n"
     }
   ],
   "pidReuseObservation": {

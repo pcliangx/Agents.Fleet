@@ -6,15 +6,15 @@
  *
  * 用途: 未来 ProcessSupervisor(#9/#10)与 Reconciliation(RT-REC)以这些已测得
  * 事实为输入。字段注释区分「实测(measured)」与「推断(inferred)」; 未验证的
- * 路径显式标注, 不得当作事实消费。
+ * 路径显式标注, 不得当作事实消费。推断项另列于 inferredImplications。
  *
  * 核心实测结论: 当持有 node-pty master 的 Daemon 以任意方式(正常退出 / SIGTERM /
- * SIGKILL)死亡时, Agent 子进程**不会**随 Daemon 一起终止, 而是被 reparent 到
- * launchd(pid 1)成为仍运行但不可 attach 的孤儿, 同时收到一次 SIGHUP(PTY master
- * 关闭)。因此 Daemon 崩溃后**必须**做孤儿探测, 且**不得**自动 spawn replacement。
+ * SIGKILL)死亡时, 由本探测使用的 signal-trapping 子进程不会随 Daemon 终止, 而是被
+ * reparent 到 launchd(pid 1)成为仍运行但不可 attach 的孤儿, 同时收到一次 SIGHUP
+ * (PTY master 关闭)。真实 Agent 是否存活取决于其自身 signal 处理(见 signalDelivery)。
  */
 
-/** 单个崩溃模式下子进程命运的实测结果。 */
+/** 单个崩溃模式下子进程命运的实测结果(本探测的 trapping 子进程)。 */
 export interface CrashModeResult {
   readonly mode: "exit-normal" | "sigterm" | "sigkill";
   /** 实测: Daemon 死后子进程是否仍存活(本探测使用 signal-trapping 子进程)。 */
@@ -36,28 +36,35 @@ export const DAEMON_CRASH_BEHAVIOR_PROFILE = {
   runtime: { node: "v26.4.0", nodePty: "1.1.0", nodePtyPrebuilt: true },
 
   /**
-   * node-pty spawn-helper 供应链发现(实测)。
-   * node-pty 1.1.0 的 prebuilt spawn-helper 以 mode 0644 发布(无可执行位); npm 11
-   * 的 allow-scripts 默认拦截其 lifecycle chmod, 导致 `posix_spawnp` 以 EACCES 失败。
+   * node-pty spawn-helper 供应链发现。**#3 范围外的附带发现**(属分发/供应链), 完整
+   * 跟踪见 issue #22; 此处仅保留实测事实, 不计入 R0-03 验收。
+   *
+   * 实测: prebuilt spawn-helper 以 mode 0644 发布(无可执行位); npm 11 allow-scripts 拦截
+   * 其 lifecycle chmod; **chmod 前的 pty.spawn 复现了 `posix_spawnp failed.`(EACCES)**。
    * 发布清单(RT-DIST-01 / SV1-SUPPLY-02)必须显式校验并修复其执行位(及签名/公证)。
    */
   nodePtySpawnHelper: {
+    outOfScopeForR003: true,
+    trackedInIssue: 22,
     shipsNonExecutable: true,
     modeBeforeChmod: "0o644",
     modeAfterChmod: "0o755",
     npmAllowScriptsBlocksLifecycle: true,
+    /** 实测: chmod 前的 pty.spawn 抛 `posix_spawnp failed.`(EACCES)。 */
     posixSpawnpFailsWithoutChmod: true,
+    posixSpawnpErrorObserved: "posix_spawnp failed.",
     /** 推断: Daemon 安装/升级流程必须显式 chmod + 校验 spawn-helper, 不得依赖 npm 生命周期。 */
     daemonMustVerifyHelperExecBitAndSignature: true,
   },
 
   /**
-   * node-pty 子进程的 session/group 语义(实测)。
+   * node-pty 子进程的 process-group 语义(实测)。注意: 这里说的是 POSIX process
+   * group(pgid), 不是 CONTEXT.md 的 Terminal Session(Session)概念。
    * 子进程是其自身 process group 的 leader(pgid == pid); 负 pgid 信号可达。
    * 注: macOS `ps -o sess=` 对该进程返回 0(平台 quirk), 但 pgid==pid + 负 pgid 信号
    * 实测成功, 已足够支撑"按 process group 停止孤儿"的设计。
    */
-  sessionSemantics: {
+  processGroupSemantics: {
     childIsOwnProcessGroupLeader: true,
     pgidEqualsChildPid: true,
     negativePgidSignalReachesChild: true,
@@ -142,16 +149,17 @@ export const DAEMON_CRASH_BEHAVIOR_PROFILE = {
   },
 
   /**
-   * 对 Reconciliation / 启动协议 / 分发的强制推论。
-   * 除标注「推断」外均由本次实测直接支持。
+   * 全部推论。除标注「推断」外均由本次实测直接支持。
+   * 注意: 本探测只覆盖 Daemon 进程崩溃; RT-REC-08(Host 重启)、RT-T-27(各 Disposition 状态下
+   * 重启 Daemon 的 slot/replacement)未实测, 见报告「边界与后续」。
    */
   implications: [
-    // RT-REC-07 / RT-REC-08 / RT-T-08
+    // RT-REC-07 / RT-T-08
     "daemon-crash-leaves-orphan-process",
     "orphan-survives-sigkill-of-daemon",
     "orphan-reparented-to-launchd-pid1",
     "must-not-auto-spawn-replacement-after-crash",
-    // RT-REC-12 / RT-T-27
+    // RT-REC-12
     "reconciliation-must-reidentify-by-pid-plus-lstart",
     "pid-alone-not-safe-pid-reuse-remains-risk",
     "orphan-stoppable-from-new-process-via-negative-pgid",
@@ -159,12 +167,26 @@ export const DAEMON_CRASH_BEHAVIOR_PROFILE = {
     "pty-master-close-delivers-sighup",
     "sighup-not-reliable-cleanup-signal",
     "child-can-detect-master-gone-via-stdout-error",
-    /** 推断: bootstrap 可借 master/fd 消失作为自超时触发, 但不得假定它会自动随 Daemon 退出。 */
     "inert-bootstrap-must-self-timeout-not-rely-on-daemon",
     // RT-STATE-22/23
     "stopping-orphan-may-require-sigkill-escalation",
-    // RT-DIST-01 / SV1-SUPPLY-02
+    // RT-DIST-01 / SV1-SUPPLY-02 (out-of-scope discovery, issue #22)
     "node-pty-spawn-helper-ships-non-executable",
+    "daemon-install-must-verify-helper-exec-bit-and-signature",
+  ],
+
+  /**
+   * 推论中属于「推断」(design invariant / 无法证伪 / 未直接观测)而非本次实测直接
+   * 支持的子集。与 implications 的交集; 不得从 measuredImplications 中遗漏。
+   */
+  inferredImplications: [
+    // 规范不变量, 由「孤儿存活」实测所推动, 但本探测未跑调度器观测替换行为。
+    "must-not-auto-spawn-replacement-after-crash",
+    // 无法证伪: 窗口内未复现 PID 复用, 不代表不会发生。
+    "pid-alone-not-safe-pid-reuse-remains-risk",
+    // 未跑 bootstrap; 由 childDetectsMasterGoneViaStdoutError 外推。
+    "inert-bootstrap-must-self-timeout-not-rely-on-daemon",
+    // 失败本身实测; "须校验签名/执行位" 是对 Daemon 安装的前瞻要求。
     "daemon-install-must-verify-helper-exec-bit-and-signature",
   ],
 } as const;
