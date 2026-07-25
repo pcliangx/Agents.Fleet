@@ -7,6 +7,13 @@
     "node": ">=20",
     "pnpm": ">=10"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "22.17.1",
+      "onFail": "download"
+    }
+  },
   "scripts": {
     "typecheck": "tsc -b",
     "test": "vitest run",

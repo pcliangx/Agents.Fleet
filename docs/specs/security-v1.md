@@ -163,7 +163,7 @@ Worktree Manager 对 Fleet 自己的文件操作保证。每个操作必须声�
 ## 12. Distribution Supply Chain
 
 - **SV1-SUPPLY-01**：发布清单精确记录 Electron、内置 Node runtime、`node-pty` native binary、Daemon、bootstrap、Notification Gateway、terminal package set、native FileBroker、native ConfirmationBroker、migration、`SupportedPlatformMatrix` 与 `RuntimeLimitProfile` 的版本、hash、签名 identity 和 SBOM 关系。
-- **SV1-SUPPLY-02**：构建在固定 toolchain 与 lockfile 下生成 native artifact，验证 package integrity、native architecture、最低系统版本和禁止的 install-time network / script；architecture、deployment target 与最低系统版本必须匹配 RT-DIST-08 的 `SupportedPlatformMatrix`。任何下游 patch 都有 owner、来源、hash、回归 fixture 与删除条件。
+- **SV1-SUPPLY-02**：构建在固定 toolchain 与 lockfile 下生成 native artifact，验证 package integrity、native architecture、最低系统版本和禁止的 install-time network / script；architecture、deployment target 与最低系统版本必须匹配 RT-DIST-08 的 `SupportedPlatformMatrix`。开发 / 测试依赖安装若为真实安全 fixture 执行上游 lifecycle script，只能使用绑定精确 package version、默认拒绝的 reviewed allowlist，并锁定执行该 script 的 runtime 与下载 artifact checksum；由此取得的 artifact 不得充当发布输入。发布构建必须从独立验证的离线 artifact 生成，不能执行依赖 lifecycle script 或在缺失时回退网络。任何下游 patch 都有 owner、来源、hash、回归 fixture 与删除条件。
 - **SV1-SUPPLY-03**：应用、Daemon、helper 与 LaunchAgent 目标都必须通过 macOS code-signing、notarization、hardened runtime 和 designated-requirement 验证；签名后 bundle、fuse 或 native artifact 改变即拒绝启动。
 - **SV1-SUPPLY-04**：升级与回滚保持单一可写 Daemon，先 drain 或显式处理 Alive Session 与未决 Process Disposition，验证 backup 与 schema compatibility；不兼容或验证失败时保留旧数据进入只读恢复，不运行混合版本。
 

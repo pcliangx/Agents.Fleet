@@ -1,12 +1,14 @@
 {
   "probeId": "r0-10-node-pty-isolation",
-  "capturedAt": "2026-07-25T15:12:31Z",
+  "capturedAt": "2026-07-25T23:50:18Z",
   "baseCommit": "ef19471",
+  "freshInstallRemediationBase": "86ee68f",
   "environment": {
     "platform": "darwin",
     "architecture": "arm64",
     "macOS": "26.5.2 (25F84)",
-    "node": "v26.4.0",
+    "hostNode": "v26.4.0",
+    "projectNode": "v22.17.1",
     "pnpm": "10.33.2",
     "electron": "34.5.8",
     "electronArtifactSha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248",
@@ -14,6 +16,7 @@
   },
   "verdict": {
     "isolationBoundary": "PASS",
+    "freshInstallRendererFixture": "PASS",
     "nativeSpawnReadiness": "BLOCKED_BY_ISSUE_22"
   },
   "packageBoundary": {
@@ -33,6 +36,8 @@
     "desktopResolvesDaemonPackage": false,
     "desktopApiMethods": ["getConnectionInfo"],
     "rendererCompromise": {
+      "freshInstall": true,
+      "realElectron": true,
       "sandbox": true,
       "contextIsolation": true,
       "nodeIntegration": false,
@@ -69,10 +74,35 @@
   },
   "fullVerification": {
     "typecheck": "PASS",
-    "testFilesPassed": 22,
-    "testsPassed": 110,
+    "testFilesPassed": 25,
+    "testsPassed": 133,
+    "freshInstallRendererFixture": "PASS",
+    "freshInstallFullSuite": "PASS",
     "lint": "PASS_WITH_PREEXISTING_NOTICES",
     "diffCheck": "PASS"
+  },
+  "dependencyBuildPolicy": {
+    "hostRuntime": "v26.4.0",
+    "managedRuntime": "v22.17.1",
+    "managedRuntimeLockedWithPlatformChecksums": true,
+    "allowed": ["electron@34.5.8"],
+    "denied": ["esbuild@0.25.12", "esbuild@0.28.1", "node-pty@1.1.0"],
+    "unreviewedVersionsFailClosed": true,
+    "electronArtifactSize": 99875523,
+    "electronArtifactSha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248",
+    "hostNodeElectronExtraction": {
+      "result": "INCOMPLETE_WITH_ZERO_EXIT",
+      "lastExtractedEntry": "LICENSES.chromium.html",
+      "pathFileCreated": false
+    },
+    "managedNodeElectronExtraction": {
+      "result": "PASS",
+      "pathFileCreated": true,
+      "rendererFixture": "PASS"
+    },
+    "approvedPurpose": "DEVELOPMENT_TEST_FIXTURE_ONLY",
+    "usedAsReleaseArtifactInputInThisProbe": false,
+    "futureReleaseIsolation": "NOT_IMPLEMENTED"
   },
   "nativeArtifactObservation": {
     "moduleLoads": true,
@@ -103,6 +133,7 @@
       "Input Intent crash durability",
       "Electron FileBroker and full control boundary",
       "release artifact helper repair or signing",
+      "mechanically isolated offline release artifact provisioning",
       "frozen SupportedPlatformMatrix acceptance"
     ]
   }
