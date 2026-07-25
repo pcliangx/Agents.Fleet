@@ -1,0 +1,109 @@
+{
+  "probeId": "r0-02-launchagent-environment",
+  "capturedAt": "2026-07-25T08:03:08.440Z",
+  "context": {
+    "node": "v26.4.0",
+    "execPath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+    "cwd": "/",
+    "uid": 501,
+    "gid": 20,
+    "ppid": 1,
+    "managerName": {
+      "ok": true,
+      "argv": ["/bin/launchctl", "managername"],
+      "stdout": "Aqua"
+    },
+    "swVers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.5.2\nBuildVersion:\t\t25F84"
+  },
+  "env": {
+    "HOME": "/Users/pc2026",
+    "LOGNAME": "pc2026",
+    "OSLogRateLimit": "64",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "SHELL": "/bin/zsh",
+    "SSH_AUTH_SOCK": "/var/run/com.apple.launchd.mEu2KCnt2n/Listeners",
+    "TMPDIR": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/",
+    "USER": "pc2026",
+    "XPC_FLAGS": "0x0",
+    "XPC_SERVICE_NAME": "com.agents-fleet.r0-02.probe",
+    "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0"
+  },
+  "pathResolution": {
+    "node": null,
+    "claude": null,
+    "codex": null,
+    "git": "/usr/bin/git",
+    "security": "/usr/bin/security"
+  },
+  "explicitVersionProbes": {
+    "claude": {
+      "path": "/Users/pc2026/.local/bin/claude",
+      "exists": true,
+      "realpath": "/Users/pc2026/.local/share/claude/versions/2.1.218",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/Users/pc2026/.local/bin/claude", "--version"],
+        "stdout": "2.1.218 (Claude Code)"
+      }
+    },
+    "codex": {
+      "path": "/Users/pc2026/.local/bin/codex",
+      "exists": true,
+      "realpath": "/Users/pc2026/.codex/packages/standalone/releases/0.145.0-aarch64-apple-darwin/bin/codex",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/Users/pc2026/.local/bin/codex", "--version"],
+        "stdout": "codex-cli 0.145.0"
+      }
+    },
+    "nodeSystem": {
+      "path": "/usr/bin/node",
+      "exists": false,
+      "realpath": null,
+      "versionProbe": null
+    },
+    "nodeHomebrew": {
+      "path": "/opt/homebrew/bin/node",
+      "exists": true,
+      "realpath": "/opt/homebrew/Cellar/node/26.4.0/bin/node",
+      "versionProbe": {
+        "ok": true,
+        "argv": ["/opt/homebrew/bin/node", "--version"],
+        "stdout": "v26.4.0"
+      }
+    }
+  },
+  "cleanedEnvUsed": {
+    "HOME": "/Users/pc2026",
+    "USER": "pc2026",
+    "LOGNAME": "pc2026",
+    "TMPDIR": "/var/folders/8x/zbvzzwh525lfw_ldp529f4lm0000gn/T/",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "LANG": "en_US.UTF-8"
+  },
+  "keychain": {
+    "listKeychains": {
+      "ok": true,
+      "argv": ["/usr/bin/security", "list-keychains"],
+      "stdout": "\"/Users/pc2026/Library/Keychains/login.keychain-db\"\n    \"/Library/Keychains/System.keychain\""
+    },
+    "defaultKeychain": {
+      "ok": true,
+      "argv": ["/usr/bin/security", "default-keychain"],
+      "stdout": "\"/Users/pc2026/Library/Keychains/login.keychain-db\""
+    },
+    "findNonexistent": {
+      "ok": false,
+      "argv": [
+        "/usr/bin/security",
+        "find-generic-password",
+        "-s",
+        "agents-fleet.r0-02.probe.nonexistent"
+      ],
+      "status": 44,
+      "signal": null,
+      "stderr": "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
+      "message": "Command failed: /usr/bin/security find-generic-password -s agents-fleet.r0-02.probe.nonexistent\nsecurity: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n"
+    }
+  }
+}
