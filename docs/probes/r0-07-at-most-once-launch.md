@@ -2,7 +2,8 @@
 
 > Branch: `r0-07-at-most-once-launch`。**本次实测**为以下契约提供协议骨架层面的证据:
 > RT-LAUNCH-01..06 / RT-LAUNCH-08(§8.1 at-most-once launch)、RT-T-11(崩溃矩阵验收)、
-> RT-CMD-02(命令幂等)、RT-CMD-16(启动前最终事实重验)、RT-REC-12(按完整身份再识别)。
+> RT-CMD-02(命令幂等)、RT-CMD-16(**partial**: 仅 CommitLaunch 前事实重验子句; receipt 一次性消费未实现, 见「边界与后续」)、
+> RT-REC-12(**partial**: 仅「完整身份而非仅 PID」子句; Process Disposition 状态机未实现, 见「边界与后续」)。
 > RT-LAUNCH-07 的 per-Session supervisor 归属、真实 Agent 经 node-pty 启动(R0-09/R1)、
 > SQLite 事务与 chunk store 的交互(R0-14)**未在本次覆盖**, 见「边界与后续」。
 >
@@ -120,5 +121,13 @@ RT-T-11: 不留部分 Attempt / Worktree binding、不启动重复 Agent、不�
 - **scheduler 多 slot 并发**: 单 slot 模型; 并发 launch 的 lease 竞争未实测。
 - **Host 重启(RT-REC-08)**: 只崩 coordinator 进程; 整机重启后 receipt/commit 文件与
   SQLite 的一致性未实测(文件均在磁盘, 推断可恢复, 但未验证)。
+- **RT-CMD-16 receipt 一次性消费(spec §6.2 硬要求, partial)**: 本原型 `LaunchCommand` 无 receipt 字段,
+  `reissue()` 只比 commandId+payloadHash; 仅实现了「CommitLaunch 前重验绑定事实(factHash drift)」子句。
+  按 `commandId` 一次性消费 receipt 留 R1 完整实现。
+- **RT-REC-12 Process Disposition 状态机(spec §4.1/§5 硬要求, partial)**: spec 定义
+  `Probing | ConfirmedAbsent | OrphanFound | KeepRequested | StopRequested | ConfirmedStopped`
+  六态(RT-STATE-22/23、RT-SCHED-04 依赖)。本原型 `reconcile.ts` 无该列/状态, 直接 probe→finalize/uncertain;
+  仅实现了「按 `{pid,lstart,pgid,command}` 完整身份而非仅 PID 再识别」子句。Uncertain 时 slot lease 保留
+  仅是行为近似, 非显式 Disposition 状态机。完整状态机留 R1。
 - 单 Host 单次采样; `SupportedPlatformMatrix`(R0-15)冻结后需在矩阵最低 macOS / 最低硬件上
   复测同一 fixture。
