@@ -3,7 +3,9 @@ status: accepted
 ---
 # 执行器使用用户级 OS Daemon，并限定进程存活承诺
 
-长任务需要跨 UI 关闭或崩溃继续运行，但当前进程和 PTY 不能被描述为跨 Daemon 崩溃或 Host 重启存活。决定：使用当前登录用户身份运行的 macOS LaunchAgent 作为 Daemon，拥有 PTY、子进程与权威生命周期状态；Electron 只是客户端。所有领域命令经过单一 Control Dispatcher，Electron Main 只作为 transport adapter，不复制领域 handler。执行 Agent 的 Daemon 永不以 root 身份运行。
+长任务需要跨 UI 关闭或崩溃继续运行，但当前进程和 PTY 不能被描述为跨 Daemon 崩溃或 Host 重启存活。决定：使用当前登录用户身份运行的 macOS LaunchAgent 作为 Daemon，拥有 PTY、子进程与权威生命周期状态；Electron 只是客户端。所有领域命令经过单一 Control Dispatcher，Electron Main 只作为 transport Adapter，不复制领域 handler。执行 Agent 的 Daemon 永不以 root 身份运行。
+
+发布包携带并签名经过验证的内置 runtime 与 native components；完整、不可裁剪的 release manifest 由 `RT-DIST-01` 与 `SV1-SUPPLY-01` 拥有，ADR 不复制可能漂移的组件清单。LaunchAgent 使用签名包内的绝对路径和最小、清理后的环境启动，不依赖系统 Node、用户 shell 初始化或可变的 `PATH`。Notification Gateway 只负责投递已持久化的 Notification Intent 和把点击路由回应用，不拥有 Attempt、Session 或调度状态。
 
 ## Considered Options
 - 嵌入 Electron 主进程——否，关闭 app 或主进程崩溃会终止整个 Fleet。
@@ -12,4 +14,6 @@ status: accepted
 - 系统级 root LaunchDaemon——否，权限过大，也不适合读取用户的 Agent 配置与凭据。
 
 ## Consequences
-这个决定只保证 Session 跨 UI 生命周期存活，不宣称进程跨 Daemon 崩溃或 Host 重启存活。Daemon 或 Host 丢失后必须执行 Reconciliation：确定已终止的 Attempt 标记为 Interrupted，无法判断副作用的标记为 Uncertain；任何 resume 都创建新的 Attempt 与 Session，且需要用户显式确认。v1 不引入 per-Session supervisor；若未来要求跨 Daemon 崩溃保持同一 PTY，必须另立 ADR。升级或卸载在存在 Alive Session 时必须阻止或先显式 drain。
+这个决定只保证 Session 跨 UI 生命周期存活，不宣称进程跨 Daemon 崩溃或 Host 重启存活。Daemon 或 Host 丢失后必须执行 Reconciliation：确定已终止的 Attempt 标记为 Interrupted，无法判断副作用的标记为 Uncertain；任何 resume 都创建新的 Attempt 与 Session，且需要用户显式确认。v1 不引入 per-Session supervisor；若未来要求跨 Daemon 崩溃保持同一 PTY，必须另立 ADR。
+
+`RT-DIST-01` 与 `SV1-SUPPLY-01` 所定义的全部组件和协议版本共同构成一个经过签名与兼容性验证的发布单元。安装、升级、回滚和卸载必须处理 LaunchAgent 注册、绝对路径变化、数据 schema 与在途 Session；存在 Alive Session 或未决 Process Disposition 时必须阻止替换，或先由用户显式 drain。通知投递失败只更新 Notification Intent 的投递状态，不能改变 Attempt 结果。
