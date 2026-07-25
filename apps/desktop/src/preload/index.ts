@@ -2,13 +2,10 @@
 // generic send/invoke, no Node objects, no channel passthrough.
 
 import { contextBridge, ipcRenderer } from "electron";
+import { createDesktopApi } from "./desktop-api.js";
 
-const api = {
-  getConnectionInfo(): Promise<string> {
-    return ipcRenderer.invoke("af:get-connection-info");
-  },
-};
+const api = createDesktopApi(() => ipcRenderer.invoke("af:get-connection-info"));
 
-export type DesktopApi = typeof api;
+export type { DesktopApi } from "./desktop-api.js";
 
 contextBridge.exposeInMainWorld("agentsFleet", api);
