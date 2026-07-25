@@ -1,8 +1,10 @@
 // RT-MOD-08 / RT-TERM-04 — renderer-side Terminal Surface: wraps @xterm/xterm
-// (the full package the Electron Renderer uses), opens on a DOM element and
-// uses the built-in DOM renderer (no WebGL addon attached → DOM path). WebGL2
-// attach / context-lost swap lands in S5; this is the DOM-path surface whose
-// parser/buffer must agree with @xterm/headless (RT-TERM-01 engine identity).
+// (the full package the Electron Renderer uses) and opens it on a DOM element
+// so the Terminal can be constructed. This surface drives the same xterm.js
+// parser/buffer as @xterm/headless, so its parser/buffer must agree with the
+// headless engine (RT-TERM-01 engine identity). The WebGL2-vs-DOM draw-path
+// identity (RT-T-19) needs a real rendering context and is verified in S5 —
+// the detached div here does NOT exercise the DOM renderer in unit tests.
 // feed/appliedCursor/cursorPosition/renderText live on the shared base.
 
 import { Terminal } from "@xterm/xterm";

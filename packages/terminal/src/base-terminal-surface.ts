@@ -44,6 +44,9 @@ interface UnicodeConfigurable {
 
 // RT-TERM-01 — load the identical Unicode 11 width/grapheme tables on any
 // xterm Terminal so the live Terminal and the Snapshot Worker cannot diverge.
+// The addon is mandatory (ADR-0007); this is a construct-time forced load.
+// Addon lifecycle — unload / reload / version handshake on RT-TERM-10 upgrade
+// or RT-TERM-04 WebGL fallback — is a future concern, not wired here.
 export const configureUnicode11 = (term: UnicodeConfigurable): void => {
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
