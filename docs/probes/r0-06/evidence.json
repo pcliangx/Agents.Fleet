@@ -1,0 +1,450 @@
+{
+  "prototype": "R0-06",
+  "verdict": "PASS",
+  "question": "Can bounded per-Attachment queues isolate a slow/hidden Renderer under the RT-PERF-08 10-Session binary load without blocking healthy Sessions?",
+  "scope": {
+    "proves": [
+      "shared multiplex routing preserves Session identity under interleaved binary frames",
+      "byte and frame queue caps independently pass limit - 1 / limit / limit + 1 probes",
+      "slow and hidden consumers recover through an identity-bound Snapshot cursor plus contiguous delta",
+      "the fixed schedule emits every required frame, including the final 60-second boundary"
+    ],
+    "doesNotProve": [
+      "chunk durability, fsync ordering, or published-frame crash recovery (R0-14)",
+      "xterm.js WebGL2/DOM rendering or Snapshot parser safety (R0-08/R0-09)",
+      "frozen RuntimeLimitProfile or SupportedPlatformMatrix release performance budgets (R0-15/R0-16)"
+    ]
+  },
+  "environment": {
+    "capturedAt": "2026-07-25T13:33:15.138Z",
+    "node": "v26.4.0",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "osRelease": "25.5.0",
+    "cpu": "Apple M5 Pro",
+    "logicalCpuCount": 18,
+    "totalMemoryBytes": 51539607552,
+    "freeMemoryBytesAtEnd": 3563798528,
+    "platformMatrixVersion": 0,
+    "runtimeLimitProfileVersion": 0,
+    "provenanceStatus": "unfrozen-r0-placeholder",
+    "resultReusableAfterProfileOrMatrixFreeze": false
+  },
+  "configuration": {
+    "requestedDurationSeconds": 60,
+    "sessionCount": 10,
+    "framePayloadBytes": 65536,
+    "attachmentQueueBytes": 1048576,
+    "attachmentQueueFrames": 32,
+    "expectedFrames": 6240,
+    "expectedPayloadBytes": 408944640,
+    "sessions": [
+      {
+        "sessionId": "r0-06-session-hot",
+        "role": "Hot",
+        "sourcePayloadBytesPerSecond": 5242880,
+        "consumerWireBytesPerSecond": 8388608,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 4800
+      },
+      {
+        "sessionId": "r0-06-session-slow",
+        "role": "Slow",
+        "sourcePayloadBytesPerSecond": 1048576,
+        "consumerWireBytesPerSecond": 16384,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 960
+      },
+      {
+        "sessionId": "r0-06-session-hidden",
+        "role": "Hidden",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "HiddenInterval",
+          "startsAtFraction": 0.3333333333333333,
+          "endsAtFraction": 0.6666666666666666
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-1",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-2",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-3",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-4",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-5",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-6",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      },
+      {
+        "sessionId": "r0-06-session-background-7",
+        "role": "Background",
+        "sourcePayloadBytesPerSecond": 65536,
+        "consumerWireBytesPerSecond": 524288,
+        "visibility": {
+          "kind": "AlwaysVisible"
+        },
+        "targetFrames": 60
+      }
+    ]
+  },
+  "measurements": {
+    "actualDurationSeconds": 60.004467833,
+    "productionDurationSeconds": 60.004327792000005,
+    "decodedFrames": 6240,
+    "sourcePayloadBytes": 408944640,
+    "wireBytes": 409607793,
+    "achievedPayloadBytesPerSecond": 6815252.416751879,
+    "targetPayloadBytesPerSecond": 6815744,
+    "productionCrossSessionFrames": 0,
+    "productionUnknownSessionFrames": 0,
+    "identityErrors": 0,
+    "sequenceErrors": 0,
+    "queueLimitViolations": 0,
+    "resyncCount": 2,
+    "startedRssBytes": 82853888,
+    "peakRssBytes": 102318080,
+    "rssGrowthBytes": 19464192,
+    "eventLoopDelayP50Ms": 10.313727,
+    "eventLoopDelayP95Ms": 11.403263,
+    "eventLoopDelayP99Ms": 11.460607,
+    "eventLoopDelayMaxMs": 11.739135
+  },
+  "boundaryProbes": {
+    "byteCap": {
+      "limitMinusOne": {
+        "queueBytes": 1048575,
+        "resyncRequired": false
+      },
+      "limit": {
+        "queueBytes": 1048576,
+        "resyncRequired": false
+      },
+      "limitPlusOne": {
+        "queueBytes": 0,
+        "resyncRequired": true
+      }
+    },
+    "frameCap": {
+      "limitMinusOne": {
+        "queueFrames": 31,
+        "resyncRequired": false
+      },
+      "limit": {
+        "queueFrames": 32,
+        "resyncRequired": false
+      },
+      "limitPlusOne": {
+        "queueFrames": 0,
+        "resyncRequired": true
+      }
+    }
+  },
+  "isolationCanary": {
+    "crossSessionDetected": true,
+    "sequenceGapDetected": true,
+    "crossSessionFrames": 1,
+    "sequenceErrors": 1
+  },
+  "recoveries": [
+    {
+      "sessionId": "r0-06-session-hidden",
+      "role": "Hidden",
+      "requestedBy": "VisibilityResume",
+      "method": "SnapshotPlusDelta",
+      "snapshotCoversThroughSeq": 37,
+      "deltaFrames": 2,
+      "suppliedDeltaFrames": 3,
+      "duplicateDeltaFrames": 1,
+      "ok": true,
+      "failureCode": null
+    },
+    {
+      "sessionId": "r0-06-session-slow",
+      "role": "Slow",
+      "requestedBy": "SlowConsumerRecovery",
+      "method": "SnapshotPlusDelta",
+      "snapshotCoversThroughSeq": 958,
+      "deltaFrames": 2,
+      "suppliedDeltaFrames": 3,
+      "duplicateDeltaFrames": 1,
+      "ok": true,
+      "failureCode": null
+    }
+  ],
+  "acceptance": {
+    "fixedSessionCount": true,
+    "exactFixedFrameSchedule": true,
+    "hotSessionReachedExactSchedule": true,
+    "aggregatePayloadReachedExactSchedule": true,
+    "noCrossSessionFrames": true,
+    "noSequenceErrors": true,
+    "isolationCanaryDetectsCrossSession": true,
+    "isolationCanaryDetectsSequenceGap": true,
+    "boundedQueues": true,
+    "byteCapBoundariesProven": true,
+    "frameCapBoundariesProven": true,
+    "explicitSlowSnapshotDeltaRecovery": true,
+    "explicitHiddenSnapshotDeltaRecovery": true,
+    "healthySessionsProgressedDuringSlowBackpressure": true,
+    "allSessionsCaughtUpAfterExplicitRecovery": true,
+    "versionProvenanceDeclared": true
+  },
+  "sessions": [
+    {
+      "role": "Hot",
+      "targetFrames": 4800,
+      "generatedFrames": 4800,
+      "sessionId": "r0-06-session-hot",
+      "hidden": false,
+      "durableSeq": 4800,
+      "appliedSeq": 4800,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65642,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Slow",
+      "targetFrames": 960,
+      "generatedFrames": 960,
+      "sessionId": "r0-06-session-slow",
+      "hidden": false,
+      "durableSeq": 960,
+      "appliedSeq": 960,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 984606,
+      "peakQueueFrames": 15,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 1,
+      "backpressureEvents": 1,
+      "deferredLiveFrames": 960,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Hidden",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-hidden",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65643,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 1,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 20,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-1",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-2",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-3",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-4",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-5",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-6",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    },
+    {
+      "role": "Background",
+      "targetFrames": 60,
+      "generatedFrames": 60,
+      "sessionId": "r0-06-session-background-7",
+      "hidden": false,
+      "durableSeq": 60,
+      "appliedSeq": 60,
+      "queueBytes": 0,
+      "queueFrames": 0,
+      "peakQueueBytes": 65649,
+      "peakQueueFrames": 1,
+      "resyncRequired": false,
+      "resyncReason": null,
+      "resyncCount": 0,
+      "backpressureEvents": 0,
+      "deferredLiveFrames": 0,
+      "identityErrors": 0,
+      "sequenceErrors": 0
+    }
+  ]
+}
