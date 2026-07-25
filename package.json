@@ -1,0 +1,26 @@
+{
+  "name": "agents-fleet",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e:handshake": "vitest run packages/daemon/src/__tests__/handshake-e2e.test.ts",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "dev:daemon": "pnpm --filter @agents-fleet/daemon dev",
+    "dev:desktop": "pnpm --filter @agents-fleet/desktop dev"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

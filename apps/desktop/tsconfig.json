@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./out",
+    "rootDir": "./src",
+    "composite": true
+  },
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
+  "references": [{ "path": "../../packages/contracts" }, { "path": "../../packages/transport" }]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@agents-fleet/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "agents-fleet-daemon": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agents-fleet/contracts": "workspace:*",
+    "@agents-fleet/transport": "workspace:*"
+  },
+  "devDependencies": {
+    "@agents-fleet/testing": "workspace:*",
+    "tsx": "^4.19.0"
+  }
+}
