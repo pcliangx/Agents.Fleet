@@ -5,6 +5,7 @@
  *
  * 用途: Host Environment Module(RT-MOD-12) 与 Agent discovery(RT-ADAPTER-06) 以这些
  * 已测得事实为输入, 不假设 LaunchAgent 继承任何用户 shell 配置(ADR-0001)。
+ * 字段注释区分「实测」与「推断」; 未验证的路径显式标注, 不得当作事实消费。
  */
 export const LAUNCHAGENT_ENVIRONMENT_PROFILE = {
   profileId: "r0-02-launchagent-environment",
@@ -13,17 +14,17 @@ export const LAUNCHAGENT_ENVIRONMENT_PROFILE = {
 
   /** LaunchAgent 实测默认环境(未在 plist 中自定义时) */
   measuredDefaults: {
-    /** 唯一 PATH; 不含 homebrew / ~/.local/bin / 任何用户 shell 定制 */
+    /** 唯一 PATH; 不含 homebrew / ~/.local/bin / 任何用户 shell 定制(实测) */
     path: "/usr/bin:/bin:/usr/sbin:/sbin",
     envVarCount: 11,
     cwd: "/",
     shell: "/bin/zsh",
     homeSet: true,
     userSet: true,
-    /** 均未设置 — Daemon 必须自己注入 locale 与 TERM, 否则 PTY / 子进程收到空 locale */
+    /** 均未设置(实测) — Daemon 必须自己注入 locale; TERM 对 PTY 的影响见 implications */
     langSet: false,
     termSet: false,
-    /** launchd 不 source 任何 shell 初始化文件(PATH 即证据) */
+    /** launchd 不 source 任何 shell 初始化文件(PATH 即证据, 实测) */
     shellInitInherited: false,
   },
 
@@ -44,12 +45,16 @@ export const LAUNCHAGENT_ENVIRONMENT_PROFILE = {
     strategy: "explicit-path",
     candidates: {
       claude: {
-        path: "~/.local/bin/claude",
+        /** 相对 HOME 的候选路径(discovery 按用户解析) */
+        homeRelativePath: ".local/bin/claude",
+        /** 本 Host 实测解析到的绝对路径(单 Host 采样) */
+        observedAbsolutePath: "/Users/pc2026/.local/bin/claude",
         versionProbeArgv: ["--version"],
         observed: "2.1.218 (Claude Code)",
       },
       codex: {
-        path: "~/.local/bin/codex",
+        homeRelativePath: ".local/bin/codex",
+        observedAbsolutePath: "/Users/pc2026/.local/bin/codex",
         versionProbeArgv: ["--version"],
         observed: "codex-cli 0.145.0",
       },
@@ -59,25 +64,31 @@ export const LAUNCHAGENT_ENVIRONMENT_PROFILE = {
     probePath: "/usr/bin:/bin:/usr/sbin:/sbin",
   },
 
-  /** Keychain 可达性(SV1-DATA-01 / SV1-AUTH-03 前置) */
+  /** Keychain 只读可达性(SV1-DATA-01 / SV1-AUTH-03 的可达性前置; 写入与 ACL 未验证) */
   keychain: {
     listKeychainsWorks: true,
     loginKeychainVisible: true,
-    /** 对不存在服务名的 find-generic-password 返回 exit 44 "could not be found" — API 可达且无需用户交互 */
+    /** 实测: 对不存在服务名的 find-generic-password 返回 exit 44 "could not be found" — 只读 API 可达 */
     genericPasswordApiReachable: true,
-    interactionBlocked: false,
+    /** 未验证: add-generic-password 写入 / 已存在条目 ACL 授权 / access group 共享(需签名二进制) */
+    writeAndAclPathsVerified: false,
   },
 
-  /** 对 Daemon 启动环境(Environment Snapshot, RT-ENV-03)的强制推论 */
+  /**
+   * 对 Daemon 启动环境(Environment Snapshot, RT-ENV-03)的强制推论。
+   * 除标注「推断」的条目外均由本次实测直接支持。
+   */
   implications: [
     "daemon-must-use-absolute-executable-paths",
     "daemon-must-not-rely-on-system-node",
     "daemon-must-set-explicit-path-for-children",
-    "daemon-must-inject-lang-and-term",
+    "daemon-must-inject-lang",
+    /** 推断: LaunchAgent env 无 TERM(实测), PTY 程序依赖 TERM 属合理外推, 本次未用 PTY 验证 */
+    "daemon-must-inject-term-for-pty",
     "daemon-must-set-neutral-cwd-not-slash",
     "agent-discovery-must-use-explicit-candidate-paths",
-    "keychain-available-without-user-interaction",
+    "keychain-read-api-reachable",
   ],
 } as const;
 
-export type LaunchagentEnvironmentProfile = typeof LAUNCHAGENT_ENVIRONMENT_PROFILE;
+export type LaunchAgentEnvironmentProfile = typeof LAUNCHAGENT_ENVIRONMENT_PROFILE;

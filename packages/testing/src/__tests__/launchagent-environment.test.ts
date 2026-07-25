@@ -31,7 +31,9 @@ describe("R0-02 LaunchAgent environment fixture", () => {
     const d = LAUNCHAGENT_ENVIRONMENT_PROFILE.agentDiscovery;
     expect(d.strategy).toBe("explicit-path");
     for (const agent of [d.candidates.claude, d.candidates.codex]) {
-      expect(agent.path).toMatch(/^~\//);
+      expect(agent.homeRelativePath).not.toMatch(/^[~/]/);
+      expect(agent.observedAbsolutePath).toMatch(/^\/Users\//);
+      expect(agent.observedAbsolutePath.endsWith(agent.homeRelativePath)).toBe(true);
       expect(agent.versionProbeArgv).toEqual(["--version"]);
       expect(agent.observed.length).toBeGreaterThan(0);
     }
@@ -39,12 +41,12 @@ describe("R0-02 LaunchAgent environment fixture", () => {
     expect(d.cleanedEnvMinimum).toContain("PATH");
   });
 
-  it("confirms Keychain is reachable from a LaunchAgent without user interaction", () => {
+  it("confirms Keychain read API is reachable; write/ACL paths stay explicitly unverified", () => {
     const k = LAUNCHAGENT_ENVIRONMENT_PROFILE.keychain;
     expect(k.listKeychainsWorks).toBe(true);
     expect(k.loginKeychainVisible).toBe(true);
     expect(k.genericPasswordApiReachable).toBe(true);
-    expect(k.interactionBlocked).toBe(false);
+    expect(k.writeAndAclPathsVerified).toBe(false);
   });
 
   it("derives Daemon environment implications referenced by ADR-0001 / RT-ENV-03", () => {
@@ -52,8 +54,10 @@ describe("R0-02 LaunchAgent environment fixture", () => {
     expect(i).toContain("daemon-must-use-absolute-executable-paths");
     expect(i).toContain("daemon-must-not-rely-on-system-node");
     expect(i).toContain("daemon-must-set-explicit-path-for-children");
-    expect(i).toContain("daemon-must-inject-lang-and-term");
+    expect(i).toContain("daemon-must-inject-lang");
+    expect(i).toContain("daemon-must-inject-term-for-pty");
     expect(i).toContain("agent-discovery-must-use-explicit-candidate-paths");
-    expect(i).toContain("keychain-available-without-user-interaction");
+    expect(i).toContain("keychain-read-api-reachable");
+    expect(i).not.toContain("keychain-available-without-user-interaction");
   });
 });

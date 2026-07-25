@@ -3,14 +3,14 @@
 > Branch: `r0-02/launchagent-env`。验证 ADR-0001 的关键假设: LaunchAgent 下 PATH、shell、Keychain 与 Agent discovery 的实际行为。
 > 实测于 2026-07-25, macOS 26.5.2 (25F84) / Apple Silicon。方法: `probe.mjs` 分别以交互式 shell 与真实 `launchctl bootstrap gui/<uid>` 运行, 采集脱敏 JSON 证据。
 
-**结论: ADR-0001 的决策（绝对路径 + 清理后环境，不依赖系统 Node / 用户 shell 初始化 / 可变 PATH）被实测数据完整证实为必要且可行。** RT-ENV-02 形态的中立 probe（显式路径 + 清理环境 + 中立 cwd）在 LaunchAgent 下可正常执行 Agent 版本探测；Keychain 无需用户交互即可达（SV1-DATA-01 / SV1-AUTH-03 前置成立）。
+**结论: ADR-0001 的决策（绝对路径 + 清理后环境，不依赖系统 Node / 用户 shell 初始化 / 可变 PATH）被实测数据完整证实为必要且可行。** RT-ENV-02 形态的中立 probe（显式路径 + 清理环境 + 中立 cwd）在 LaunchAgent 下可正常执行 Agent 版本探测；Keychain 只读 API 可达（SV1-DATA-01 / SV1-AUTH-03 的可达性前置成立；写入与 ACL 路径未验证，见「边界与后续」）。
 
 ## 实测对比
 
 | 维度 | LaunchAgent（实测） | 交互式 shell（基线） |
 | --- | --- | --- |
 | env 变量总数 | **11** | 38 |
-| `PATH` | **`/usr/bin:/bin:/usr/sbin:/sbin`** | 25 段用户定制（homebrew、`~/.local/bin` 等） |
+| `PATH` | **`/usr/bin:/bin:/usr/sbin:/sbin`** | 24 段（homebrew、`~/.local/bin`、系统路径及重复项） |
 | shell 初始化 | **不继承**（PATH 即证据；`SHELL=/bin/zsh` 被设置但 rc 未执行） | 继承 |
 | `cwd` | **`/`** | 调用者目录 |
 | `LANG` / `TERM` | **均未设置** | `LANG=en_AU.UTF-8`、`TERM=dumb` |
@@ -23,24 +23,26 @@ LaunchAgent 完整 env（11 项，脱敏证据原文）: `HOME` `LOGNAME` `OSLog
 
 ## Agent discovery（RT-ADAPTER-06 / RT-ENV-02）
 
-- 默认 PATH 上**找不到** `node`、`claude`、`codex` — discovery 不能依赖 PATH 或 shell 初始化，必须使用显式候选路径（本机实测: `~/.local/bin/claude`、`~/.local/bin/codex`，均为指向版本化安装的 symlink）。
+- 默认 PATH 上**找不到** `node`、`claude`、`codex` — discovery 不能依赖 PATH 或 shell 初始化，必须使用显式候选路径（本 Host 实测: `$HOME/.local/bin/claude`、`$HOME/.local/bin/codex`，均为指向版本化安装的 symlink）。
 - 以 RT-ENV-02 形态 probe（清理环境 `HOME/USER/LOGNAME/TMPDIR/PATH/LANG`、中立 cwd、不经 login shell）:
-  - `~/.local/bin/claude --version` → `2.1.218 (Claude Code)` ✓
-  - `~/.local/bin/codex --version` → `codex-cli 0.145.0` ✓
+  - `$HOME/.local/bin/claude --version` → `2.1.218 (Claude Code)` ✓
+  - `$HOME/.local/bin/codex --version` → `codex-cli 0.145.0` ✓
 - 即：两阶段 discovery 的 verified 阶段在 Daemon（LaunchAgent）中可行；candidate 阶段（pre-Trust）只读路径/安装信息，不执行。
 
 ## Keychain（SV1-DATA-01 / SV1-AUTH-03 前置）
 
 - `security list-keychains` 正常返回，login keychain 可见（与交互式一致）。
-- 对不存在服务名的 `find-generic-password` 返回 exit 44「could not be found in the keychain」——与交互式完全相同: **Keychain API 从 LaunchAgent 可达，无需用户交互，不弹窗**。
+- 对不存在服务名的 `find-generic-password` 返回 exit 44「could not be found in the keychain」——与交互式完全相同: **Keychain 只读 API 从 LaunchAgent 可达**；本次运行未触发用户交互，但未验证写入与 ACL 路径（见「边界与后续」）。
 
 ## 对 Daemon 启动环境的强制推论（输入 RT-ENV-03 Environment Snapshot）
 
+除标注「推断」的条目外，均由本次实测直接支持。
+
 1. Daemon 自身与子进程必须使用**绝对路径**（Daemon 不能依赖系统 Node —— 默认 PATH 上没有 node）。
 2. 给 Agent 子进程注入**显式 PATH**，继承变量走 allowlist。
-3. 必须注入 `LANG`（UTF-8）与 `TERM`——LaunchAgent 环境两者皆无，PTY 程序行为依赖之。
+3. 必须注入 `LANG`（UTF-8；实测清理环境下两 Agent 均正常）。「推断」`TERM`：LaunchAgent env 未设置（实测），PTY 程序行为依赖 TERM 属合理外推，本次未用 PTY 验证。
 4. 必须显式设置中立 cwd——LaunchAgent 默认 cwd 是 `/`。
-5. Keychain 可用于 secret 存储与 Main/Daemon 共享 access group，无交互阻塞。
+5. Keychain 只读 API 可达；写入与 ACL 路径未验证，见下节。
 
 ## 证据与复现
 
@@ -51,6 +53,7 @@ LaunchAgent 完整 env（11 项，脱敏证据原文）: `HOME` `LOGNAME` `OSLog
 
 ## 边界与后续
 
-- 单台机器单次采样；`SupportedPlatformMatrix`（R0-15）冻结后需在矩阵最低 macOS 上复测同一 fixture。
+- 单个 Host 单次采样；`SupportedPlatformMatrix`（R0-15）冻结后需在矩阵最低 macOS 上复测同一 fixture。
+- Keychain 仅验证了只读可达（list + 查询不存在条目）；`add-generic-password` 写入、已存在条目的 ACL 授权路径与 Main/Daemon 共享 access group（需签名二进制，本 probe 无法覆盖）均未验证——SV1-DATA-01 / SV1-AUTH-03 的完整闭环需后续原型。
 - 未测 File Provider / 企业 MDM 受限账号等变体；若矩阵覆盖，补充 fixture。
 - SSH_AUTH_SOCK 在 LaunchAgent 下可用，但 Daemon 是否允许 Agent 继承它属于 Permission Mapping / 继承 allowlist 决策，不在本探测范围。
