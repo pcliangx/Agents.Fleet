@@ -3,6 +3,8 @@ status: accepted
 ---
 # Electron 终端使用上游 xterm.js，Daemon 使用 node-pty
 
+> **Partially superseded.** 本 ADR 的 package allowlist 枚举（4 包）已被 [ADR-0007](./0007-terminal-allowlist-unicode11-addon.md) supersede（扩为 5 包，增加 `@xterm/addon-unicode11`）。本 ADR 的其余内容仍为当前契约。
+
 持续观察和控制 CLI Agent 是核心场景，v1 更需要经过 Electron 产品验证的输入法、Unicode、selection、clipboard、accessibility 与渲染行为，而不是自行建设浏览器终端前端。决定：Renderer 使用随应用发布且精确锁定版本的 `@xterm/xterm`；官方 `@xterm/addon-webgl` 提供首选 WebGL2 绘制路径，DOM renderer 是强制回退；用户级 Daemon 使用 `node-pty` 拥有 PTY、进程组和原始字节流，并以 `encoding: null` 接收 `Buffer`，不让字符串解码成为字节权威。Electron Main 只转发经过鉴权的 control / stream，Renderer 永远不取得 `node-pty`、PTY fd 或 Daemon socket。
 
 Terminal Surface Module 拥有 xterm.js instance、允许的官方 addon 生命周期、终端选项、IME、键盘、鼠标、selection、clipboard 和 accessibility 集成，对业务 UI 只暴露 Agents.Fleet 的稳定 Interface。Session Runtime 可以在 Daemon 内按需启动由兼容版本 `@xterm/headless` 与 `@xterm/addon-serialize` 构成的 Snapshot Worker，严格重放持久化 chunk 并生成 app-owned、非 HTML 的版本化 Snapshot；Worker 不加载 `node-pty`，也不拥有 PTY、输入或生命周期状态。流协议、Snapshot schema、cursor、generation、fencing 与背压仍由 Agents.Fleet 契约拥有，xterm.js buffer 不能成为生命周期权威。

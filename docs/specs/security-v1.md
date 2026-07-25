@@ -150,7 +150,8 @@ Worktree Manager 对 Fleet 自己的文件操作保证。每个操作必须声�
 
 ## 11. Terminal Supply Chain and Renderer Isolation
 
-- **SV1-TERM-01**：终端 allowlist 仅包含精确版本的 `@xterm/xterm`、`@xterm/headless`、`@xterm/addon-webgl` 与 `@xterm/addon-serialize`；构建验证 lockfile / package integrity 和任何 patch-set hash，生成 SBOM，并只把已验证产物放入签名应用。
+- **SV1-TERM-01**：终端 allowlist 仅包含精确版本的 `@xterm/xterm`、`@xterm/headless`、`@xterm/addon-webgl`、`@xterm/addon-serialize` 与 `@xterm/addon-unicode11`；构建验证 lockfile / package integrity 和任何 patch-set hash，生成 SBOM，并只把已验证产物放入签名应用。
+  > _Changelog (R0-09, [ADR-0007](../adr/0007-terminal-allowlist-unicode11-addon.md))_：allowlist 由 4 包扩为 5 包（+`@xterm/addon-unicode11`）。SBOM 生成属构建流水线，本 slice 未产出。
 - **SV1-TERM-02**：Renderer Content Security Policy 只允许加载安装包内声明的 script、style 和 font asset；Daemon Snapshot Worker 也只能加载签名安装包内的锁定 package set。asset 缺失、完整性或版本握手失败时终端 fail closed；不得从 CDN 或网络取得替代代码、addon 或样式。
 - **SV1-TERM-03**：PTY bytes、terminal title、OSC、image protocol、hyperlink 和 clipboard sequence 都是不可信输入。打开 URL / 文件、读写 clipboard、发送通知或访问 Host 能力必须经过独立策略与必要的用户手势，不能由 escape sequence 直接触发。
 - **SV1-TERM-04**：每个 Terminal Surface、headless Snapshot Worker 和整个 Renderer 按 `RuntimeLimitProfile` 对 scrollback、glyph、image、WebGL texture、DOM node、pending write、URL、title、clipboard payload 与 effect rate 设置硬上限；一个恶意 Session 达到上限不能使其他 Session 丢失状态或越权。

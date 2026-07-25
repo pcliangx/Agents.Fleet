@@ -120,6 +120,10 @@ _Avoid_: delivered input, command echo
 一个同时满足 terminal parser 处于 ground state 且 UTF-8 decoder 没有跨 frame 残留的 Durable Stream Cursor。Snapshot 只能覆盖此类 checkpoint；之后 durable 的原始 bytes 仍以 delta 交付。
 _Avoid_: write callback checkpoint, rendered cursor
 
+**Cell Cursor**:
+终端 grid 上 0-indexed 的活动单元光标 `{row, col}`，是两条绘制路径（WebGL2 与 DOM）必须一致的确定性观测量（RT-T-19）。它与 Durable Stream Cursor（字节流恢复位置，非渲染概念）和 rendered cursor（绘制回调位置，非权威）是三个不同概念。
+_Avoid_: caret, rendered cursor, terminal position
+
 **Environment Snapshot**:
 在启动 Agent 进程前固化的 Host 执行环境事实：entry executable、interpreter 与 package / runtime closure identity 及 coverage、版本、argv hash、cwd 的 Worktree target binding、显式 PATH、允许继承的变量和 secret reference。复用 Worktree 时 binding 含实际 filesystem identity；新建 Worktree 时只绑定预分配 ID、计划 path、Repository identity 与 branch 策略，Ready 后再固化实际 cwd identity。它使授权后的启动不依赖可变 shell 配置，也不伪造尚不存在的文件系统事实。
 _Avoid_: ambient environment, shell profile
