@@ -63,7 +63,13 @@ export const DUAL_PATH_CASES: readonly DualPathCase[] = [
   },
   {
     name: "OSC 8 hyperlink",
-    bytes: new Uint8Array([...osc("8;;https://example.com"), BEL, ...u("LINK"), ...osc("8;;"), BEL]),
+    bytes: new Uint8Array([
+      ...osc("8;;https://example.com"),
+      BEL,
+      ...u("LINK"),
+      ...osc("8;;"),
+      BEL,
+    ]),
   },
   {
     name: "mouse mode enable/disable (DECSET ?1000h/l)",
@@ -75,6 +81,13 @@ export const DUAL_PATH_CASES: readonly DualPathCase[] = [
   },
   {
     name: "mixed CJK + CSI cursor-pos + OSC title",
-    bytes: new Uint8Array([...u("日本語"), ...csi("1;1H"), ...u("Ａ"), ...osc("0;t"), BEL, ...u("X")]),
+    bytes: new Uint8Array([
+      ...u("日本語"),
+      ...csi("1;1H"),
+      ...u("Ａ"),
+      ...osc("0;t"),
+      BEL,
+      ...u("X"),
+    ]),
   },
 ];
