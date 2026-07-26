@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import { transform as esbuildTransform } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 // SV1-T-16 (core) / SV1-T-04 — real Electron attack fixtures against the
@@ -33,15 +33,14 @@ const transpileBoundaryModules = async (outDir: string): Promise<void> => {
   await mkdir(outDir, { recursive: true });
   for (const name of BOUNDARY_MODULES) {
     const source = await readFile(join(MAIN_SRC, `${name}.ts`), "utf8");
-    const output = ts.transpileModule(source, {
-      compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-        verbatimModuleSyntax: true,
-      },
-      fileName: `${name}.ts`,
+    // TypeScript 7 (Go-native) dropped its JS transpile API (ts.transpileModule /
+    // ts.ModuleKind are undefined), so use esbuild (already bundled with vite).
+    const output = await esbuildTransform(source, {
+      format: "esm",
+      loader: "ts",
+      target: "es2022",
     });
-    await writeFile(join(outDir, `${name}.js`), output.outputText);
+    await writeFile(join(outDir, `${name}.js`), output.code);
   }
 };
 
