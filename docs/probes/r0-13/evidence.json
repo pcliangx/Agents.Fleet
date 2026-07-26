@@ -12,12 +12,13 @@
     "SV1-DATA-09",
     "SV1-T-23"
   ],
-  "capturedAt": "2026-07-26T16:43:13.075Z",
+  "capturedAt": "2026-07-26T17:48:47.414Z",
   "platform": {
     "macOS": "26.5.2",
     "kernel": "Darwin 25.5.0 arm64"
   },
   "node": "v24.18.0",
+  "matrixVersion": 4,
   "sqlite": "node:sqlite (WAL + synchronous=FULL)",
   "policyFixture": {
     "normative": false,

@@ -11,10 +11,12 @@
     "SV1-T-17",
     "SV1-T-26"
   ],
-  "capturedAt": "2026-07-26T08:40:00+08:00",
+  "capturedAt": "2026-07-26T16:47:14Z",
   "platform": "Darwin PCs-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64",
   "macOS": "26.5.2 (25F84)",
   "node": "v24.18.0",
+  "platformMatrixVersion": 4,
+  "syncNote": "node 字段同步至 managed v24.18.0（pnpm vitest 走 devEngines managed runtime）；filebroker 竞态探针未重跑（#54 ~50% 失败率与 Vitest 4 并发模型耦合，待重测），candidateMechanisms 为历史快照。",
   "candidateMechanisms": [
     {
       "id": 1,

@@ -88,7 +88,11 @@ Targeted result:
   Renderer compromise fixture all reject native capability acquisition
 
 Machine-readable observations are in
-`docs/probes/r0-10/evidence.json`.
+`docs/probes/r0-10/evidence.json`. This probe has no independent generator
+script; environment fields there were hand-synced to SupportedPlatformMatrix v4
+(Node 24.18.0 / pnpm 11.17.0 / Electron 43.2.0) with a `syncNote` +
+`originalProbeCapturedAt` audit trail — node-pty isolation behavior itself is
+guaranteed by N-API ABI stability and the daemon test suite.
 
 Full repository verification:
 
