@@ -11,8 +11,8 @@ import type {
   DaemonHello,
   ErrorCode,
 } from "@agents-fleet/contracts";
-import { type DaemonHandshakeConfig, negotiate } from "@agents-fleet/transport";
-import type { HandshakeTranscript, ProofVerifier } from "./auth/proof-verifier.js";
+import { type DaemonHandshakeConfig, negotiate, type ProofTranscript } from "@agents-fleet/transport";
+import type { ProofVerifier } from "./auth/proof-verifier.js";
 
 export interface ConnectionSink {
   send(message: unknown): void;
@@ -71,10 +71,16 @@ export class ControlDispatcher {
       this.fail("InternalFailure", "handshake state corrupted");
       return;
     }
-    const transcript: HandshakeTranscript = {
+    const transcript: ProofTranscript = {
       clientNonce: this.hello.clientNonce as string,
       daemonNonce: this.config.daemonNonce as string,
-      negotiatedProtocolVersion: this.selectedProtocolVersion,
+      selectedProtocolVersion: this.selectedProtocolVersion,
+      clientInstanceId: this.hello.clientInstanceId,
+      clientKind: this.hello.clientKind,
+      daemonId: this.config.daemonId,
+      daemonGeneration: this.config.daemonGeneration,
+      platformMatrixVersion: this.config.platformMatrixVersion,
+      runtimeLimitProfileVersion: this.config.runtimeLimitProfileVersion,
     };
     const res = await this.verifier.verify({ transcript, clientProof: auth.clientProof });
     if (!res.ok) {
