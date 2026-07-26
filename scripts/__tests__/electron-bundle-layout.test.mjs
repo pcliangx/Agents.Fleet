@@ -37,6 +37,10 @@ const makeApp = (layout) => {
       join("Versions", "Current", "Electron Framework"),
       join(framework, "Electron Framework"),
     );
+  } else if (layout === "wrong-target") {
+    // Links exist but point somewhere else — just as broken as a copy.
+    symlinkSync("B", join(framework, "Versions", "Current"));
+    symlinkSync(join("Versions", "Other", "Electron Framework"), join(framework, "Electron Framework"));
   } else if (layout === "dereferenced") {
     // The side-effects-cache restore shape: every symlink materialized as a
     // full copy of its target.
@@ -64,6 +68,14 @@ describe("checkElectronBundleLayout (#36)", () => {
     const paths = result.violations.map((v) => v.path).join("\n");
     expect(paths).toContain(join("Electron Framework.framework", "Electron Framework"));
     expect(paths).toContain(join("Versions", "Current"));
+  });
+
+  it("rejects symlinks that point at the wrong target", () => {
+    const result = checkElectronBundleLayout(makeApp("wrong-target"));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.violations).toHaveLength(2);
+    expect(result.violations.map((v) => v.problem)).toEqual(["wrong-target", "wrong-target"]);
   });
 
   it("reports missing paths instead of throwing", () => {
