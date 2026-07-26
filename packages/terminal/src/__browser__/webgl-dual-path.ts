@@ -91,8 +91,7 @@ export const run = async (): Promise<Results> => {
       name: c.name,
       kind: "ground-truth",
       webgl2: gl.webgl2,
-      vsOracle:
-        gl.text === c.text && gl.cursor.row === c.cursor.row && gl.cursor.col === c.cursor.col,
+      vsOracle: gl.text === c.text && gl.cursor.row === c.cursor.row && gl.cursor.col === c.cursor.col,
       ...agree(gl, dom),
     });
   }

@@ -83,37 +83,61 @@ const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   return out;
 };
 
-// "AB" | 人(E4 BA BA) | ESC[2;3H | ESC]0;Hi BEL | "Z"
-const SEQ = concat(
-  enc("AB"),
-  Uint8Array.from([0xe4, 0xba, 0xba]),
-  Uint8Array.from([0x1b, 0x5b, 0x32, 0x3b, 0x33, 0x48]),
-  Uint8Array.from([0x1b, 0x5d, 0x30, 0x3b, 0x48, 0x69, 0x07]),
-  enc("Z"),
-);
-// Hand-reasoned safe boundaries (end at a complete sequence): after A, AB, 人,
-// the CSI, the OSC. Every other offset lands inside a multibyte/control seq.
-const SAFE_OFFSETS = new Set([1, 2, 5, 11, 18]);
+// RT-T-22 fixtures: each byte sequence is split at EVERY byte boundary. For
+// each boundary the detector must classify it safe iff it ends a complete
+// sequence, and the final grid/cursor/title/checkpoint after [0:i]+[i:] must
+// equal the unsplit replay. Covers UTF-8 / CSI / OSC / DCS.
 
-describe("RT-T-22 byte-boundary split is transparent + correctly classified", () => {
+interface CheckpointFixture {
+  readonly name: string;
+  readonly bytes: Uint8Array;
+  /** Hand-reasoned safe byte offsets (end at a complete sequence). */
+  readonly safe: ReadonlySet<number>;
+}
+
+const FIXTURES: readonly CheckpointFixture[] = [
+  {
+    // "AB" | 人(E4 BA BA) | ESC[2;3H | ESC]0;Hi BEL | "Z"
+    name: "UTF-8 + CSI + OSC",
+    bytes: concat(
+      enc("AB"),
+      Uint8Array.from([0xe4, 0xba, 0xba]),
+      Uint8Array.from([0x1b, 0x5b, 0x32, 0x3b, 0x33, 0x48]),
+      Uint8Array.from([0x1b, 0x5d, 0x30, 0x3b, 0x48, 0x69, 0x07]),
+      enc("Z"),
+    ),
+    safe: new Set([1, 2, 5, 11, 18]),
+  },
+  {
+    // ESC P z hi ESC \ (DCS with an unregistered final 'z' → collected, no-op,
+    // ST-terminated). Only the full ST is a safe boundary; every interior offset
+    // is mid-DCS / mid-ST → unsafe.
+    name: "DCS (ESC P z hi ST)",
+    bytes: Uint8Array.from([0x1b, 0x50, 0x7a, 0x68, 0x69, 0x1b, 0x5c]),
+    safe: new Set<number>(),
+  },
+];
+
+describe.each(FIXTURES)("RT-T-22 byte-boundary split ($name)", ({ bytes, safe }) => {
   // Reference: unsplit replay.
   const ref = new HeadlessTerminalSurface({ cols: 80, rows: 24 });
   beforeAll(async () => {
-    await ref.feed(SEQ, { sessionId: sid, generation: gen, seq: 1 as Seq });
+    await ref.feed(bytes, { sessionId: sid, generation: gen, seq: 1 as Seq });
   });
 
-  it.each(Array.from({ length: SEQ.length - 1 }, (_, k) => k + 1))(
+  it.each(Array.from({ length: bytes.length - 1 }, (_, k) => k + 1))(
     "boundary at byte %i: classification correct + split == unsplit",
     async (i) => {
       const s = new HeadlessTerminalSurface({ cols: 80, rows: 24 });
-      await s.feed(SEQ.subarray(0, i), { sessionId: sid, generation: gen, seq: 1 as Seq });
+      await s.feed(bytes.subarray(0, i), { sessionId: sid, generation: gen, seq: 1 as Seq });
       // (a) the detector flags this boundary safe iff it ends a complete sequence.
-      expect(s.isSnapshotSafeCheckpoint()).toBe(SAFE_OFFSETS.has(i));
+      expect(s.isSnapshotSafeCheckpoint()).toBe(safe.has(i));
       // continue with the delta
-      await s.feed(SEQ.subarray(i), { sessionId: sid, generation: gen, seq: 2 as Seq });
-      // (b) final grid/cursor/checkpoint equal the unsplit replay.
+      await s.feed(bytes.subarray(i), { sessionId: sid, generation: gen, seq: 2 as Seq });
+      // (b) final grid/cursor/title/checkpoint equal the unsplit replay.
       expect(s.renderText()).toBe(ref.renderText());
       expect(s.cursorPosition()).toEqual(ref.cursorPosition());
+      expect(s.getTitle()).toBe(ref.getTitle());
       expect(s.isSnapshotSafeCheckpoint()).toBe(true);
     },
   );
