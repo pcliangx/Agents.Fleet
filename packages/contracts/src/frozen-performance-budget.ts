@@ -15,12 +15,21 @@
 //
 // Details: docs/probes/r0-16-runtime-limit-profile.md.
 
+import type { RendererPath } from "./platform.js";
+
+/** p95 / p99 latency gate pair. */
+export interface LatencyPercentiles {
+  readonly p95: number;
+  readonly p99: number;
+}
+
 export interface LoadClassBudget {
   readonly rendererRssBytes: number;
   readonly mainRssBytes: number;
   readonly daemonRssBytes: number;
   /** Percent of one core (100 = one fully busy core). */
   readonly rendererCpuPercent: number;
+  readonly mainCpuPercent: number;
   readonly daemonCpuPercent: number;
   /** null where no surface is painted (hidden / Electron closed). */
   readonly paintLatencyP95Ms: number | null;
@@ -43,17 +52,30 @@ export interface PerformanceBudget {
   /** RT-PERF-01 — Renderer keydown → Daemon confirmed PTY write. */
   readonly inputLatencyMs: { readonly median: number; readonly p99: number };
   /** RT-PERF-02 — Daemon PTY read → Renderer frame applied. */
-  readonly outputLatencyMs: { readonly p95: number; readonly p99: number };
+  readonly outputLatencyMs: LatencyPercentiles;
   /** RT-PERF-03 — Session restore at 10,000-line scrollback. */
   readonly sessionRestoreMs: { readonly p95: number };
-  /** RT-PERF-09 — Daemon PTY read → affected cell first presentation. */
-  readonly presentationMs: { readonly p95: number; readonly p99: number };
+  /**
+   * RT-PERF-09 — Daemon PTY read → affected cell first presentation, frozen
+   * per renderer path: WebGL2 and the forced-DOM fallback each carry their own
+   * gate and are measured separately (RT-PERF-08 runs the full budget on both
+   * paths; the numeric budgets are shared, the acceptance evidence is not).
+   */
+  readonly presentationMsPerRendererPath: Readonly<Record<RendererPath, LatencyPercentiles>>;
   readonly loadClasses: {
     readonly activeVisible: LoadClassBudget;
     readonly activeHidden: LoadClassBudget;
     readonly electronClosed: LoadClassBudget;
   };
 }
+
+// Shared across load classes: Main / Daemon process budgets and the durable /
+// restore lags do not depend on surface visibility (SESSION-1 — Sessions stay
+// Alive in the Daemon whatever the UI does).
+const MAIN_RSS_BUDGET_BYTES = 536_870_912; // 512 MiB
+const DAEMON_RSS_BUDGET_BYTES = 536_870_912; // 512 MiB — R0-06 fixed load grew RSS ~19 MB total
+const DURABLE_LAG_BUDGET_P95_MS = 250;
+const SNAPSHOT_RESTORE_BUDGET_P95_MS = 1000; // RT-PERF-03 gate
 
 export const FROZEN_PERFORMANCE_BUDGET: PerformanceBudget = {
   budgetVersion: 1,
@@ -69,7 +91,10 @@ export const FROZEN_PERFORMANCE_BUDGET: PerformanceBudget = {
   inputLatencyMs: { median: 75, p99: 300 },
   outputLatencyMs: { p95: 100, p99: 300 },
   sessionRestoreMs: { p95: 1000 },
-  presentationMs: { p95: 150, p99: 500 },
+  presentationMsPerRendererPath: {
+    WebGL2: { p95: 150, p99: 500 },
+    DOM: { p95: 150, p99: 500 },
+  },
 
   loadClasses: {
     // 10 live terminals painting: Renderer at the profile memory cap, Daemon
@@ -77,37 +102,40 @@ export const FROZEN_PERFORMANCE_BUDGET: PerformanceBudget = {
     // on the M1 floor; paint targets one 60 fps frame.
     activeVisible: {
       rendererRssBytes: 2_147_483_648, // = RuntimeLimitProfile.rendererMemoryBytes
-      mainRssBytes: 536_870_912, // 512 MiB
-      daemonRssBytes: 536_870_912, // 512 MiB — R0-06 fixed load grew RSS ~19 MB total
+      mainRssBytes: MAIN_RSS_BUDGET_BYTES,
+      daemonRssBytes: DAEMON_RSS_BUDGET_BYTES,
       rendererCpuPercent: 100,
+      mainCpuPercent: 25,
       daemonCpuPercent: 100,
       paintLatencyP95Ms: 16,
-      durableLagP95Ms: 250,
-      snapshotLatencyP95Ms: 1000, // RT-PERF-03 gate
+      durableLagP95Ms: DURABLE_LAG_BUDGET_P95_MS,
+      snapshotLatencyP95Ms: SNAPSHOT_RESTORE_BUDGET_P95_MS,
     },
     // 9 of 10 hidden: xterm / WebGL / DOM resources released, only durable
     // cursors kept (RT-BP-06) — the hidden class must cost measurably less.
     activeHidden: {
       rendererRssBytes: 1_073_741_824, // 1 GiB — half the visible budget
-      mainRssBytes: 536_870_912,
-      daemonRssBytes: 536_870_912,
+      mainRssBytes: MAIN_RSS_BUDGET_BYTES,
+      daemonRssBytes: DAEMON_RSS_BUDGET_BYTES,
       rendererCpuPercent: 25,
+      mainCpuPercent: 10,
       daemonCpuPercent: 100,
       paintLatencyP95Ms: null,
-      durableLagP95Ms: 250,
-      snapshotLatencyP95Ms: 1000, // re-show meets RT-PERF-03 (RT-PERF-11)
+      durableLagP95Ms: DURABLE_LAG_BUDGET_P95_MS,
+      snapshotLatencyP95Ms: SNAPSHOT_RESTORE_BUDGET_P95_MS, // re-show meets RT-PERF-03 (RT-PERF-11)
     },
     // Electron quit: Sessions stay Alive in the Daemon (SESSION-1); no
     // Renderer or Main budget exists at all.
     electronClosed: {
       rendererRssBytes: 0,
       mainRssBytes: 0,
-      daemonRssBytes: 536_870_912,
+      daemonRssBytes: DAEMON_RSS_BUDGET_BYTES,
       rendererCpuPercent: 0,
+      mainCpuPercent: 0,
       daemonCpuPercent: 100,
       paintLatencyP95Ms: null,
-      durableLagP95Ms: 250,
-      snapshotLatencyP95Ms: 1000,
+      durableLagP95Ms: DURABLE_LAG_BUDGET_P95_MS,
+      snapshotLatencyP95Ms: SNAPSHOT_RESTORE_BUDGET_P95_MS,
     },
   },
 };

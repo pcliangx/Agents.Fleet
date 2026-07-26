@@ -73,9 +73,11 @@ const crossChecks = [
         budget.outputLatencyMs.p95 === specLatencyGates.outputLatencyMs.p95 &&
         budget.outputLatencyMs.p99 === specLatencyGates.outputLatencyMs.p99,
       sessionRestoreMs: budget.sessionRestoreMs.p95 === specLatencyGates.sessionRestoreMs.p95,
-      presentationMs:
-        budget.presentationMs.p95 === specLatencyGates.presentationMs.p95 &&
-        budget.presentationMs.p99 === specLatencyGates.presentationMs.p99,
+      presentationMsPerRendererPath:
+        budget.presentationMsPerRendererPath.WebGL2.p95 === specLatencyGates.presentationMs.p95 &&
+        budget.presentationMsPerRendererPath.WebGL2.p99 === specLatencyGates.presentationMs.p99 &&
+        budget.presentationMsPerRendererPath.DOM.p95 === specLatencyGates.presentationMs.p95 &&
+        budget.presentationMsPerRendererPath.DOM.p99 === specLatencyGates.presentationMs.p99,
     },
   },
   {
@@ -131,6 +133,10 @@ const boundaryProbes = [
         "pendingWriteBytes",
         profile.terminal.pendingWriteBytes + 1,
       ),
+      nan: checkTerminalLimit(profile, "pendingWriteBytes", Number.NaN),
+      infinity: checkTerminalLimit(profile, "pendingWriteBytes", Number.POSITIVE_INFINITY),
+      negative: checkTerminalLimit(profile, "pendingWriteBytes", -1),
+      maliciousOverflow: checkTerminalLimit(profile, "pendingWriteBytes", Number.MAX_SAFE_INTEGER),
     },
   },
 ];
@@ -142,13 +148,13 @@ const boundaryVerdicts = boundaryProbes.map((b) => ({
     Object.entries(b.probes).map(([k, r]) => [k, r.ok ? "pass" : "violation"]),
   ),
   correct:
-    b.probes.limitMinus1?.ok === true &&
-    b.probes.limit?.ok === true &&
-    b.probes.limitPlus1?.ok === false &&
-    (b.probes.nan?.ok ?? false) === false &&
-    (b.probes.infinity?.ok ?? false) === false &&
-    (b.probes.negative?.ok ?? false) === false &&
-    (b.probes.maliciousOverflow?.ok ?? false) === false,
+    b.probes.limitMinus1.ok === true &&
+    b.probes.limit.ok === true &&
+    b.probes.limitPlus1.ok === false &&
+    b.probes.nan.ok === false &&
+    b.probes.infinity.ok === false &&
+    b.probes.negative.ok === false &&
+    b.probes.maliciousOverflow.ok === false,
 }));
 
 const allCrossChecksPass = crossChecks.every((c) => Object.values(c.checks).every(Boolean));

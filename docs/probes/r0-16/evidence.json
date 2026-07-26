@@ -1,7 +1,7 @@
 {
   "probeId": "r0-16-runtime-limit-profile",
-  "capturedAt": "2026-07-26T03:14:25.354Z",
-  "baseCommit": "585f443de5a0db3f61ca54835e9798141e70828b",
+  "capturedAt": "2026-07-26T03:41:49.373Z",
+  "baseCommit": "3380594283344dceea4687203d3fdbb26b670331",
   "frozenProfile": {
     "profileVersion": 1,
     "controlLineBytes": 2097152,
@@ -64,9 +64,15 @@
     "sessionRestoreMs": {
       "p95": 1000
     },
-    "presentationMs": {
-      "p95": 150,
-      "p99": 500
+    "presentationMsPerRendererPath": {
+      "WebGL2": {
+        "p95": 150,
+        "p99": 500
+      },
+      "DOM": {
+        "p95": 150,
+        "p99": 500
+      }
     },
     "loadClasses": {
       "activeVisible": {
@@ -74,6 +80,7 @@
         "mainRssBytes": 536870912,
         "daemonRssBytes": 536870912,
         "rendererCpuPercent": 100,
+        "mainCpuPercent": 25,
         "daemonCpuPercent": 100,
         "paintLatencyP95Ms": 16,
         "durableLagP95Ms": 250,
@@ -84,6 +91,7 @@
         "mainRssBytes": 536870912,
         "daemonRssBytes": 536870912,
         "rendererCpuPercent": 25,
+        "mainCpuPercent": 10,
         "daemonCpuPercent": 100,
         "paintLatencyP95Ms": null,
         "durableLagP95Ms": 250,
@@ -94,6 +102,7 @@
         "mainRssBytes": 0,
         "daemonRssBytes": 536870912,
         "rendererCpuPercent": 0,
+        "mainCpuPercent": 0,
         "daemonCpuPercent": 100,
         "paintLatencyP95Ms": null,
         "durableLagP95Ms": 250,
@@ -128,7 +137,7 @@
         "inputLatencyMs": true,
         "outputLatencyMs": true,
         "sessionRestoreMs": true,
-        "presentationMs": true
+        "presentationMsPerRendererPath": true
       }
     },
     {
@@ -168,7 +177,11 @@
       "results": {
         "limitMinus1": "pass",
         "limit": "pass",
-        "limitPlus1": "violation"
+        "limitPlus1": "violation",
+        "nan": "violation",
+        "infinity": "violation",
+        "negative": "violation",
+        "maliciousOverflow": "violation"
       },
       "correct": true
     }

@@ -11,10 +11,12 @@
 //   spec-derived      taskFieldBytes / taskSpecBytes (RT-TASK-01),
 //                     terminal.scrollbackLines (RT-PERF-03 reference load)
 //   R0-06 measured    attachmentQueueBytes / attachmentQueueFrames /
-//                     streamFramePayloadBytes / streamFramesPerSecond
+//                     streamFramePayloadBytes
 //   a-priori targets  everything else — engineering bounds with documented
 //                     rationale, to be re-validated on the matrix floor
-//                     (M1 / 8 GiB) fixture in R4
+//                     (M1 / 8 GiB) fixture in R4. streamFramesPerSecond sits
+//                     here too: 240 is the R0-06-observed 80 fps with a 3x
+//                     headroom factor, i.e. measurement-derived, not measured.
 
 import type { RuntimeLimitProfile } from "./limits.js";
 

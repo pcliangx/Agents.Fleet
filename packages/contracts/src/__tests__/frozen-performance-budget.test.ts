@@ -29,11 +29,17 @@ describe("FROZEN_PERFORMANCE_BUDGET (RT-PERF)", () => {
     });
   });
 
-  it("freezes the spec latency gates verbatim (RT-PERF-01/02/03/09)", () => {
+  it("freezes the spec latency gates verbatim (RT-PERF-01/02/03)", () => {
     expect(FROZEN_PERFORMANCE_BUDGET.inputLatencyMs).toEqual({ median: 75, p99: 300 });
     expect(FROZEN_PERFORMANCE_BUDGET.outputLatencyMs).toEqual({ p95: 100, p99: 300 });
     expect(FROZEN_PERFORMANCE_BUDGET.sessionRestoreMs).toEqual({ p95: 1000 });
-    expect(FROZEN_PERFORMANCE_BUDGET.presentationMs).toEqual({ p95: 150, p99: 500 });
+  });
+
+  it("freezes the RT-PERF-09 presentation gate per renderer path (WebGL2 and DOM)", () => {
+    expect(FROZEN_PERFORMANCE_BUDGET.presentationMsPerRendererPath).toEqual({
+      WebGL2: { p95: 150, p99: 500 },
+      DOM: { p95: 150, p99: 500 },
+    });
   });
 
   it("defines all three RT-PERF-10 load classes with non-negative metrics", () => {
@@ -53,7 +59,18 @@ describe("FROZEN_PERFORMANCE_BUDGET (RT-PERF)", () => {
     expect(closed.rendererRssBytes).toBe(0);
     expect(closed.mainRssBytes).toBe(0);
     expect(closed.rendererCpuPercent).toBe(0);
+    expect(closed.mainCpuPercent).toBe(0);
     expect(closed.paintLatencyP95Ms).toBeNull();
+  });
+
+  it("every load class budgets Main CPU (RT-PERF-10 records Main alongside Renderer/Daemon)", () => {
+    for (const name of classes) {
+      const budget = FROZEN_PERFORMANCE_BUDGET.loadClasses[name];
+      expect(budget.mainCpuPercent, `${name}.mainCpuPercent`).toBeGreaterThanOrEqual(0);
+    }
+    expect(FROZEN_PERFORMANCE_BUDGET.loadClasses.activeHidden.mainCpuPercent).toBeLessThanOrEqual(
+      FROZEN_PERFORMANCE_BUDGET.loadClasses.activeVisible.mainCpuPercent,
+    );
   });
 
   it("only the visible class budgets paint latency", () => {
