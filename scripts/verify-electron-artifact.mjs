@@ -15,6 +15,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyElectronFrameworkStructure } from "./verify-electron-structure.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -95,11 +96,53 @@ for (const z of zips) {
   );
 }
 
-console.log(
+// #36 — the cache-zip checksum alone misses pnpm side-effects-cache corruption:
+// on a warm-store install electron's postinstall is skipped and the framework
+// symlinks are restored as dereferenced real files/dirs. Verify the EXTRACTED
+// Electron.app structure too, so verify:electron fails early instead of
+// surfacing as a flaky apps/desktop fuses.test.ts.
+const pnpmDir = join(root, "node_modules", ".pnpm");
+let pnpmTop = [];
+try {
+  pnpmTop = await readdir(pnpmDir);
+} catch {
+  pnpmTop = [];
+}
+let structureFailures = 0;
+for (const e of pnpmTop) {
+  if (!/^electron@/.test(e)) continue;
+  const fw = join(
+    pnpmDir,
+    e,
+    "node_modules/electron/dist/Electron.app/Contents/Frameworks/Electron Framework.framework",
+  );
+  let fwStat;
+  try {
+    fwStat = await stat(fw);
+  } catch {
+    continue; // extracted app not present in this install → skip
+  }
+  if (!fwStat.isDirectory()) continue;
+  const struct = await verifyElectronFrameworkStructure(fw);
+  if (struct.ok) {
+    console.log(`✓ ${e} — framework symlink structure intact.`);
+    continue;
+  }
+  structureFailures += 1;
+  console.log(`✗ ${e} — framework symlink structure corrupted (#36):`);
+  for (const p of struct.problems) console.log(`    ${p}`);
+  console.log(
+    `    re-extract with the managed Node (NOT host Node — see #28): cd node_modules/.pnpm/${e}/node_modules/electron && rm -rf dist path.txt && ~/Library/pnpm/nodejs/22.17.1/bin/node install.js`,
+  );
+}
+
+const zipMsg =
   checked === 0
-    ? "[verify:electron] no cached Electron zip matched the store. Locked checksum unchanged."
+    ? "no cached Electron zip matched the store (locked checksum unchanged)"
     : failed === 0
-      ? `[verify:electron] ${checked} artifact(s) match locked checksums.`
-      : `[verify:electron] ${failed}/${checked} artifact(s) MISMATCH.`,
-);
-process.exit(failed === 0 ? 0 : 1);
+      ? `${checked} zip artifact(s) match locked checksums`
+      : `${failed}/${checked} zip artifact(s) MISMATCH`;
+const structMsg =
+  structureFailures === 0 ? "" : `; ${structureFailures} extracted framework(s) CORRUPTED (#36)`;
+console.log(`[verify:electron] ${zipMsg}${structMsg}.`);
+process.exit(failed === 0 && structureFailures === 0 ? 0 : 1);
