@@ -83,10 +83,12 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
   }
 
   /**
-   * @internal test hook — RT-T-19 Snapshot identity. Serializes the buffer via
-   * @xterm/addon-serialize (the same addon the Daemon Snapshot Worker uses).
-   * A WebGL2 surface and a DOM surface fed the same bytes must serialize
-   * identically (RT-TERM-07 Snapshot rebuild equivalence).
+   * @internal test hook — RT-T-19 Snapshot-source identity. Serializes the
+   * buffer via @xterm/addon-serialize (the same addon the Daemon Snapshot
+   * Worker reads). A WebGL2 surface and a DOM surface fed the same bytes must
+   * serialize identically — they share one buffer source. (Agents.Fleet's own
+   * versioned Snapshot schema, RT-TERM-07, is a separate slice; this proves
+   * the buffer the schema is rebuilt from agrees across draw paths.)
    */
   serializeText(): string {
     const addon = new SerializeAddon();

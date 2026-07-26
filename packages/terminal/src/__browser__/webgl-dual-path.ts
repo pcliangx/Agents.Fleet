@@ -14,7 +14,7 @@
 //      output representative) dimensions. (IME composition state is input-side;
 //      reflow is a resize behavior — both outside a feed-bytes fixture, partial.)
 
-import type { Generation, Seq, SessionId } from "@agents-fleet/contracts";
+import type { CellCursor, Generation, Seq, SessionId } from "@agents-fleet/contracts";
 import { DUAL_PATH_CASES, GROUND_TRUTH } from "../__tests__/fixtures.js";
 import { XtermTerminalSurface } from "../xterm-surface.js";
 
@@ -53,7 +53,7 @@ export interface Results {
 
 interface SurfaceSnapshot {
   readonly text: string;
-  readonly cursor: { readonly row: number; readonly col: number };
+  readonly cursor: CellCursor;
   readonly selection: string;
   readonly snapshot: string;
 }
