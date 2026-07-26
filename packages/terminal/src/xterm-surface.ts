@@ -7,6 +7,7 @@
 // WebGL2-vs-DOM draw-path identity (RT-T-19) is verified by the browser harness
 // (S5c); the detached div here does not run a real renderer in unit tests.
 
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import {
@@ -29,6 +30,7 @@ export interface XtermTerminalOptions extends TerminalSurfaceOptions {
 export class XtermTerminalSurface extends BaseTerminalSurface {
   private drawModeValue: TerminalDrawMode = "DOM";
   private readonly element: HTMLElement;
+  private readonly rendererTerm: Terminal;
 
   constructor(opts: XtermTerminalOptions) {
     const term = new Terminal({ cols: opts.cols, rows: opts.rows, allowProposedApi: true });
@@ -37,6 +39,7 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
     term.open(element);
     super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
     this.element = element;
+    this.rendererTerm = term;
     if (opts.preferWebGL2 !== false) {
       this.tryEnableWebGL2(term);
     }
@@ -66,6 +69,33 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
       }
     }
     return undefined;
+  }
+
+  /**
+   * @internal test hook — RT-T-19 selection identity. Selects the whole active
+   * buffer and returns the selection text. A WebGL2 surface and a DOM surface
+   * fed the same bytes must return identical selection text.
+   */
+  selectionText(): string {
+    const b = this.rendererTerm.buffer.active;
+    this.rendererTerm.select(0, 0, b.length * this.rendererTerm.cols);
+    return this.rendererTerm.getSelection();
+  }
+
+  /**
+   * @internal test hook — RT-T-19 Snapshot identity. Serializes the buffer via
+   * @xterm/addon-serialize (the same addon the Daemon Snapshot Worker uses).
+   * A WebGL2 surface and a DOM surface fed the same bytes must serialize
+   * identically (RT-TERM-07 Snapshot rebuild equivalence).
+   */
+  serializeText(): string {
+    const addon = new SerializeAddon();
+    this.rendererTerm.loadAddon(addon);
+    try {
+      return addon.serialize();
+    } finally {
+      addon.dispose();
+    }
   }
 
   private tryEnableWebGL2(term: Terminal): void {

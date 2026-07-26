@@ -53,10 +53,12 @@ try {
     const r = outcome.res;
     let failed = 0;
     for (const c of r.cases) {
-      const ok = c.webgl2 && c.textOk && c.cursorOk;
+      const dims = c.gridMatch && c.cursorMatch && c.selectionMatch && c.snapshotMatch;
+      const oracle = c.kind === "ground-truth" ? c.vsOracle : true;
+      const ok = c.webgl2 && dims && oracle;
       if (!ok) failed++;
       console.log(
-        `${ok ? "✓" : "✗"} [${c.webgl2 ? "WebGL2" : "DOM"}] ${c.name} — text=${c.textOk} cursor=${c.cursorOk}`,
+        `${ok ? "✓" : "✗"} [${c.webgl2 ? "WebGL2" : "DOM!"}] (${c.kind}) ${c.name} — grid=${c.gridMatch} cursor=${c.cursorMatch} selection=${c.selectionMatch} snapshot=${c.snapshotMatch}${c.kind === "ground-truth" ? ` oracle=${c.vsOracle}` : ""}`,
       );
     }
     const cl = r.contextLoss;
