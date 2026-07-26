@@ -10,8 +10,8 @@
     "hostNode": "v26.4.0",
     "projectNode": "v22.17.1",
     "pnpm": "10.33.2",
-    "electron": "34.5.8",
-    "electronArtifactSha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248",
+    "electron": "43.2.0",
+    "electronArtifactSha256": "ad4a0ae3c37ee05aa06c7e2ed0627608389790f0505a2b0d20319efbe33ffe28",
     "nodePty": "1.1.0"
   },
   "verdict": {
@@ -85,7 +85,7 @@
     "hostRuntime": "v26.4.0",
     "managedRuntime": "v22.17.1",
     "managedRuntimeLockedWithPlatformChecksums": true,
-    "allowed": ["electron@34.5.8"],
+    "allowed": ["electron@43.2.0"],
     "denied": ["esbuild@0.25.12", "esbuild@0.28.1", "node-pty@1.1.0"],
     "unreviewedVersionsFailClosed": true,
     "electronArtifactSize": 99875523,

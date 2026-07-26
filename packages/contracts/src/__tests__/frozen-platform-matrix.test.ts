@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { FROZEN_PLATFORM_MATRIX, PLATFORM_MATRIX_VERSION } from "../frozen-platform-matrix.js";
 import { checkPlatform } from "../platform-gate.js";
 
-describe("RT-DIST-08 frozen SupportedPlatformMatrix v2", () => {
-  it("matrixVersion is 2 and the constant agrees (bumped by R0-16 profile freeze)", () => {
-    expect(FROZEN_PLATFORM_MATRIX.matrixVersion).toBe(2);
-    expect(PLATFORM_MATRIX_VERSION).toBe(2);
+describe("RT-DIST-08 frozen SupportedPlatformMatrix v3", () => {
+  it("matrixVersion is 3 and the constant agrees (v2=R0-16 profile, v3=#57 Electron 43.2.0)", () => {
+    expect(FROZEN_PLATFORM_MATRIX.matrixVersion).toBe(3);
+    expect(PLATFORM_MATRIX_VERSION).toBe(3);
   });
 
   it("freezes Apple Silicon / Tahoe / WebGL2+DOM per PLATFORM-1", () => {
@@ -30,7 +30,7 @@ describe("RT-DIST-08 frozen SupportedPlatformMatrix v2", () => {
   });
 
   it("pins runtime identities proven by R0-10", () => {
-    expect(FROZEN_PLATFORM_MATRIX.electronVersion).toBe("34.5.8");
+    expect(FROZEN_PLATFORM_MATRIX.electronVersion).toBe("43.2.0");
     expect(FROZEN_PLATFORM_MATRIX.nodeRuntimeVersion).toBe("22.17.1");
     expect(FROZEN_PLATFORM_MATRIX.nodePtyArtifactIdentity).toBe("node-pty@1.1.0;darwin-arm64");
   });

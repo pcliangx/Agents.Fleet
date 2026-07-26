@@ -12,7 +12,7 @@ packages:
 useNodeVersion: 22.17.1
 
 # #36 — pnpm's side-effects cache restores postinstall-created symlinks as
-# physical copies (upstream pnpm#12859). electron@34.5.8 is the one package
+# physical copies (upstream pnpm#12859). electron@43.2.0 is the one package
 # allowed to build here (allowBuilds below), and its framework symlinks are
 # load-bearing (fuse verification edits Versions/Current while the loader
 # resolves the top-level path), so build results must never be restored from
@@ -21,7 +21,7 @@ useNodeVersion: 22.17.1
 sideEffectsCache: false
 
 allowBuilds:
-  electron@34.5.8: true
+  electron@43.2.0: true
   esbuild@0.25.12: false
   esbuild@0.28.1: false
   node-pty@1.1.0: false

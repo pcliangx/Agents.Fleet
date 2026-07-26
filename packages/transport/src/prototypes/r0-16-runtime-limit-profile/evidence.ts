@@ -95,7 +95,7 @@ const crossChecks = [
       profileVersion: RUNTIME_LIMIT_PROFILE_VERSION === 1 && profile.profileVersion === 1,
       matrixRecordsProfile:
         FROZEN_PLATFORM_MATRIX.runtimeLimitProfileVersion === RUNTIME_LIMIT_PROFILE_VERSION,
-      matrixBumped: FROZEN_PLATFORM_MATRIX.matrixVersion === 2,
+      matrixBumped: FROZEN_PLATFORM_MATRIX.matrixVersion >= 2,
       budgetReferences:
         budget.matrixVersion === FROZEN_PLATFORM_MATRIX.matrixVersion &&
         budget.runtimeLimitProfileVersion === RUNTIME_LIMIT_PROFILE_VERSION,

@@ -33,7 +33,7 @@ const syntheticWire = (flags: string): Buffer =>
 
 describe("fuse wire parsing", () => {
   it("parses a synthetic fuse wire", () => {
-    const parsed = parseFuseWire(syntheticWire("01010101"));
+    const parsed = parseFuseWire(syntheticWire("010101010"));
     expect(parsed?.version).toBe(1);
     expect(parsed?.fuses).toEqual({
       RunAsNode: false,
@@ -44,6 +44,7 @@ describe("fuse wire parsing", () => {
       OnlyLoadAppFromAsar: true,
       LoadBrowserProcessSpecificV8Snapshot: false,
       GrantFileProtocolExtraPrivileges: true,
+      WasmTrapHandlers: false,
     });
   });
 
@@ -82,7 +83,7 @@ describe("release fuse posture on real binaries", () => {
     "reports the dev Electron binary as non-compliant (RunAsNode and friends on)",
     async () => {
       // This is the expected *development* posture: the shipped Electron
-      // Framework binary carries default fuses (wire "10110001"). Release
+      // Framework binary carries default fuses (wire "101100011"). Release
       // verification must refuse to boot from this image.
       const framework = await readFile(frameworkBinaryPath(electronBinary()));
       const report = verifyReleaseFuses(framework);

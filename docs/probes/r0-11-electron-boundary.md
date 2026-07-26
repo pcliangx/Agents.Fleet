@@ -8,7 +8,7 @@
 > SV1-T-04(Main IPC 一侧)与 SV1-T-21(fuse 线级部分)。
 > SV1-ELECTRON-07(confirmation 面)、asar 打包后的 fuse 行为、MessagePort/Attachment 绑定**未在本次覆盖**,见「边界与后续」。
 >
-> 实测于 2026-07-26,macOS 26.5.2 (25F84) / Apple M5 Pro / node v26.4.0 / Electron 34.5.8(adhoc 签名 dev 二进制)。
+> 实测于 2026-07-26,macOS 26.5.2 (25F84) / Apple M5 Pro / node v26.4.0 / Electron 43.2.0(adhoc 签名 dev 二进制)。
 > 方法:两个真实 Electron fixture——(1) `electron-boundary.test.ts` 把 `src/main/` 的**真实边界模块**就地
 > transpile 进一次性 fixture app,再给它一个**故意暴露通用 invoke 的 preload**(模拟被攻陷的 Renderer),
 > 逐项发起协议遍历、伪造 sender、subframe、navigation、new-window、webview、download、permission、CSP bypass 与
@@ -17,8 +17,8 @@
 
 ## 结论
 
-**在真实 Electron 34.5.8 上,本文实现的 Main 侧边界让全部攻击 fixture fail closed;同时实测证明
-Electron 出厂 dev 二进制的默认 fuse 姿态(wire `10110001`)允许 `ELECTRON_RUN_AS_NODE` 与
+**在真实 Electron 43.2.0 上,本文实现的 Main 侧边界让全部攻击 fixture fail closed;同时实测证明
+Electron 出厂 dev 二进制的默认 fuse 姿态(wire `101100011`,9 位 fuse;index 8 = WasmTrapHandlers)允许 `ELECTRON_RUN_AS_NODE` 与
 `NODE_OPTIONS --require` 注入 Main 进程——SV1-ELECTRON-05 的 fuse 固定不是形式要求,而是真实风险,
 发布构建必须在签名后拒绝默认 fuse 姿态。**
 

@@ -49,9 +49,9 @@ or Renderer from acquiring the native addon through a package or source import?
   `import("node-pty")` is rejected.
 - Fresh installs use pnpm's managed Node 22.17.1 runtime. Its platform-specific
   artifact URLs and SHA-256 values are locked in `pnpm-lock.yaml`; this avoids
-  the incomplete `extract-zip@2.0.1` result observed when Electron 34.5.8's
+  the incomplete `extract-zip@2.0.1` result observed when Electron 43.2.0's
   postinstall runs under the Host's Node 26.4.0.
-- The dependency-build policy allows only `electron@34.5.8` and explicitly
+- The dependency-build policy allows only `electron@43.2.0` and explicitly
   denies the current `esbuild` versions plus `node-pty@1.1.0`. A version change
   therefore returns to the unreviewed, fail-closed state.
 
@@ -105,7 +105,7 @@ Fresh-install remediation verification:
   `extract-zip@2.0.1` writes only the first archive entry and exits zero; the
   fixture still fails because `path.txt` is absent (RED).
 - Host Node 26.4.0 starting pnpm + managed Node 22.17.1 + exact
-  `electron@34.5.8` permission: postinstall completes and the real Renderer
+  `electron@43.2.0` permission: postinstall completes and the real Renderer
   fixture passes (GREEN).
 - The complete 25-file / 133-test suite also passes in that isolated fresh
   worktree using the final committed configuration and no CLI configuration
@@ -129,7 +129,7 @@ Environment:
 - Host Node v26.4.0
 - pnpm-managed project Node v22.17.1
 - pnpm 10.33.2
-- Electron 34.5.8
+- Electron 43.2.0
 - `node-pty` 1.1.0
 
 The native module loads and exposes `spawn`. The installed
