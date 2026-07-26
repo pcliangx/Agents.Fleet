@@ -1,6 +1,6 @@
 # Agents.Fleet v1 Runtime Contracts
 
-> Status: Draft
+> Status: R0 Baseline
 >
 > 本文件定义 v1 的运行时接口、不变量、状态机、故障语义与验收方法。产品范围见 [`v1.md`](./v1.md)，信任与安全保证见 [`security-v1.md`](./security-v1.md)。
 >
