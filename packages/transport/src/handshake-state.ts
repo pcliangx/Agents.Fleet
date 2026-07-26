@@ -1,6 +1,8 @@
 // RT-HS-01..05 — pure handshake FSM shared by daemon and desktop client.
 // This module only does version/platform/limit negotiation + DaemonChallenge
-// construction. Mutual proof verification (RT-HS-04) is injected as a
+// construction. The per-connection daemonNonce + daemonProof are supplied by
+// the caller (the Daemon dispatcher generates a fresh nonce and computes the
+// proof per connection, RT-HS-04). Mutual proof verification is injected as a
 // ProofVerifier at the transport-using layer; #11 ships the real one.
 
 import type {
@@ -18,6 +20,12 @@ export interface DaemonHandshakeConfig {
   readonly daemonGeneration: Generation;
   readonly platformMatrixVersion: number;
   readonly runtimeLimitProfileVersion: number;
+}
+
+// RT-HS-04 — per-connection values the Daemon fills into the challenge. The
+// dispatcher generates `daemonNonce` per connection and computes `daemonProof`
+// from the negotiation transcript; negotiate just places them.
+export interface PerConnectionProof {
   readonly daemonNonce: Nonce;
   readonly daemonProof: string;
 }
@@ -39,6 +47,7 @@ export const selectProtocolVersion = (
 export const negotiate = (
   config: DaemonHandshakeConfig,
   hello: ClientHello,
+  perConnection: PerConnectionProof,
 ): HandshakeNegotiation => {
   if (
     hello.expectedPlatformMatrixVersion !== config.platformMatrixVersion ||
@@ -60,8 +69,8 @@ export const negotiate = (
     daemonGeneration: config.daemonGeneration,
     platformMatrixVersion: config.platformMatrixVersion,
     runtimeLimitProfileVersion: config.runtimeLimitProfileVersion,
-    daemonNonce: config.daemonNonce,
-    daemonProof: config.daemonProof,
+    daemonNonce: perConnection.daemonNonce,
+    daemonProof: perConnection.daemonProof,
   };
   return { kind: "challenge", challenge };
 };
