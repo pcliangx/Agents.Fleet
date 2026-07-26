@@ -68,10 +68,21 @@ describe("node-pty package boundary", () => {
   });
 
   it("loads node-pty only in the Daemon ProcessSupervisor", () => {
+    // Production-source boundary only. `src/__tests__/` and `src/prototypes/`
+    // are dev scaffolding (run via vitest / tsx), never in the Daemon's
+    // production import graph, so a prototype may legitimately reference
+    // node-pty (e.g. the r0-22 spawn-helper verifier) without weakening the
+    // RT-TERM-08 / SV1-AUTH-09 boundary the real loader must satisfy.
     const loaders: string[] = [];
     for (const root of ["packages", "apps"]) {
       for (const file of walkSources(join(REPOSITORY_ROOT, root))) {
-        if (file === THIS_TEST || file.includes(`${join("src", "__tests__")}/`)) continue;
+        if (
+          file === THIS_TEST ||
+          file.includes(`${join("src", "__tests__")}/`) ||
+          file.includes(`${join("src", "prototypes")}/`)
+        ) {
+          continue;
+        }
         if (NODE_PTY_LITERAL_RE.test(readFileSync(file, "utf8"))) {
           loaders.push(relative(REPOSITORY_ROOT, file));
         }
