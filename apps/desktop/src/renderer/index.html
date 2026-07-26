@@ -3,33 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <title>Agents.Fleet</title>
-    <style>
-      body {
-        font-family: -apple-system, system-ui, sans-serif;
-        margin: 0;
-        padding: 2rem;
-        color: #eee;
-        background: #1e1e1e;
-      }
-      h1 { font-size: 1rem; font-weight: 600; }
-      #status { font-family: ui-monospace, monospace; font-size: 0.85rem; opacity: 0.85; }
-    </style>
+    <!-- SV1-ELECTRON-04: no inline script/style so script-src/style-src 'self' holds. -->
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <h1>Agents.Fleet</h1>
     <div id="status">connecting…</div>
-    <script>
-      const api = window.agentsFleet;
-      const el = document.getElementById("status");
-      const poll = async () => {
-        try {
-          el.textContent = await api.getConnectionInfo();
-        } catch (e) {
-          el.textContent = "error: " + String(e);
-        }
-      };
-      poll();
-      setInterval(poll, 500);
-    </script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>
