@@ -8,15 +8,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase, transact } from "../storage/database.js";
 import { IdempotencyStore } from "../storage/idempotency.js";
-import { TASK_MIGRATIONS, TaskStore } from "../storage/task-store.js";
+import { ALL_MIGRATIONS } from "../storage/migrations.js";
+import { TaskStore } from "../storage/task-store.js";
 
 let dir: string;
 afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
   dir = "";
 });
-
-const ALL_MIGRATIONS = [...TASK_MIGRATIONS, ...IdempotencyStore.migrations];
 
 const makeDb = () => {
   dir = mkdtempSync(join(tmpdir(), "af-r101-atomic-"));
@@ -50,7 +49,7 @@ describe("transaction atomicity (RT-STO-01)", () => {
 
     expect(() =>
       transact(db, () => {
-        idem.record("cmd_1", "hash-a", { status: "done" });
+        idem.record("cmd_1", "hash-a", { status: "done" }, { type: "task", id: task.taskId });
         db.prepare("UPDATE tasks SET lifecycle = 'Cancelled' WHERE task_id = ?").run(task.taskId);
         throw new Error("injected failure after both writes");
       }),
@@ -69,7 +68,7 @@ describe("transaction atomicity (RT-STO-01)", () => {
     const task = tasks.createTask({ workspaceId: "ws1", spec: { goal: "g" } });
 
     transact(db, () => {
-      idem.record("cmd_2", "hash-b", { status: "done" });
+      idem.record("cmd_2", "hash-b", { status: "done" }, { type: "task", id: task.taskId });
       db.prepare("UPDATE tasks SET lifecycle = 'Cancelled' WHERE task_id = ?").run(task.taskId);
       db.prepare(
         `INSERT INTO domain_events

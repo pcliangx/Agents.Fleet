@@ -125,6 +125,44 @@ export class StoreError extends Error {
 
 const SPEC_FIELDS = ["goal", "context", "constraints", "acceptanceCriteria"] as const;
 
+// RT-STATE-15 — lifecycle transitions expressed as exhaustive switches. Adding
+// a future state (e.g. "Paused") forces every guard to handle it explicitly;
+// the `never` default fails closed on any unhandled state instead of silently
+// inheriting an existing transition (Divergent Change / Repeated Switches smell).
+const assertDraft = (lifecycle: TaskLifecycle, action: string): void => {
+  switch (lifecycle) {
+    case "Draft":
+      return;
+    case "Runnable":
+    case "Cancelled":
+      throw new StoreError("Conflict", `cannot ${action} a ${lifecycle} task`);
+    default: {
+      const exhaustive: never = lifecycle;
+      throw new StoreError(
+        "Conflict",
+        `cannot ${action} from unknown lifecycle ${exhaustive as string}`,
+      );
+    }
+  }
+};
+
+const assertCancelable = (lifecycle: TaskLifecycle): void => {
+  switch (lifecycle) {
+    case "Draft":
+    case "Runnable":
+      return;
+    case "Cancelled":
+      throw new StoreError("Conflict", "task is already cancelled");
+    default: {
+      const exhaustive: never = lifecycle;
+      throw new StoreError(
+        "Conflict",
+        `cannot cancel from unknown lifecycle ${exhaustive as string}`,
+      );
+    }
+  }
+};
+
 interface TaskRow {
   readonly task_id: string;
   readonly workspace_id: string;
@@ -195,16 +233,21 @@ export class TaskStore {
     };
   }
 
-  #nextSeq(table: string, column: string, taskId?: string): number {
-    const row = (
-      taskId === undefined
-        ? this.#db.prepare(`SELECT COALESCE(MAX(${column}), 0) + 1 AS seq FROM ${table}`).get()
-        : this.#db
-            .prepare(
-              `SELECT COALESCE(MAX(${column}), 0) + 1 AS seq FROM ${table} WHERE task_id = ?`,
-            )
-            .get(taskId)
-    ) as { seq: number };
+  // Per-table seq helpers — no SQL identifier interpolation (prepared-only
+  // invariant). domain_events.timeline_seq is per-task; attempts.created_seq is global.
+  #nextEventTimelineSeq(taskId: string): number {
+    const row = this.#db
+      .prepare(
+        "SELECT COALESCE(MAX(timeline_seq), 0) + 1 AS seq FROM domain_events WHERE task_id = ?",
+      )
+      .get(taskId) as { seq: number };
+    return row.seq;
+  }
+
+  #nextAttemptCreatedSeq(): number {
+    const row = this.#db
+      .prepare("SELECT COALESCE(MAX(created_seq), 0) + 1 AS seq FROM attempts")
+      .get() as { seq: number };
     return row.seq;
   }
 
@@ -224,7 +267,7 @@ export class TaskStore {
         EVENT_SCHEMA_VERSION,
         taskId,
         attemptId ?? null,
-        this.#nextSeq("domain_events", "timeline_seq", taskId),
+        this.#nextEventTimelineSeq(taskId),
         type,
         JSON.stringify(payload),
         now,
@@ -259,9 +302,7 @@ export class TaskStore {
       this.#db,
       () => {
         const row = this.#taskRow(taskId);
-        if (row.lifecycle !== "Draft") {
-          throw new StoreError("Conflict", `cannot edit the spec of a ${row.lifecycle} task`);
-        }
+        assertDraft(row.lifecycle, "edit the spec of");
         this.#db
           .prepare(
             "UPDATE tasks SET spec_json = ?, task_spec_version = ?, updated_at = ? WHERE task_id = ?",
@@ -288,9 +329,7 @@ export class TaskStore {
       this.#db,
       () => {
         const row = this.#taskRow(taskId);
-        if (row.lifecycle !== "Draft") {
-          throw new StoreError("Conflict", `cannot start a ${row.lifecycle} task`);
-        }
+        assertDraft(row.lifecycle, "start");
         this.#db
           .prepare("UPDATE tasks SET lifecycle = 'Runnable', updated_at = ? WHERE task_id = ?")
           .run(new Date(this.#now()).toISOString(), taskId);
@@ -305,7 +344,7 @@ export class TaskStore {
             taskId,
             row.spec_json,
             row.task_spec_version,
-            this.#nextSeq("attempts", "created_seq"),
+            this.#nextAttemptCreatedSeq(),
             new Date(this.#now()).toISOString(),
           );
         this.#appendEvent(
@@ -326,9 +365,7 @@ export class TaskStore {
       this.#db,
       () => {
         const row = this.#taskRow(taskId);
-        if (row.lifecycle === "Cancelled") {
-          throw new StoreError("Conflict", "task is already cancelled");
-        }
+        assertCancelable(row.lifecycle);
         this.#db
           .prepare("UPDATE tasks SET lifecycle = 'Cancelled', updated_at = ? WHERE task_id = ?")
           .run(new Date(this.#now()).toISOString(), taskId);

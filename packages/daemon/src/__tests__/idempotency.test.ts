@@ -18,6 +18,7 @@ afterEach(() => {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const T0 = 1_800_000_000_000;
+const TARGET = { type: "task", id: "tk_test" } as const;
 
 const makeStore = (now: () => number = () => T0): IdempotencyStore => {
   dir = mkdtempSync(join(tmpdir(), "af-r101-idem-"));
@@ -33,25 +34,25 @@ describe("IdempotencyStore (RT-CMD-02)", () => {
   it("records and replays the original result for the same commandId + payload", () => {
     const store = makeStore();
     expect(store.lookup("cmd_1", "hash-a")).toBeNull();
-    store.record("cmd_1", "hash-a", { status: "ok", attemptId: "at_1" });
+    store.record("cmd_1", "hash-a", { status: "ok", attemptId: "at_1" }, TARGET);
     expect(store.lookup("cmd_1", "hash-a")).toEqual({ status: "ok", attemptId: "at_1" });
   });
 
   it("same commandId with a different payload hash is IdempotencyConflict", () => {
     const store = makeStore();
-    store.record("cmd_1", "hash-a", { status: "ok" });
+    store.record("cmd_1", "hash-a", { status: "ok" }, TARGET);
     expect(() => store.lookup("cmd_1", "hash-b")).toThrowError(
       expect.objectContaining({ code: "IdempotencyConflict" }),
     );
-    expect(() => store.record("cmd_1", "hash-b", { status: "ok" })).toThrowError(
+    expect(() => store.record("cmd_1", "hash-b", { status: "ok" }, TARGET)).toThrowError(
       expect.objectContaining({ code: "IdempotencyConflict" }),
     );
   });
 
   it("a replayed record returns the original result, not the new one", () => {
     const store = makeStore();
-    store.record("cmd_1", "hash-a", { status: "first" });
-    store.record("cmd_1", "hash-a", { status: "second" });
+    store.record("cmd_1", "hash-a", { status: "first" }, TARGET);
+    store.record("cmd_1", "hash-a", { status: "second" }, TARGET);
     expect(store.lookup("cmd_1", "hash-a")).toEqual({ status: "first" });
   });
 });
@@ -60,8 +61,8 @@ describe("IdempotencyStore retention (RT-CMD-07)", () => {
   it("live records are never purged, tombstones only after 30 days", () => {
     let now = T0;
     const store = makeStore(() => now);
-    store.record("cmd_live", "hash-a", { status: "ok" });
-    store.record("cmd_dead", "hash-b", { status: "ok" });
+    store.record("cmd_live", "hash-a", { status: "ok" }, TARGET);
+    store.record("cmd_dead", "hash-b", { status: "ok" }, TARGET);
     store.tombstone("cmd_dead");
 
     now = T0 + 29 * DAY_MS;

@@ -5,8 +5,9 @@ import { copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openDatabase, restoreFromBackup, rollBackupIfDue } from "../storage/database.js";
+import { maybeRollBackup, openDatabase, restoreFromBackup } from "../storage/database.js";
 import { executeIdempotent, IdempotencyStore } from "../storage/idempotency.js";
+import { ALL_MIGRATIONS } from "../storage/migrations.js";
 import { TASK_MIGRATIONS, TaskStore } from "../storage/task-store.js";
 
 let dir: string;
@@ -17,8 +18,6 @@ afterEach(() => {
 
 const T0 = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;
-
-const ALL_MIGRATIONS = [...TASK_MIGRATIONS, ...IdempotencyStore.migrations];
 
 const makeDb = () => {
   dir = mkdtempSync(join(tmpdir(), "af-r101-review-"));
@@ -35,8 +34,18 @@ describe("executeIdempotent (RT-T-04 / RT-CMD-03)", () => {
     const fn = vi.fn(() => tasks.startTask(taskId));
     const taskId = tasks.createTask({ workspaceId: "ws1", spec: { goal: "g" } }).taskId;
 
-    const first = executeIdempotent(db, idem, { commandId: "cmd_1", payload: { taskId } }, fn);
-    const second = executeIdempotent(db, idem, { commandId: "cmd_1", payload: { taskId } }, fn);
+    const first = executeIdempotent(
+      db,
+      idem,
+      { commandId: "cmd_1", payload: { taskId }, target: { type: "task", id: taskId } },
+      fn,
+    );
+    const second = executeIdempotent(
+      db,
+      idem,
+      { commandId: "cmd_1", payload: { taskId }, target: { type: "task", id: taskId } },
+      fn,
+    );
 
     expect(fn).toHaveBeenCalledTimes(1);
     expect(second).toEqual(first);
@@ -51,16 +60,26 @@ describe("executeIdempotent (RT-T-04 / RT-CMD-03)", () => {
     const taskId = tasks.createTask({ workspaceId: "ws1", spec: { goal: "g" } }).taskId;
     const fn = vi.fn(() => tasks.startTask(taskId));
 
-    executeIdempotent(db, idem, { commandId: "cmd_1", payload: { taskId } }, fn);
+    executeIdempotent(
+      db,
+      idem,
+      { commandId: "cmd_1", payload: { taskId }, target: { type: "task", id: taskId } },
+      fn,
+    );
     expect(() =>
-      executeIdempotent(db, idem, { commandId: "cmd_1", payload: { taskId: "other" } }, fn),
+      executeIdempotent(
+        db,
+        idem,
+        { commandId: "cmd_1", payload: { taskId: "other" }, target: { type: "task", id: taskId } },
+        fn,
+      ),
     ).toThrowError(expect.objectContaining({ code: "IdempotencyConflict" }));
     expect(fn).toHaveBeenCalledTimes(1);
     db.close();
   });
 });
 
-describe("rollBackupIfDue (RT-STO-07)", () => {
+describe("maybeRollBackup (RT-STO-07)", () => {
   it("no backup before 24h, one verified backup after, newest 3 kept", () => {
     const root = mkdtempSync(join(tmpdir(), "af-r101-roll-"));
     dir = root;
@@ -73,10 +92,10 @@ describe("rollBackupIfDue (RT-STO-07)", () => {
     const tasks = new TaskStore(db, () => now);
     // a change happened (transaction committed) — but the interval has not passed
     tasks.createTask({ workspaceId: "ws1", spec: { goal: "g" } });
-    expect(rollBackupIfDue(db, path, { backupDir: backups, now: () => now })).toBeNull();
+    expect(maybeRollBackup(db, path, { backupDir: backups, now: () => now })).toBeNull();
 
     now = T0 + 25 * HOUR;
-    const first = rollBackupIfDue(db, path, { backupDir: backups, now: () => now });
+    const first = maybeRollBackup(db, path, { backupDir: backups, now: () => now });
     expect(first).not.toBeNull();
     // the backup is a verified, openable copy
     const check = openDatabase({ path: first as string, migrations: TASK_MIGRATIONS });
@@ -85,13 +104,13 @@ describe("rollBackupIfDue (RT-STO-07)", () => {
 
     // no new backup until the next interval — even with further changes
     tasks.createTask({ workspaceId: "ws1", spec: { goal: "g2" } });
-    expect(rollBackupIfDue(db, path, { backupDir: backups, now: () => now })).toBeNull();
+    expect(maybeRollBackup(db, path, { backupDir: backups, now: () => now })).toBeNull();
 
     // four more intervals → only the newest 3 survive
     for (let i = 1; i <= 4; i++) {
       now = T0 + (25 + i * 24) * HOUR;
       tasks.createTask({ workspaceId: "ws1", spec: { goal: `g${i + 2}` } });
-      expect(rollBackupIfDue(db, path, { backupDir: backups, now: () => now })).not.toBeNull();
+      expect(maybeRollBackup(db, path, { backupDir: backups, now: () => now })).not.toBeNull();
     }
     expect(readdirSync(backups).filter((f) => f.endsWith(".db"))).toHaveLength(3);
     db.close();

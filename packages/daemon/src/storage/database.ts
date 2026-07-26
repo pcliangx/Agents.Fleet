@@ -13,7 +13,7 @@
 //   verified backup (checkpoint → copy → reopen → integrity check), rolling
 //   the newest 3 (RT-STO-07);
 // - RT-STO-07 rolling backups: committed transactions bump a meta change
-//   counter, and rollBackupIfDue creates a verified backup once changes are
+//   counter, and maybeRollBackup creates a verified backup once changes are
 //   at least 24h old — again keeping the newest 3;
 // - restoreFromBackup is the user-confirmed recovery path: the backup is
 //   integrity-verified first and the corrupt sample is moved aside, never
@@ -51,13 +51,16 @@ export type OpenDatabaseResult =
 
 const integrityOk = (db: DatabaseSync): boolean => {
   const rows = db.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
-  return rows.length > 0 && rows[0]?.integrity_check === "ok";
+  return rows[0]?.integrity_check === "ok";
 };
 
 const applyPragmas = (db: DatabaseSync): void => {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = FULL");
   db.exec("PRAGMA foreign_keys = ON");
+  // Node 24.14+ defaults defensive=ON; pin it explicitly so a future Node
+  // default change can never silently weaken the posture (SV1-SUPPLY / RT-STO-06).
+  db.exec("PRAGMA defensive = ON");
 };
 
 /**
@@ -68,7 +71,7 @@ const applyPragmas = (db: DatabaseSync): void => {
  * SAVEPOINTs, so RT-STO-01's "one transaction" holds for composed commands.
  *
  * Each outermost commit also bumps the meta change counter that drives the
- * RT-STO-07 rolling 24h backup (rollBackupIfDue below).
+ * RT-STO-07 rolling 24h backup (maybeRollBackup below).
  */
 const txDepth = new WeakMap<DatabaseSync, number>();
 
@@ -84,11 +87,14 @@ export const transact = <T>(db: DatabaseSync, fn: () => T, now: () => number = D
     const result = fn();
     txDepth.set(db, depth);
     if (depth === 0) {
-      db.exec("COMMIT");
+      // Bump the RT-STO-07 change counter BEFORE COMMIT so a crash between the
+      // bump and the commit can never under-count: an aborted commit rolls the
+      // bump back with it, a successful commit carries both atomically.
       db.prepare(
         "UPDATE _meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'change_seq'",
       ).run();
       db.prepare("UPDATE _meta SET value = ? WHERE key = 'last_change_at'").run(String(now()));
+      db.exec("COMMIT");
     } else {
       db.exec(`RELEASE SAVEPOINT af_sp_${depth}`);
     }
@@ -187,7 +193,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * the last backup is at least 24h old; keep the newest 3. Returns the backup
  * path, or null when nothing is due.
  */
-export const rollBackupIfDue = (
+export const maybeRollBackup = (
   db: DatabaseSync,
   path: string,
   options: RollBackupOptions = {},
@@ -244,7 +250,7 @@ const migrate = (db: DatabaseSync, migrations: readonly Migration[], fromVersion
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
-      throw e;
+      throw new Error(`migration ${m.version} (${m.name}) failed: ${(e as Error).message}`);
     }
   }
 };
@@ -284,7 +290,13 @@ export const openDatabase = (options: OpenDatabaseOptions): OpenDatabaseResult =
         return recovery(path, "integrity: integrity_check failed after migration");
       }
     }
-    return { kind: "ready", db, backupsCreated };
+    // RT-STO-07 driver: on open, roll a backup if one is due (changes since the
+    // last backup + >= 24h elapsed). Per-commit rolling stays the daemon
+    // scheduler's job; this covers the reopen-after-24h case so a long-lived
+    // database never silently exceeds the 24h budget between reopens.
+    const rollingBackup = maybeRollBackup(db, path, { backupDir, now });
+    const allBackups = rollingBackup === null ? backupsCreated : [...backupsCreated, rollingBackup];
+    return { kind: "ready", db, backupsCreated: allBackups };
   } catch (e) {
     try {
       db.close();

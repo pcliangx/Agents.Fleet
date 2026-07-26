@@ -26,7 +26,11 @@ export const hashCommandPayload = (payload: unknown): string => hashPreviewFact(
 export const executeIdempotent = <T>(
   db: DatabaseSync,
   idem: IdempotencyStore,
-  command: { readonly commandId: string; readonly payload: unknown },
+  command: {
+    readonly commandId: string;
+    readonly payload: unknown;
+    readonly target: { readonly type: string; readonly id: string };
+  },
   fn: () => T,
 ): T =>
   transact(db, () => {
@@ -34,7 +38,7 @@ export const executeIdempotent = <T>(
     const hit = idem.lookup(command.commandId, payloadHash);
     if (hit !== null) return hit as T;
     const result = fn();
-    idem.record(command.commandId, payloadHash, result);
+    idem.record(command.commandId, payloadHash, result, command.target);
     return result;
   });
 
@@ -51,9 +55,12 @@ export class IdempotencyStore {
             command_id TEXT PRIMARY KEY,
             payload_hash TEXT NOT NULL,
             result_json TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
             created_at TEXT NOT NULL,
             tombstoned_at TEXT
           );
+          CREATE INDEX idx_command_records_target ON command_records(target_type, target_id);
         `);
       },
     },
@@ -85,17 +92,21 @@ export class IdempotencyStore {
 
   /** Original result, null when unseen; IdempotencyConflict on hash mismatch. */
   lookup(commandId: string, payloadHash: string): unknown {
-    const stored = this.#storedHash(commandId);
-    if (stored === undefined) return null;
-    this.#assertSamePayload(commandId, stored, payloadHash);
     const row = this.#db
-      .prepare("SELECT result_json FROM command_records WHERE command_id = ?")
-      .get(commandId) as { result_json: string };
+      .prepare("SELECT payload_hash, result_json FROM command_records WHERE command_id = ?")
+      .get(commandId) as { payload_hash: string; result_json: string } | undefined;
+    if (row === undefined) return null;
+    this.#assertSamePayload(commandId, row.payload_hash, payloadHash);
     return JSON.parse(row.result_json);
   }
 
   /** First write wins: a replayed record keeps the original result. */
-  record(commandId: string, payloadHash: string, result: unknown): void {
+  record(
+    commandId: string,
+    payloadHash: string,
+    result: unknown,
+    target: { readonly type: string; readonly id: string },
+  ): void {
     const stored = this.#storedHash(commandId);
     if (stored !== undefined) {
       this.#assertSamePayload(commandId, stored, payloadHash);
@@ -103,16 +114,34 @@ export class IdempotencyStore {
     }
     this.#db
       .prepare(
-        "INSERT INTO command_records (command_id, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO command_records (command_id, payload_hash, result_json, target_type, target_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(commandId, payloadHash, JSON.stringify(result), new Date(this.#now()).toISOString());
+      .run(
+        commandId,
+        payloadHash,
+        JSON.stringify(result),
+        target.type,
+        target.id,
+        new Date(this.#now()).toISOString(),
+      );
   }
 
-  /** Mark a record's target as deleted; the tombstone itself is kept 30 days. */
+  /** Mark one record's target as deleted; the tombstone itself is kept 30 days. */
   tombstone(commandId: string): void {
     this.#db
       .prepare("UPDATE command_records SET tombstoned_at = ? WHERE command_id = ?")
       .run(new Date(this.#now()).toISOString(), commandId);
+  }
+
+  /** RT-CMD-07 — tombstone every record bound to a deleted target; the records
+   * themselves are kept 30 days for replay audit. Backed by
+   * idx_command_records_target so it stays cheap as the table grows. */
+  tombstoneByTarget(targetType: string, targetId: string): void {
+    this.#db
+      .prepare(
+        "UPDATE command_records SET tombstoned_at = ? WHERE target_type = ? AND target_id = ? AND tombstoned_at IS NULL",
+      )
+      .run(new Date(this.#now()).toISOString(), targetType, targetId);
   }
 
   /** Purge tombstones older than the 30-day retention; live records stay. */
