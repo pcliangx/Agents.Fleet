@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseArchitecture,
+  parseDeploymentTarget,
   parseSignatureKind,
   type SpawnHelperProbeDeps,
   sampleSpawnHelper,
@@ -20,11 +21,28 @@ describe("parseArchitecture (file -b output)", () => {
   });
 });
 
+describe("parseDeploymentTarget (vtool -show-build minos)", () => {
+  it.each([
+    [
+      "Load command 10\n      cmd LC_BUILD_VERSION\n  platform MACOS\n    minos 11.0\n      sdk 15.5",
+      "11.0",
+    ],
+    ["    minos 26.0\n", "26.0"],
+    ["    minos 14\n", "14"],
+  ] as const)("parses minos %s → %s", (raw, out) => {
+    expect(parseDeploymentTarget(raw)).toBe(out);
+  });
+
+  it.each([[null], [""], ["no version line here"]])("returns null for %s", (raw) => {
+    expect(parseDeploymentTarget(raw)).toBeNull();
+  });
+});
+
 describe("parseSignatureKind (codesign -dv output, stderr)", () => {
   it("detects adhoc / linker-signed", () => {
     expect(
       parseSignatureKind(
-        "Identifier=spawn-helper\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20400 size=517 flags=0x20002(adhoc,linker-signed)\nSignature=adhoc",
+        "Identifier=spawn-helper\nCodeDirectory v=20400 size=517 flags=0x20002(adhoc,linker-signed)\nSignature=adhoc",
       ),
     ).toBe("adhoc");
   });
@@ -32,7 +50,7 @@ describe("parseSignatureKind (codesign -dv output, stderr)", () => {
   it("detects developer-id via Authority", () => {
     expect(
       parseSignatureKind(
-        "Identifier=spawn-helper\nAuthority=Developer ID Application: Acme Inc. (ABCD1234)\nTeamIdentifier=ABCD1234\nSignature=valid",
+        "Identifier=spawn-helper\nAuthority=Developer ID Application: Acme Inc. (ABCD1234)\nSignature=valid",
       ),
     ).toBe("developer-id");
   });
@@ -44,9 +62,11 @@ describe("parseSignatureKind (codesign -dv output, stderr)", () => {
 
 // Canned outputs captured from the real installed spawn-helper on this host.
 const realDeps = (over: Partial<SpawnHelperProbeDeps> = {}): SpawnHelperProbeDeps => ({
-  mode: () => 0o444,
+  mode: () => 0o644,
   runText: (cmd) => {
     if (cmd === "file") return "Mach-O 64-bit executable arm64";
+    if (cmd === "vtool")
+      return "Load command 10\n      cmd LC_BUILD_VERSION\n  platform MACOS\n    minos 11.0\n      sdk 15.5";
     if (cmd === "codesign")
       return "Identifier=spawn-helper\nCodeDirectory v=20400 size=517 flags=0x20002(adhoc,linker-signed)\nSignature=adhoc";
     throw new Error(`unexpected probe: ${cmd}`);
@@ -56,11 +76,12 @@ const realDeps = (over: Partial<SpawnHelperProbeDeps> = {}): SpawnHelperProbeDep
 });
 
 describe("sampleSpawnHelper", () => {
-  it("samples the real installed helper (0o444 / arm64 / adhoc / sha256)", () => {
+  it("samples the real installed helper (0o644 / arm64 / minos 11.0 / adhoc / sha256)", () => {
     expect(sampleSpawnHelper("/path/to/spawn-helper", realDeps())).toEqual({
       exists: true,
-      mode: 0o444,
+      mode: 0o644,
       architecture: "arm64",
+      deploymentTarget: "11.0",
       signatureKind: "adhoc",
       sha256: "21c589109bca43e287df884f3c34ab888033a83927ea7d273949ac5030583f26",
     });
@@ -71,6 +92,7 @@ describe("sampleSpawnHelper", () => {
       exists: false,
       mode: null,
       architecture: null,
+      deploymentTarget: null,
       signatureKind: null,
       sha256: null,
     });
@@ -79,7 +101,7 @@ describe("sampleSpawnHelper", () => {
   it("tolerates a failing probe (null) without throwing", () => {
     const deps = realDeps({
       runText: () => {
-        throw new Error("file missing");
+        throw new Error("tool missing");
       },
       sha256: () => {
         throw new Error("unreadable");
@@ -87,8 +109,9 @@ describe("sampleSpawnHelper", () => {
     });
     expect(sampleSpawnHelper("/path/to/spawn-helper", deps)).toEqual({
       exists: true,
-      mode: 0o444,
+      mode: 0o644,
       architecture: null,
+      deploymentTarget: null,
       signatureKind: "none",
       sha256: null,
     });

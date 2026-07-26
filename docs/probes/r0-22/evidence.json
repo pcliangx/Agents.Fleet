@@ -1,7 +1,7 @@
 {
   "probeId": "r0-22-spawn-helper-exec-bit",
-  "capturedAt": "2026-07-26T02:51:10.154Z",
-  "baseCommit": "585f443de5a0db3f61ca54835e9798141e70828b",
+  "capturedAt": "2026-07-26T03:08:16.504Z",
+  "baseCommit": "c786a8c080b2dd6eeefb4407d44302291c4b230f",
   "issue": 22,
   "contracts": [
     "RT-DIST-01",
@@ -14,15 +14,22 @@
     "architecture": "arm64",
     "osRelease": "25.5.0",
     "hostNode": "v22.17.1",
-    "nodePty": "1.1.0"
+    "nodePty": "node-pty@1.1.0;darwin-arm64"
   },
   "installedHelper": {
     "path": "/Users/pc2026/Documents/DevWorktrees/Agents.Fleet_glm/.claude/worktrees/node-pty-spawn-helper-22/node_modules/.pnpm/node-pty@1.1.0/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
     "exists": true,
     "mode": "0o644",
     "architecture": "arm64",
+    "deploymentTarget": "11.0",
     "signatureKind": "adhoc",
     "sha256": "21c589109bca43e287df884f3c34ab888033a83927ea7d273949ac5030583f26"
+  },
+  "expected": {
+    "architecture": "arm64",
+    "minimumMacOSVersion": "26",
+    "minimumSignature": "adhoc",
+    "sha256": null
   },
   "verdict": {
     "ready": false,
@@ -54,10 +61,10 @@
     "owner": "Agents.Fleet daemon install/upgrade (RT-DIST-01)",
     "source": "node-pty@1.1.0 prebuild (darwin-arm64)",
     "patch": "chmod 0755 prebuilds/darwin-arm64/spawn-helper",
-    "hash": "21c589109bca43e287df884f3c34ab888033a83927ea7d273949ac5030583f26",
-    "regressionFixture": "packages/daemon/src/__tests__/spawn-helper-verifier.test.ts + this prototype",
+    "regressionFixture": "packages/daemon/src/__tests__/spawn-helper-verifier.test.ts + r0-22 prototype",
     "deletionCondition": "when node-pty ships spawn-helper with +x in the prebuild, or the release bundle embeds a developer-id-signed + notarized spawn-helper (SV1-SUPPLY-03 / RT-DIST-01)",
-    "doesNotRelyOnNpmLifecycle": true
+    "doesNotRelyOnNpmLifecycle": true,
+    "hash": "21c589109bca43e287df884f3c34ab888033a83927ea7d273949ac5030583f26"
   },
   "releaseGaps": [
     "developer-id signing + notarization (SV1-SUPPLY-03) — adhoc only today",

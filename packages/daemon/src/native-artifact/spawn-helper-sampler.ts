@@ -1,19 +1,29 @@
 // RT-DIST-01 / SV1-SUPPLY-02 — observe the installed node-pty spawn-helper.
 //
-// Pure parsing + an injectable probe interface so tests do not shell out. The
-// real probe (stat / file / codesign / sha256) is wired in defaultProbeDeps.
+// Pure parsing + an injectable probe interface so tests do not shell out. This
+// module imports no Node builtins; the real probe (stat / file / vtool /
+// codesign / sha256) is wired in spawn-helper-probe.ts, matching the R0-15
+// platform-gate pure-gate pattern.
 
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import type { SpawnHelperObserved, SpawnHelperSignatureKind } from "./spawn-helper-verifier.js";
+import type {
+  Architecture,
+  SpawnHelperObserved,
+  SpawnHelperSignatureKind,
+} from "./spawn-helper-verifier.js";
 
 /** Architecture families recognised in `file -b` Mach-O output. */
-const ARCH_TOKENS = ["arm64", "x86_64", "i386"] as const;
+const ARCH_TOKENS: readonly Architecture[] = ["arm64", "x86_64", "i386"];
 
-export function parseArchitecture(fileOutput: string | null): string | null {
+export function parseArchitecture(fileOutput: string | null): Architecture | null {
   if (!fileOutput) return null;
   return ARCH_TOKENS.find((token) => fileOutput.includes(token)) ?? null;
+}
+
+/** Deployment target from `vtool -show-build` LC_BUILD_VERSION `minos X.Y`. */
+export function parseDeploymentTarget(vtoolOutput: string | null): string | null {
+  if (!vtoolOutput) return null;
+  const match = vtoolOutput.match(/^\s*minos\s+(\d+(?:\.\d+)?)/m);
+  return match ? (match[1] ?? null) : null;
 }
 
 export function parseSignatureKind(codesignOutput: string | null): SpawnHelperSignatureKind {
@@ -43,37 +53,25 @@ function tryValue<T>(fn: () => T): T | null {
 export function sampleSpawnHelper(path: string, deps: SpawnHelperProbeDeps): SpawnHelperObserved {
   const mode = deps.mode(path);
   if (mode === null) {
-    return { exists: false, mode: null, architecture: null, signatureKind: null, sha256: null };
+    return {
+      exists: false,
+      mode: null,
+      architecture: null,
+      deploymentTarget: null,
+      signatureKind: null,
+      sha256: null,
+    };
   }
   const fileOutput = tryValue(() => deps.runText("file", ["-b", path]));
+  const vtoolOutput = tryValue(() => deps.runText("vtool", ["-show-build", path]));
   const codesignOutput = tryValue(() => deps.runText("codesign", ["-dv", path]));
   const sha = tryValue(() => deps.sha256(path));
   return {
     exists: true,
     mode,
     architecture: parseArchitecture(fileOutput),
+    deploymentTarget: parseDeploymentTarget(vtoolOutput),
     signatureKind: parseSignatureKind(codesignOutput),
     sha256: sha,
   };
 }
-
-/** Real probe: stat for mode, file/codesign via spawnSync (codesign writes stderr), sha256 via crypto. */
-export const defaultProbeDeps: SpawnHelperProbeDeps = {
-  mode(path) {
-    try {
-      return statSync(path).mode & 0o777;
-    } catch {
-      return null;
-    }
-  },
-  runText(command, args) {
-    const result = spawnSync(command, [...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  },
-  sha256(path) {
-    return createHash("sha256").update(readFileSync(path)).digest("hex");
-  },
-};
