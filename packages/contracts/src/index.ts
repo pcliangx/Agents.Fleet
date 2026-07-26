@@ -56,6 +56,7 @@ export {
   sampleHostPlatform,
 } from "./platform-gate.js";
 export * from "./protocol/command.js";
+export * from "./protocol/confirmation.js";
 export * from "./protocol/error.js";
 export * from "./protocol/handshake.js";
 export * from "./protocol/stream.js";

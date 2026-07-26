@@ -1,0 +1,88 @@
+{
+  "probeId": "r0-17-native-confirmation",
+  "capturedAt": "2026-07-26T10:17:25.338Z",
+  "baseCommit": "1fe6415aa979a2ef6d2814e9fe478dd305beba11",
+  "challengeTtlMs": 60000,
+  "cases": {
+    "repository-trust happy path + one-time": {
+      "kindMatches": true,
+      "expiresAt": "2027-01-15T08:01:00.000Z",
+      "accepted": {
+        "ok": true
+      },
+      "replayed": {
+        "ok": false,
+        "reason": "already-consumed"
+      },
+      "pass": true
+    },
+    "launch happy path + one-time": {
+      "kindMatches": true,
+      "expiresAt": "2027-01-15T08:01:00.000Z",
+      "accepted": {
+        "ok": true
+      },
+      "replayed": {
+        "ok": false,
+        "reason": "already-consumed"
+      },
+      "pass": true
+    },
+    "side-effect happy path + one-time": {
+      "kindMatches": true,
+      "expiresAt": "2027-01-15T08:01:00.000Z",
+      "accepted": {
+        "ok": true
+      },
+      "replayed": {
+        "ok": false,
+        "reason": "already-consumed"
+      },
+      "pass": true
+    },
+    "forged challenge id": {
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "reason": "unknown-challenge"
+      }
+    },
+    "receipt without capability token": {
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "reason": "invalid-proof"
+      }
+    },
+    "tampered challenge binding (drift)": {
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "reason": "binding-drift"
+      }
+    },
+    "cross-command reuse (kind mismatch)": {
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "reason": "kind-mismatch"
+      }
+    },
+    "expired challenge": {
+      "pass": true,
+      "detail": {
+        "ok": false,
+        "reason": "expired"
+      }
+    },
+    "renderer requests forged id through the flow": {
+      "pass": true,
+      "receipt": null
+    },
+    "cancel produces no receipt": {
+      "pass": true,
+      "receipt": null
+    }
+  },
+  "verdict": "PASS"
+}

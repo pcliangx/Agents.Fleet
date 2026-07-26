@@ -116,6 +116,8 @@ Side-effect Class 只分类 Fleet 自己发起的操作：
 - **SV1-ELECTRON-06**：preload 只暴露按命令命名的类型化方法和绑定 Attachment 的 MessagePort；不暴露通用 `send` / `invoke`、Node object、filesystem、shell、raw socket 或任意 channel 名。
 - **SV1-ELECTRON-07**：原生 Repository Trust confirmation、destructive confirmation、Launch Confirmation、Notification activation 和外部 URL 决策只能由 Main 的声明式策略发起；三类 confirmation 只展示 RT-REPO-06 / RT-CMD-18 / RT-CMD-17 的 Daemon challenge，Renderer 提供的展示文本不能变成确认凭证、route 或 executable payload。
 
+> _Changelog (R0-17, [probe](../probes/r0-17-native-confirmation.md), issue #40)_：三类确认的 challenge → 原生手势 → capability-token receipt → 一次性消费链路已在 R0 证明（`contracts/protocol/confirmation.ts` 类型与纯逻辑、`transport/confirmation-proof.ts` MAC 与 `confirmation-broker.ts` 确认流、`daemon/confirmation/challenge-issuer.ts` 签发与一次性消费、`desktop/main/confirmation-dialog.ts` 原生 dialog 适配器）；伪造 / 改写 / 重放 / 过期 / 跨命令复用 / 事实漂移全部 fail closed（SV1-T-28/29 的原生确认半侧，10 例证据见 probe）。socket 命令路由、consumed 集合持久化、IPC channel 注册、签名锁定 broker 二进制与 RT-CMD-14 完整绑定事实集仍属 R1 / R5。
+
 ## 9. Worktree and File Safety
 
 Worktree Manager 对 Fleet 自己的文件操作保证。每个操作必须声明一个已经验证的 Repository、Worktree 或 app-data root；声明 root 不是允许跨这些 root 任意导航：

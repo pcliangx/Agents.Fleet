@@ -12,6 +12,9 @@ export {
   KeychainTokenSource,
   securityKeychainRunner,
 } from "./capability-token.js";
+export type { ConfirmationFlowDeps } from "./confirmation-broker.js";
+export { requestConfirmation } from "./confirmation-broker.js";
+export { signConfirmation, verifyConfirmation } from "./confirmation-proof.js";
 export type { DaemonHandshakeConfig } from "./handshake-state.js";
 export { negotiate, selectProtocolVersion } from "./handshake-state.js";
 export { encodeNdjson, NdjsonDecoder } from "./ndjson.js";
