@@ -1,0 +1,99 @@
+{
+  "probe": "r0-11-filebroker",
+  "slice": "B (native FileBroker risk prototype, GitHub issue #10)",
+  "branch": "r0-11-electron-filebroker-checkout",
+  "contracts": [
+    "SV1-FILE-01",
+    "SV1-FILE-02",
+    "SV1-FILE-03",
+    "SV1-FILE-08",
+    "SV1-T-02",
+    "SV1-T-17",
+    "SV1-T-26"
+  ],
+  "capturedAt": "2026-07-26T08:40:00+08:00",
+  "platform": "Darwin PCs-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64",
+  "macOS": "26.5.2 (25F84)",
+  "node": "v26.4.0",
+  "candidateMechanisms": [
+    {
+      "id": 1,
+      "name": "/dev/fd/<dirfd>/<subpath> traversal",
+      "result": "unavailable",
+      "observed": "openSync('/dev/fd/11/child.txt') -> ENOENT; process.chdir('/dev/fd/11') -> ENOTDIR (macOS fdesc does not resolve subpaths or chdir through fd entries)"
+    },
+    {
+      "id": 2,
+      "name": "per-segment lstat + string-path open(O_NOFOLLOW) + fstat compare",
+      "result": "rejected",
+      "observed": "289 escapes out of 5000 iterations under concurrent symlink swap (intermediate component swapped between lstat and open)",
+      "race": { "iterations": 5000, "ok": 702, "fails": 4009, "escapes": 289 }
+    },
+    {
+      "id": "2b",
+      "name": "realpath containment check + string-path open",
+      "result": "rejected",
+      "observed": "1 escape out of 5000 iterations under the same race (explicitly insufficient per SV1-FILE-03)",
+      "race": { "iterations": 5000, "ok": 1553, "fails": 3446, "escapes": 1 }
+    },
+    {
+      "id": 3,
+      "name": "fs.opendir Dir handle",
+      "result": "unavailable",
+      "observed": "Dir exposes no dirfd and no fd-relative open API"
+    },
+    {
+      "id": 4,
+      "name": "chdir ladder: lstat -> chdir -> stat('.') identity compare per segment, leaf open(O_NOFOLLOW) + fstat compare (SELECTED)",
+      "result": "adopted",
+      "observed": "semantically equivalent to macOS openat(O_NOFOLLOW) segment-wise resolution; 0 escapes in both race fixtures",
+      "races": [
+        {
+          "fixture": "symlink-swap (attacker process swaps root/sub between real dir and symlink to outside via atomic rename)",
+          "iterations": 2000,
+          "ok": 1165,
+          "notFound": 487,
+          "symlinkRejected": 348,
+          "raceLost": 0,
+          "escapes": 0
+        },
+        {
+          "fixture": "root-replacement (attacker process swaps registered root with attacker directory via atomic rename)",
+          "iterations": 2000,
+          "ok": 1331,
+          "identityDrift": 667,
+          "raceLost": 2,
+          "escapes": 0
+        }
+      ]
+    }
+  ],
+  "raceConclusion": "zero escapes to attacker-controlled paths across 4000 raced iterations on the adopted mechanism; naive mechanisms escaped under the identical fixture",
+  "testSuite": {
+    "command": "pnpm vitest run packages/daemon/src/worktree-manager",
+    "files": [
+      "packages/daemon/src/worktree-manager/filebroker.ts",
+      "packages/daemon/src/worktree-manager/filebroker.test.ts",
+      "packages/daemon/src/worktree-manager/race-attacker.mjs",
+      "packages/daemon/src/worktree-manager/race-root-attacker.mjs"
+    ],
+    "testCount": 19,
+    "result": "19/19 passed, three consecutive runs stable",
+    "coverageByContract": {
+      "SV1-FILE-01": "registerRoot canonicalize + dev/ino identity; per-op revalidation; identity-drift and root-symlink-replacement fixtures fail closed",
+      "SV1-FILE-02": "lexical rejection of absolute paths, '..' (incl. in-tree), NUL, empty/dot segments; per-command single root id; sibling-root content unreachable; unknown/forged root id rejected",
+      "SV1-FILE-03": "chdir ladder binds check and open to the same directory vnode per segment; naive string-path mechanisms shown to escape under race",
+      "SV1-FILE-08": "constructor capability probe fails closed; FileBroker is private to worktree-manager (no transport/control-dispatcher wiring)",
+      "SV1-T-02": "symlink replacement, '..', absolute path, race replacement -> operation fails (see rejection fixtures + race fixtures)",
+      "SV1-T-17": "2000-iteration symlink-swap and root-replacement races via attacker child processes; either original verified identity is served or the operation fails; 0 escapes",
+      "SV1-T-26": "repository / worktree / app-data / common-git-dir roots each exercised with absolute/'..'/symlink/identity-replacement fixtures; cross-root handle reuse rejected (Git-interface side out of this slice)"
+    }
+  },
+  "knownBoundaries": [
+    "process-global cwd: ladder is synchronous and assumes the single-threaded main thread; incompatible with concurrent Worker chdir — production must serialize or move to N-API openat",
+    "foreign directory renamed into the tree is indistinguishable from legitimate in-tree rename for any fd-relative mechanism on macOS (no RESOLVE_BENEATH); parity with native openat, disclosed per SV1-NG-06",
+    "mount identity replacement (unmount/remount) not exercised with a real mount fixture (needs root); dev/ino drift direction verified by unit fixtures",
+    "write surface is narrow (create/overwrite regular files only); mkdir/unlink/atomic-rename deferred to R1",
+    "single-host single-sample; re-run on SupportedPlatformMatrix minimum macOS after R0-15"
+  ]
+}

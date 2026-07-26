@@ -1,0 +1,156 @@
+{
+  "probe": "r0-11-no-external-checkout",
+  "branch": "r0-11-electron-filebroker-checkout",
+  "contracts": ["SV1-FILE-11", "RT-WORKTREE-11", "SV1-T-27"],
+  "gatheredAt": "2026-07-26",
+  "host": {
+    "os": "macOS (APFS)",
+    "gitBinary": "/usr/bin/git",
+    "gitVersion": "git version 2.50.1 (Apple Git-155)",
+    "sanitized": "all temp paths replaced by $P (mktemp -d); canary scripts append to $P/canary.log and attempt /dev/tcp/127.0.0.1 connections"
+  },
+  "environmentNote": "all probe commands run with GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null so results do not depend on ambient user config (the dev machine's real global config declares filter.lfs.process and hijacked an early fixture commit — evidence that user-global filters are a live attack surface)",
+  "candidates": [
+    {
+      "id": 1,
+      "name": "git worktree add --detach + -c overrides + preflight filter-attribute scan",
+      "selected": true,
+      "conclusion": "provably no-external-program once preflight proves no in-tree path carries a filter attribute"
+    },
+    {
+      "id": 2,
+      "name": "worktree add --no-checkout + read-tree + checkout-index -f -a (plumbing fill)",
+      "selected": false,
+      "conclusion": "checkout-index still executes smudge filters (P7); no benefit over candidate 1"
+    },
+    {
+      "id": 3,
+      "name": "git archive <sha> | tar -x",
+      "selected": false,
+      "conclusion": "archive executes smudge filters (P8) and diverges from checkout semantics (export-subst rewrites content, export-ignore drops files)"
+    }
+  ],
+  "probes": [
+    {
+      "id": "P1",
+      "question": "does git worktree add run the post-checkout hook from repo core.hooksPath?",
+      "reproduce": "cd $P/repo && git config core.hooksPath $P/hooks   # $P/hooks/post-checkout writes canary\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD",
+      "result": "EXECUTED — canary written"
+    },
+    {
+      "id": "P2",
+      "question": "does -c core.hooksPath=/dev/null neutralize it?",
+      "reproduce": "cd $P/repo && /usr/bin/git -c core.hooksPath=/dev/null worktree add --detach $P/wt2 HEAD",
+      "result": "NOT executed"
+    },
+    {
+      "id": "P3",
+      "question": "does a repo-config smudge filter run during worktree add when .gitattributes declares it?",
+      "reproduce": "printf '*.flt filter=evil\\n' > .gitattributes   # committed\ngit config filter.evil.smudge $P/smudge.sh && git config filter.evil.clean $P/clean.sh\ncd $P/repo && /usr/bin/git -c core.hooksPath=/dev/null worktree add --detach $P/wt HEAD",
+      "result": "EXECUTED — smudge canary written; filters are the one entry point -c cannot wildcard-disable (driver name unknown)"
+    },
+    {
+      "id": "P3b",
+      "question": "does an empty per-name override (-c filter.<name>.smudge=) work when the name IS known?",
+      "reproduce": "cd $P/repo && /usr/bin/git -c filter.evil.smudge= -c filter.evil.clean= worktree add --detach $P/wt HEAD",
+      "result": "NOT executed — viable only as fallback with enumerated names, not as the primary defense"
+    },
+    {
+      "id": "P4",
+      "question": "filter attribute declared but driver config absent?",
+      "reproduce": "# .gitattributes: *.flt filter=missing (committed), no filter.missing.* config\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD && cat $P/wt/f.flt",
+      "result": "no execution; checkout emits the raw blob — correctness unprovable, basis for fail-closed CapabilityUnavailable"
+    },
+    {
+      "id": "P5",
+      "question": "does git check-attr --source=<sha> read attributes from the commit tree (not the working tree)?",
+      "reproduce": "cd $P/repo && echo '*.flt -filter' > .gitattributes   # working tree contradicts commit\ngit check-attr --source=<sha> filter -- y.flt\ngit check-attr filter -- y.flt",
+      "result": "--source reports 'evil' (commit tree); working-tree read reports 'unset' — preflight must use --source"
+    },
+    {
+      "id": "P5b",
+      "question": "does .git/info/attributes participate in the attribute stack seen by check-attr?",
+      "reproduce": "echo '*.flt filter=evil' > $P/repo/.git/info/attributes\ncd $P/repo && git check-attr --source=<sha> filter -- z.flt",
+      "result": "reports 'evil' — preflight covers info/attributes too"
+    },
+    {
+      "id": "P6",
+      "question": "does worktree add --no-checkout run the post-checkout hook?",
+      "reproduce": "cd $P/repo && /usr/bin/git worktree add --no-checkout --detach $P/wt HEAD   # hostile core.hooksPath configured",
+      "result": "not executed"
+    },
+    {
+      "id": "P7",
+      "question": "does the plumbing fill (read-tree + checkout-index) execute smudge filters?",
+      "reproduce": "cd $P/wt && /usr/bin/git read-tree HEAD && /usr/bin/git checkout-index -f -a   # filter.evil.smudge configured, attr declared",
+      "result": "EXECUTED — plumbing fill is not inherently safe; candidate 2 rejected"
+    },
+    {
+      "id": "P8",
+      "question": "does git archive execute smudge filters, and how do export-subst/export-ignore behave?",
+      "reproduce": "cd $P/repo && /usr/bin/git archive HEAD | tar -x -C $P/out   # attrs: *.flt filter=evil, exp.txt export-subst, ign.txt export-ignore",
+      "result": "smudge EXECUTED; exp.txt content rewritten ('version $Format:%H$' -> literal SHA); ign.txt omitted — candidate 3 rejected"
+    },
+    {
+      "id": "P9",
+      "question": "does the core.fsmonitor hook run during worktree add (index write)?",
+      "reproduce": "git config core.fsmonitor $P/fsmon.sh\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD\ncd $P/repo && /usr/bin/git -c core.fsmonitor=false worktree add --detach $P/wt2 HEAD",
+      "result": "baseline EXECUTED; with -c core.fsmonitor=false NOT executed"
+    },
+    {
+      "id": "P10",
+      "question": "does worktree add recurse into submodules with submodule.recurse=true?",
+      "reproduce": "git config submodule.recurse true   # repo tree contains a gitlink\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD && ls $P/wt/sub",
+      "result": "submodule working dir NOT populated regardless of recurse setting; provisioner still pins -c submodule.recurse=false"
+    },
+    {
+      "id": "P11",
+      "question": "pager / credential helper / external diff during worktree add under full overrides?",
+      "reproduce": "# repo config: core.pager / credential.helper / diff.external -> canary scripts\ncd $P/repo && /usr/bin/git --no-pager -c core.hooksPath=/dev/null -c core.pager=cat -c diff.external= -c credential.helper= worktree add --detach $P/wt HEAD",
+      "result": "none executed"
+    },
+    {
+      "id": "P12",
+      "question": "leftover after a failed worktree add (well-formed but missing SHA)?",
+      "reproduce": "cd $P/repo && /usr/bin/git worktree add --detach $P/wt deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; test -e $P/wt",
+      "result": "exit 128, target path absent — leftover 'none' is provable for pre-materialization failures"
+    },
+    {
+      "id": "S1",
+      "question": "does core.attributesFile (repo config, external attrs file) show up in check-attr?",
+      "reproduce": "git config core.attributesFile $P/ext-attrs   # ext-attrs: *.flt filter=viafile\ncd $P/repo && git check-attr --source=<sha> filter -- q.flt",
+      "result": "reports 'viafile' — preflight covers core.attributesFile; scan and checkout see the identical attribute stack"
+    },
+    {
+      "id": "S2",
+      "question": "wire formats used by the implementation",
+      "reproduce": "git ls-tree -r -z <sha> | od -c\nprintf 'a.flt\\0b.txt\\0' | git check-attr --source=<sha> -z --stdin filter | od -c",
+      "result": "ls-tree records '<mode> <type> <sha>\\t<path>\\0'; check-attr emits '<path>\\0filter\\0<value>\\0' triples, value 'unspecified' when no attribute"
+    },
+    {
+      "id": "S3",
+      "question": "filter driver configured but referenced by no in-tree path?",
+      "reproduce": "git config filter.evil.smudge $P/smudge.sh   # no .gitattributes in tree\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD && cat $P/wt/a.txt",
+      "result": "no execution, content byte-correct — per-path preflight precision avoids false positives"
+    },
+    {
+      "id": "S4",
+      "question": "does the long-running process filter (filter.x.process) also run during worktree add?",
+      "reproduce": "git config filter.proc.process $P/proc.sh   # .gitattributes: *.flt filter=proc\ncd $P/repo && /usr/bin/git worktree add --detach $P/wt HEAD",
+      "result": "EXECUTED — treated identically to smudge in the fail-closed rule"
+    }
+  ],
+  "executableEvidence": {
+    "tests": "packages/daemon/src/__tests__/provision-worktree.test.ts (16 tests)",
+    "run": "pnpm vitest run packages/daemon/src/__tests__/provision-worktree.test.ts",
+    "result": "16 passed (plus 24 restricted-git tests unaffected)",
+    "coverage": [
+      "SV1-T-27 full hostile fixture: post-checkout hook, smudge/clean/process filter, external diff, textconv, fsmonitor, submodule, pager, credential helper — every canary script also attempts a /dev/tcp connection to a local listener; zero file writes and zero connections asserted",
+      "CapabilityUnavailable variants: configured smudge driver + LFS pointer, configured process filter, missing driver + LFS pointer blob, missing driver + plain blob, attr via .git/info/attributes, attr via core.attributesFile",
+      "no partial Worktree on CU: target path absent, git worktree list unchanged",
+      "precision: filter configured but unreferenced by any in-tree path -> provision succeeds with zero execution",
+      "frozen argv/env audit: explicit /usr/bin/git, --no-pager, six -c overrides, 12-key env allowlist, command sequence --version/ls-tree/check-attr/worktree/rev-parse/rev-parse",
+      "identity drift and existing target rejected with zero git invocations; missing commit -> git-failed with leftover none; timeout classified"
+    ]
+  }
+}
