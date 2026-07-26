@@ -3,12 +3,7 @@
   "capturedAt": "2026-07-26T03:08:16.504Z",
   "baseCommit": "c786a8c080b2dd6eeefb4407d44302291c4b230f",
   "issue": 22,
-  "contracts": [
-    "RT-DIST-01",
-    "SV1-SUPPLY-02",
-    "SV1-SUPPLY-03",
-    "RT-DIST-08"
-  ],
+  "contracts": ["RT-DIST-01", "SV1-SUPPLY-02", "SV1-SUPPLY-03", "RT-DIST-08"],
   "environment": {
     "platform": "darwin",
     "architecture": "arm64",
@@ -33,9 +28,7 @@
   },
   "verdict": {
     "ready": false,
-    "problems": [
-      "missingExecutableBit"
-    ]
+    "problems": ["missingExecutableBit"]
   },
   "repair": {
     "permitted": true,
