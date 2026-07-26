@@ -1,4 +1,5 @@
-// RT-LIMIT — RuntimeLimitProfile TYPE ONLY. Values are frozen in #16.
+// RT-LIMIT — RuntimeLimitProfile TYPE ONLY. Values frozen in
+// ./frozen-runtime-limit-profile.ts (issue #15 / R0-16).
 // Transcribed from runtime-contracts-v1.md §2.1.
 
 export interface TerminalLimits {

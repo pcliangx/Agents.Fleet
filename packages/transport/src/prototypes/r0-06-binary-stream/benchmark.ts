@@ -8,6 +8,7 @@ import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import {
   type Generation,
   PLATFORM_MATRIX_VERSION,
+  RUNTIME_LIMIT_PROFILE_VERSION,
   type Seq,
   type SessionId,
   type StreamFrameHeader,
@@ -459,8 +460,8 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
     ),
     versionProvenanceDeclared:
       scenario.platformMatrixVersion === PLATFORM_MATRIX_VERSION &&
-      scenario.runtimeLimitProfileVersion === 0 &&
-      scenario.provenanceStatus === "matrix-frozen-limit-profile-pending",
+      scenario.runtimeLimitProfileVersion === RUNTIME_LIMIT_PROFILE_VERSION &&
+      scenario.provenanceStatus === "matrix-and-profile-frozen",
   };
   const verdict = Object.values(acceptance).every(Boolean) ? "PASS" : "FAIL";
   const actualDurationSeconds = (finishedAt - startedAt) / 1_000;
@@ -485,7 +486,7 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       doesNotProve: [
         "chunk durability, fsync ordering, or published-frame crash recovery (R0-14)",
         "xterm.js WebGL2/DOM rendering or Snapshot parser safety (R0-08/R0-09)",
-        "frozen RuntimeLimitProfile release performance budgets (R0-16); SupportedPlatformMatrix is now frozen (R0-15) but the limit profile is still pending",
+        "release performance acceptance on the matrix floor fixture (M1 / 8 GiB) — the RuntimeLimitProfile and SupportedPlatformMatrix are frozen (R0-15/R0-16), but this host is above the floor and results stay non-reusable for acceptance",
       ],
     },
     environment: {

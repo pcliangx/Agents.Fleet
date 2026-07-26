@@ -1,4 +1,8 @@
-import { type ClientHello, PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
+import {
+  type ClientHello,
+  PLATFORM_MATRIX_VERSION,
+  RUNTIME_LIMIT_PROFILE_VERSION,
+} from "@agents-fleet/contracts";
 import { describe, expect, it } from "vitest";
 import {
   type DaemonHandshakeConfig,
@@ -11,7 +15,7 @@ const config = (over: Partial<DaemonHandshakeConfig> = {}): DaemonHandshakeConfi
   daemonId: "d" as never,
   daemonGeneration: 1 as never,
   platformMatrixVersion: PLATFORM_MATRIX_VERSION,
-  runtimeLimitProfileVersion: 0,
+  runtimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
   ...over,
 });
 
@@ -20,7 +24,7 @@ const pc = { daemonNonce: "n" as never, daemonProof: "p" };
 const hello = (over: Partial<ClientHello>): ClientHello => ({
   protocolVersions: [1],
   expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
-  expectedRuntimeLimitProfileVersion: 0,
+  expectedRuntimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
   clientInstanceId: "c",
   clientKind: "test",
   clientNonce: "cn" as never,
@@ -67,8 +71,8 @@ describe("handshake-state (RT-HS-01..05)", () => {
   it("is fatal on runtime-limit profile mismatch", () => {
     expect(
       negotiate(
-        config({ runtimeLimitProfileVersion: 1 }),
-        hello({ expectedRuntimeLimitProfileVersion: 0 }),
+        config(),
+        hello({ expectedRuntimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION + 1 }),
         pc,
       ).kind,
     ).toBe("fatal");

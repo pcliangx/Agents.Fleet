@@ -1,4 +1,4 @@
-import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
+import { PLATFORM_MATRIX_VERSION, RUNTIME_LIMIT_PROFILE_VERSION } from "@agents-fleet/contracts";
 import type { ProofTranscript } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
 import { DevProofVerifier } from "../auth/dev-proof-verifier.js";
@@ -12,7 +12,7 @@ const T: ProofTranscript = {
   daemonId: "d",
   daemonGeneration: 1,
   platformMatrixVersion: PLATFORM_MATRIX_VERSION,
-  runtimeLimitProfileVersion: 0,
+  runtimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
 };
 
 describe("DevProofVerifier (D4 hard gate)", () => {

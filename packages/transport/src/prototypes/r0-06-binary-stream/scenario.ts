@@ -1,6 +1,6 @@
 import {
-  PLACEHOLDER_RUNTIME_LIMIT_PROFILE_VERSION,
   PLATFORM_MATRIX_VERSION,
+  RUNTIME_LIMIT_PROFILE_VERSION,
   type SessionId,
 } from "@agents-fleet/contracts";
 import type { QueueLimits } from "./model.js";
@@ -33,7 +33,7 @@ export interface R006Scenario {
   readonly queueLimits: QueueLimits;
   readonly platformMatrixVersion: number;
   readonly runtimeLimitProfileVersion: number;
-  readonly provenanceStatus: "matrix-frozen-limit-profile-pending";
+  readonly provenanceStatus: "matrix-and-profile-frozen";
   readonly sessions: readonly BenchmarkSessionScenario[];
 }
 
@@ -49,8 +49,8 @@ export const createR006Scenario = (durationSeconds = 60): R006Scenario => ({
   framePayloadBytes: 64 * 1024,
   queueLimits: R0_06_QUEUE_LIMITS,
   platformMatrixVersion: PLATFORM_MATRIX_VERSION,
-  runtimeLimitProfileVersion: PLACEHOLDER_RUNTIME_LIMIT_PROFILE_VERSION,
-  provenanceStatus: "matrix-frozen-limit-profile-pending",
+  runtimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
+  provenanceStatus: "matrix-and-profile-frozen",
   sessions: [
     {
       sessionId: "r0-06-session-hot" as SessionId,
