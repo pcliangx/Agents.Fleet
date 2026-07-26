@@ -1,0 +1,164 @@
+{
+  "probeId": "r0-15-supported-platform-matrix",
+  "capturedAt": "2026-07-26T01:42:56.945Z",
+  "baseCommit": "51b0b9c6d712afce9affed500c7af71fd2737986",
+  "frozenMatrix": {
+    "matrixVersion": 1,
+    "architecture": "arm64",
+    "minimumMacOSVersion": "26",
+    "minimumHardware": {
+      "machineModel": "MacBookAir10,1",
+      "cpuClass": "M1",
+      "gpuClass": "apple-integrated",
+      "memoryBytes": 8589934592
+    },
+    "electronVersion": "34.5.8",
+    "nodeRuntimeVersion": "22.17.1",
+    "nodePtyArtifactIdentity": "node-pty@1.1.0;darwin-arm64",
+    "terminalPackageSetIdentity": "@xterm/addon-serialize@0.14.0,@xterm/addon-unicode11@0.9.0,@xterm/addon-webgl@0.19.0,@xterm/headless@6.0.0,@xterm/xterm@6.0.0",
+    "runtimeLimitProfileVersion": 0,
+    "rendererPaths": ["WebGL2", "DOM"],
+    "keychainPolicyVersion": 1,
+    "signingAndNotarizationPolicyVersion": 0,
+    "evidenceRefs": [
+      "RT-DIST-08",
+      "RT-DIST-09",
+      "PLATFORM-1",
+      "RT-T-45",
+      "docs/probes/r0-10-node-pty-isolation.md",
+      "docs/probes/r0-15-supported-platform-matrix.md"
+    ]
+  },
+  "terminalPackageSet": {
+    "declaredBy": "packages/terminal/package.json",
+    "identity": "@xterm/addon-serialize@0.14.0,@xterm/addon-unicode11@0.9.0,@xterm/addon-webgl@0.19.0,@xterm/headless@6.0.0,@xterm/xterm@6.0.0",
+    "sha256": "022372a2f5eb69f9afa11f0e6f0b8cfe193a6683d6b29cb0cca433a48a8b4546",
+    "matchesFrozenMatrix": true,
+    "packages": [
+      {
+        "name": "@xterm/addon-serialize",
+        "version": "0.14.0"
+      },
+      {
+        "name": "@xterm/addon-unicode11",
+        "version": "0.9.0"
+      },
+      {
+        "name": "@xterm/addon-webgl",
+        "version": "0.19.0"
+      },
+      {
+        "name": "@xterm/headless",
+        "version": "6.0.0"
+      },
+      {
+        "name": "@xterm/xterm",
+        "version": "6.0.0"
+      }
+    ]
+  },
+  "hostSample": {
+    "architecture": "arm64",
+    "osPlatform": "darwin",
+    "macosProductVersion": "26.5.2",
+    "cpuBrand": "Apple M5 Pro",
+    "machineModel": "Mac17,8",
+    "memoryBytes": 51539607552
+  },
+  "gateVerdict": {
+    "ok": true
+  },
+  "rejectionCases": [
+    {
+      "label": "Intel x64",
+      "host": {
+        "architecture": "x64",
+        "osPlatform": "darwin",
+        "macosProductVersion": "26.5.2",
+        "cpuBrand": "Apple M5 Pro",
+        "machineModel": "Mac17,8",
+        "memoryBytes": 51539607552
+      },
+      "result": {
+        "ok": false,
+        "reason": "architecture",
+        "detail": "architecture x64 ≠ matrix arm64"
+      }
+    },
+    {
+      "label": "macOS 15 (below floor 26)",
+      "host": {
+        "architecture": "arm64",
+        "osPlatform": "darwin",
+        "macosProductVersion": "15.7",
+        "cpuBrand": "Apple M1",
+        "machineModel": "MacBookAir10,1",
+        "memoryBytes": 8589934592
+      },
+      "result": {
+        "ok": false,
+        "reason": "macOSVersion",
+        "detail": "macOS 15.7 < minimum 26"
+      }
+    },
+    {
+      "label": "4 GiB memory (below 8 GiB)",
+      "host": {
+        "architecture": "arm64",
+        "osPlatform": "darwin",
+        "macosProductVersion": "26.0",
+        "cpuBrand": "Apple M1",
+        "machineModel": "MacBookAir10,1",
+        "memoryBytes": 4294967296
+      },
+      "result": {
+        "ok": false,
+        "reason": "memory",
+        "detail": "memory 4294967296 bytes < minimum 8589934592"
+      }
+    },
+    {
+      "label": "non-Apple arm64 cpu",
+      "host": {
+        "architecture": "arm64",
+        "osPlatform": "darwin",
+        "macosProductVersion": "26.0",
+        "cpuBrand": "Qualcomm Oryon CPU",
+        "machineModel": "unknown",
+        "memoryBytes": 8589934592
+      },
+      "result": {
+        "ok": false,
+        "reason": "cpuClass",
+        "detail": "cpu \"Qualcomm Oryon CPU\" is below minimum M1"
+      }
+    },
+    {
+      "label": "non-darwin OS",
+      "host": {
+        "architecture": "arm64",
+        "osPlatform": "linux",
+        "macosProductVersion": null,
+        "cpuBrand": null,
+        "machineModel": null,
+        "memoryBytes": null
+      },
+      "result": {
+        "ok": false,
+        "reason": "operatingSystem",
+        "detail": "operating system linux is not macOS"
+      }
+    }
+  ],
+  "pendingFields": {
+    "runtimeLimitProfileVersion": {
+      "value": 0,
+      "owner": "R0-16 (issue #15)",
+      "bumpEffect": "freezing it produces a new matrixVersion per RT-DIST-08"
+    },
+    "signingAndNotarizationPolicyVersion": {
+      "value": 0,
+      "owner": "R5 distribution"
+    }
+  }
+}

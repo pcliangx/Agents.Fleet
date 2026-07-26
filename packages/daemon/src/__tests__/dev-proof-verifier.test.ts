@@ -1,3 +1,4 @@
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import type { ProofTranscript } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
 import { DevProofVerifier } from "../auth/dev-proof-verifier.js";
@@ -10,7 +11,7 @@ const T: ProofTranscript = {
   clientKind: "test",
   daemonId: "d",
   daemonGeneration: 1,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
 };
 

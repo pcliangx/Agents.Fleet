@@ -10,6 +10,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import {
   buildProofTranscript,
   computeProof,
@@ -29,7 +30,7 @@ const config: DaemonHandshakeConfig = {
   supportedProtocolVersions: [1],
   daemonId: "d" as never,
   daemonGeneration: 1 as never,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
 };
 
@@ -61,7 +62,7 @@ const clientHandshake = async (
     const clientNonce = randomUUID() as Nonce;
     const hello: ClientHello = {
       protocolVersions: [1],
-      expectedPlatformMatrixVersion: 0,
+      expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
       expectedRuntimeLimitProfileVersion: 0,
       clientInstanceId: "c",
       clientKind: "electron-main",

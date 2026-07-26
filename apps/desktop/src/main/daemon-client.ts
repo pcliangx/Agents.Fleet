@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import {
   buildProofTranscript,
   computeProof,
@@ -44,7 +45,7 @@ export const connectDaemon = (opts: ConnectOptions): Promise<DaemonHello> => {
       const clientNonce = randomUUID() as Nonce;
       const hello: ClientHello = {
         protocolVersions: [1],
-        expectedPlatformMatrixVersion: 0,
+        expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
         expectedRuntimeLimitProfileVersion: 0,
         clientInstanceId: opts.clientInstanceId ?? "electron-main",
         clientKind: "electron-main",

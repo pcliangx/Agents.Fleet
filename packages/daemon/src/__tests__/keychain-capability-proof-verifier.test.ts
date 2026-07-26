@@ -1,3 +1,4 @@
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import type { ProofTranscript } from "@agents-fleet/transport";
 import { computeProof } from "@agents-fleet/transport";
 import { describe, expect, it } from "vitest";
@@ -16,7 +17,7 @@ const base: ProofTranscript = {
   clientKind: "test",
   daemonId: "d",
   daemonGeneration: 1,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
 };
 
