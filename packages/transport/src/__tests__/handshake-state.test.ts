@@ -1,4 +1,4 @@
-import type { ClientHello } from "@agents-fleet/contracts";
+import { type ClientHello, PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import { describe, expect, it } from "vitest";
 import {
   type DaemonHandshakeConfig,
@@ -10,7 +10,7 @@ const config = (over: Partial<DaemonHandshakeConfig> = {}): DaemonHandshakeConfi
   supportedProtocolVersions: [1],
   daemonId: "d" as never,
   daemonGeneration: 1 as never,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
   ...over,
 });
@@ -19,7 +19,7 @@ const pc = { daemonNonce: "n" as never, daemonProof: "p" };
 
 const hello = (over: Partial<ClientHello>): ClientHello => ({
   protocolVersions: [1],
-  expectedPlatformMatrixVersion: 0,
+  expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
   expectedRuntimeLimitProfileVersion: 0,
   clientInstanceId: "c",
   clientKind: "test",
@@ -59,11 +59,8 @@ describe("handshake-state (RT-HS-01..05)", () => {
 
   it("is fatal on platform matrix mismatch", () => {
     expect(
-      negotiate(
-        config({ platformMatrixVersion: 1 }),
-        hello({ expectedPlatformMatrixVersion: 0 }),
-        pc,
-      ).kind,
+      negotiate(config(), hello({ expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION + 1 }), pc)
+        .kind,
     ).toBe("fatal");
   });
 

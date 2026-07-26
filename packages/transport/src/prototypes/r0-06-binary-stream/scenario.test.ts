@@ -8,9 +8,9 @@ describe("R0-06 fixed load scenario", () => {
     expect(scenario).toMatchObject({
       durationSeconds: 60,
       framePayloadBytes: 65_536,
-      platformMatrixVersion: 0,
+      platformMatrixVersion: 1,
       runtimeLimitProfileVersion: 0,
-      provenanceStatus: "unfrozen-r0-placeholder",
+      provenanceStatus: "matrix-frozen-limit-profile-pending",
       queueLimits: { bytes: 1_048_576, frames: 32 },
     });
     expect(scenario.sessions).toHaveLength(10);

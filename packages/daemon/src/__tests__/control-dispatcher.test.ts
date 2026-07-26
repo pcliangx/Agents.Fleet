@@ -4,6 +4,7 @@ import type {
   CommandEnvelope,
   DaemonHello,
 } from "@agents-fleet/contracts";
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import type { DaemonHandshakeConfig } from "@agents-fleet/transport";
 import { beforeAll, describe, expect, it } from "vitest";
 import { DevProofVerifier } from "../auth/dev-proof-verifier.js";
@@ -13,7 +14,7 @@ const config: DaemonHandshakeConfig = {
   supportedProtocolVersions: [1],
   daemonId: "d" as never,
   daemonGeneration: 1 as never,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
 };
 
@@ -21,7 +22,7 @@ const token = new Uint8Array([1, 2, 3, 4]);
 
 const hello = (over: Partial<ClientHello> = {}): ClientHello => ({
   protocolVersions: [1],
-  expectedPlatformMatrixVersion: 0,
+  expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
   expectedRuntimeLimitProfileVersion: 0,
   clientInstanceId: "c",
   clientKind: "electron-main",

@@ -5,7 +5,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { cpus, freemem, release, totalmem } from "node:os";
 import { dirname } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
-import type { Generation, Seq, SessionId, StreamFrameHeader } from "@agents-fleet/contracts";
+import {
+  type Generation,
+  PLATFORM_MATRIX_VERSION,
+  type Seq,
+  type SessionId,
+  type StreamFrameHeader,
+} from "@agents-fleet/contracts";
 import { decodeFrame, encodeFrame } from "../../binary-frame.js";
 import { runQueueBoundaryProbes } from "./boundaries.js";
 import {
@@ -452,9 +458,9 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       (state) => state.appliedSeq === state.durableSeq,
     ),
     versionProvenanceDeclared:
-      scenario.platformMatrixVersion === 0 &&
+      scenario.platformMatrixVersion === PLATFORM_MATRIX_VERSION &&
       scenario.runtimeLimitProfileVersion === 0 &&
-      scenario.provenanceStatus === "unfrozen-r0-placeholder",
+      scenario.provenanceStatus === "matrix-frozen-limit-profile-pending",
   };
   const verdict = Object.values(acceptance).every(Boolean) ? "PASS" : "FAIL";
   const actualDurationSeconds = (finishedAt - startedAt) / 1_000;
@@ -479,7 +485,7 @@ export const runBenchmark = async (options: BenchmarkOptions): Promise<Benchmark
       doesNotProve: [
         "chunk durability, fsync ordering, or published-frame crash recovery (R0-14)",
         "xterm.js WebGL2/DOM rendering or Snapshot parser safety (R0-08/R0-09)",
-        "frozen RuntimeLimitProfile or SupportedPlatformMatrix release performance budgets (R0-15/R0-16)",
+        "frozen RuntimeLimitProfile release performance budgets (R0-16); SupportedPlatformMatrix is now frozen (R0-15) but the limit profile is still pending",
       ],
     },
     environment: {

@@ -25,6 +25,7 @@
     "prototype:r0-06": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/tui.ts",
     "prototype:r0-06:benchmark": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/benchmark.ts --duration 60",
     "prototype:r0-07": "pnpm --filter @agents-fleet/daemon exec tsx src/prototypes/r0-07-at-most-once-launch/evidence.ts",
+    "prototype:r0-15": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-15-supported-platform-matrix/evidence.ts",
     "dev:daemon": "pnpm --filter @agents-fleet/daemon dev",
     "dev:desktop": "pnpm --filter @agents-fleet/desktop dev",
     "verify:electron": "node scripts/verify-electron-artifact.mjs"

@@ -1,3 +1,4 @@
+import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
 import { describe, expect, it } from "vitest";
 import { computeProof, type ProofTranscript, verifyProof } from "../capability-proof.js";
 
@@ -17,7 +18,7 @@ const base: ProofTranscript = {
   clientKind: "electron-main",
   daemonId: "d1",
   daemonGeneration: 1,
-  platformMatrixVersion: 0,
+  platformMatrixVersion: PLATFORM_MATRIX_VERSION,
   runtimeLimitProfileVersion: 0,
 };
 
@@ -45,7 +46,7 @@ describe("RT-HS-04 capability proof scheme", () => {
     ["clientKind", { ...base, clientKind: "other" }],
     ["daemonId", { ...base, daemonId: "other" }],
     ["daemonGeneration", { ...base, daemonGeneration: 2 }],
-    ["platformMatrixVersion", { ...base, platformMatrixVersion: 1 }],
+    ["platformMatrixVersion", { ...base, platformMatrixVersion: PLATFORM_MATRIX_VERSION + 1 }],
     ["runtimeLimitProfileVersion", { ...base, runtimeLimitProfileVersion: 1 }],
   ])("invalidates when %s changes (tamper / downgrade)", (_name, tampered) => {
     const proof = computeProof("client", base, token);

@@ -2,6 +2,7 @@
 // Pure types + pure functions; zero runtime deps; no Electron/Node-only imports.
 
 export * from "./adapter.js";
+export { FROZEN_PLATFORM_MATRIX, PLATFORM_MATRIX_VERSION } from "./frozen-platform-matrix.js";
 export * from "./identity.js";
 export * as Attachment from "./lifecycle/attachment.js";
 // Lifecycle state machines are namespaced: each exports canTransition/allowedNext,
@@ -30,6 +31,17 @@ export type {
   RendererPath,
   SupportedPlatformMatrix,
 } from "./platform.js";
+export type {
+  HostCommandRunner,
+  HostPlatform,
+  PlatformCheckResult,
+  UnsupportedPlatformReason,
+} from "./platform-gate.js";
+export {
+  appleSiliconGeneration,
+  checkPlatform,
+  sampleHostPlatform,
+} from "./platform-gate.js";
 export * from "./protocol/command.js";
 export * from "./protocol/error.js";
 export * from "./protocol/handshake.js";
