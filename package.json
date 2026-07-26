@@ -32,7 +32,8 @@
     "prototype:r0-22": "pnpm --filter @agents-fleet/daemon exec tsx src/prototypes/r0-22-spawn-helper/evidence.ts",
     "dev:daemon": "pnpm --filter @agents-fleet/daemon dev",
     "dev:desktop": "pnpm --filter @agents-fleet/desktop dev",
-    "verify:electron": "node scripts/verify-electron-artifact.mjs"
+    "verify:electron": "node scripts/verify-electron-artifact.mjs",
+    "prototype:r0-17": "pnpm --filter @agents-fleet/daemon exec tsx src/prototypes/r0-17-native-confirmation/evidence.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
