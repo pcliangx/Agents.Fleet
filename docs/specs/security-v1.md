@@ -1,6 +1,6 @@
 # Agents.Fleet v1 Security Contract
 
-> Status: Draft
+> Status: R0 Baseline
 >
 > 本文件定义 v1 能兑现的安全保证及明确的非保证。运行时状态与协议见 [`runtime-contracts-v1.md`](./runtime-contracts-v1.md)。
 >
