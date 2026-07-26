@@ -1,0 +1,506 @@
+{
+  "probe": "r0-14-chunk-durability",
+  "contracts": [
+    "RT-STO-02",
+    "RT-STO-03",
+    "RT-STO-08",
+    "RT-STO-11",
+    "RT-ORDER-07",
+    "RT-INPUT-01",
+    "RT-INPUT-02",
+    "RT-INPUT-03",
+    "RT-INPUT-04",
+    "RT-REC-10",
+    "RT-PERF-05",
+    "RT-T-23",
+    "RT-T-24"
+  ],
+  "capturedAt": "2026-07-26T03:20:08.541Z",
+  "platform": "Darwin PCs-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64",
+  "node": "v22.17.1",
+  "scenarioCount": 15,
+  "allChecksPass": true,
+  "journalScenarios": [
+    {
+      "crashPoint": null,
+      "writerExit": {
+        "code": 0,
+        "signal": null
+      },
+      "crashedAtMarker": null,
+      "reconcileReport": {
+        "adoptedOrphans": [],
+        "isolatedOrphans": [],
+        "dataGaps": [],
+        "verifiedChunks": 3
+      },
+      "publishedSeqs": [1, 2, 3, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "afterChecksum",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterChecksum",
+      "reconcileReport": {
+        "adoptedOrphans": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "chunks/ses-crash/1/.tmp-80641-2b8e1be7-60d2-4ac7-9843-79f40e9790b4",
+            "quarantinePath": "quarantine/ses-crash-1-tmp-80641-2b8e1be7-60d2-4ac7-9843-79f40e9790b4"
+          }
+        ],
+        "dataGaps": [],
+        "verifiedChunks": 1
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "afterFileFsync",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterFileFsync",
+      "reconcileReport": {
+        "adoptedOrphans": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "chunks/ses-crash/1/.tmp-80643-c40e5c08-449a-44b6-9dd4-1bae679d77d4",
+            "quarantinePath": "quarantine/ses-crash-1-tmp-80643-c40e5c08-449a-44b6-9dd4-1bae679d77d4"
+          }
+        ],
+        "dataGaps": [],
+        "verifiedChunks": 1
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "afterRename",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterRename",
+      "reconcileReport": {
+        "adoptedOrphans": [
+          {
+            "sessionId": "ses-crash",
+            "generation": 1,
+            "seq": 2
+          }
+        ],
+        "isolatedOrphans": [],
+        "dataGaps": [],
+        "verifiedChunks": 1
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "afterDirFsync",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterDirFsync",
+      "reconcileReport": {
+        "adoptedOrphans": [
+          {
+            "sessionId": "ses-crash",
+            "generation": 1,
+            "seq": 2
+          }
+        ],
+        "isolatedOrphans": [],
+        "dataGaps": [],
+        "verifiedChunks": 1
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "afterIndexTx",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterIndexTx",
+      "reconcileReport": {
+        "adoptedOrphans": [],
+        "isolatedOrphans": [],
+        "dataGaps": [],
+        "verifiedChunks": 2
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    },
+    {
+      "crashPoint": "beforePublish",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-beforePublish",
+      "reconcileReport": {
+        "adoptedOrphans": [],
+        "isolatedOrphans": [],
+        "dataGaps": [],
+        "verifiedChunks": 2
+      },
+      "publishedSeqs": [1, 2, 3],
+      "finalCursor": 3,
+      "recoveredFrameHex": [
+        "1b5b33316d00fffe",
+        "6672616d652d3220e4b8ade69687f09f99822073706c69740d0a",
+        "deadbeef000a"
+      ],
+      "leftoverTempFiles": [],
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "publishedButUnrecoverableFrameCountZero": true,
+        "missingByteCountZero": true,
+        "noSilentGap": true,
+        "convergedAllFramesPublished": true
+      }
+    }
+  ],
+  "intentScenarios": [
+    {
+      "crashPoint": null,
+      "writerExit": {
+        "code": 0,
+        "signal": null
+      },
+      "crashedAtMarker": null,
+      "firstResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": []
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterChecksum",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterChecksum",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "input-intents/.tmp-80655-3ac9356d-8ede-4221-af93-2a1c3fd09468",
+            "quarantinePath": "quarantine/input-intent-tmp-80655-3ac9356d-8ede-4221-af93-2a1c3fd09468"
+          }
+        ]
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterFileFsync",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterFileFsync",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "input-intents/.tmp-80657-42b4ae60-e5f8-488e-8197-9e7f9f5bfea6",
+            "quarantinePath": "quarantine/input-intent-tmp-80657-42b4ae60-e5f8-488e-8197-9e7f9f5bfea6"
+          }
+        ]
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterRename",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterRename",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "input-intents/cmd-crash-1.bin",
+            "quarantinePath": "quarantine/input-intent-cmd-crash-1.bin"
+          }
+        ]
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterDirFsync",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterDirFsync",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": [
+          {
+            "originalPath": "input-intents/cmd-crash-1.bin",
+            "quarantinePath": "quarantine/input-intent-cmd-crash-1.bin"
+          }
+        ]
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterPreparedTx",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterPreparedTx",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": ["cmd-crash-1"],
+        "dataGaps": [],
+        "isolatedOrphans": []
+      },
+      "redispatchResult": {
+        "status": "Uncertain",
+        "inputIntentId": "ii-cmd-crash-1"
+      },
+      "ptyWriteCount": 0,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterPtyWrite",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterPtyWrite",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": ["cmd-crash-1"],
+        "dataGaps": [],
+        "isolatedOrphans": []
+      },
+      "redispatchResult": {
+        "status": "Uncertain",
+        "inputIntentId": "ii-cmd-crash-1"
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    },
+    {
+      "crashPoint": "afterDispatchedTx",
+      "writerExit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "crashedAtMarker": "crashed-at-afterDispatchedTx",
+      "firstResult": null,
+      "reconcileReport": {
+        "markedUncertain": [],
+        "dataGaps": [],
+        "isolatedOrphans": []
+      },
+      "redispatchResult": {
+        "status": "Dispatched",
+        "inputIntentId": "ii-cmd-crash-1",
+        "byteLength": 8
+      },
+      "ptyWriteCount": 1,
+      "ptyWritesMatchFixture": true,
+      "checks": {
+        "writerDiedAtArmedPoint": true,
+        "resultIsOriginalSuccessOrExplicitFailureOrUncertain": true,
+        "neverRePlayedBytes": true,
+        "uncertainMarkedWhenExpected": true,
+        "orphanObjectsIsolated": true,
+        "noDataGap": true
+      }
+    }
+  ]
+}
