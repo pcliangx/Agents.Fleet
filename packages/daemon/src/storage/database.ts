@@ -11,9 +11,15 @@
 //   verified backup can bring it back (RT-STO-06, RT-STATE-27);
 // - every migration runs inside one transaction (DDL included), preceded by a
 //   verified backup (checkpoint → copy → reopen → integrity check), rolling
-//   the newest 3 (RT-STO-07).
+//   the newest 3 (RT-STO-07);
+// - RT-STO-07 rolling backups: committed transactions bump a meta change
+//   counter, and rollBackupIfDue creates a verified backup once changes are
+//   at least 24h old — again keeping the newest 3;
+// - restoreFromBackup is the user-confirmed recovery path: the backup is
+//   integrity-verified first and the corrupt sample is moved aside, never
+//   overwritten (RT-STO-06).
 
-import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -56,19 +62,45 @@ const applyPragmas = (db: DatabaseSync): void => {
 
 /**
  * RT-STO-01 / RT-INV-07 — the atomic unit of lifecycle work: state changes,
- * idempotency results and domain events commit together or not at all. Every
- * store mutation and every composed command goes through this. Not
- * re-entrant: compose multi-store operations at the outermost command
- * boundary (SQLite rejects a nested BEGIN).
+ * idempotency results and domain events commit together or not at all.
+ * Re-entrant: the outermost call runs BEGIN IMMEDIATE / COMMIT / ROLLBACK,
+ * nested calls (a store method inside a composed command transaction) run as
+ * SAVEPOINTs, so RT-STO-01's "one transaction" holds for composed commands.
+ *
+ * Each outermost commit also bumps the meta change counter that drives the
+ * RT-STO-07 rolling 24h backup (rollBackupIfDue below).
  */
-export const transact = <T>(db: DatabaseSync, fn: () => T): T => {
-  db.exec("BEGIN IMMEDIATE");
+const txDepth = new WeakMap<DatabaseSync, number>();
+
+export const transact = <T>(db: DatabaseSync, fn: () => T, now: () => number = Date.now): T => {
+  const depth = txDepth.get(db) ?? 0;
+  if (depth === 0) {
+    db.exec("BEGIN IMMEDIATE");
+  } else {
+    db.exec(`SAVEPOINT af_sp_${depth}`);
+  }
+  txDepth.set(db, depth + 1);
   try {
     const result = fn();
-    db.exec("COMMIT");
+    txDepth.set(db, depth);
+    if (depth === 0) {
+      db.exec("COMMIT");
+      db.prepare(
+        "UPDATE _meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'change_seq'",
+      ).run();
+      db.prepare("UPDATE _meta SET value = ? WHERE key = 'last_change_at'").run(String(now()));
+    } else {
+      db.exec(`RELEASE SAVEPOINT af_sp_${depth}`);
+    }
     return result;
   } catch (e) {
-    db.exec("ROLLBACK");
+    txDepth.set(db, depth);
+    if (depth === 0) {
+      db.exec("ROLLBACK");
+    } else {
+      db.exec(`ROLLBACK TO SAVEPOINT af_sp_${depth}`);
+      db.exec(`RELEASE SAVEPOINT af_sp_${depth}`);
+    }
     throw e;
   }
 };
@@ -81,6 +113,12 @@ const schemaVersion = (db: DatabaseSync): number => {
 const openWritable = (path: string): DatabaseSync => {
   const db = new DatabaseSync(path);
   applyPragmas(db);
+  // Meta table for the RT-STO-07 rolling-backup bookkeeping. Idempotent by
+  // design; schema history lives in user_version migrations, not here.
+  db.exec("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  for (const key of ["change_seq", "backup_change_seq", "last_backup_at", "last_change_at"]) {
+    db.prepare("INSERT OR IGNORE INTO _meta (key, value) VALUES (?, '0')").run(key);
+  }
   return db;
 };
 
@@ -126,6 +164,75 @@ const pruneBackups = (backupDir: string, keep: number): void => {
   for (const stale of files.slice(0, Math.max(0, files.length - keep))) {
     rmSync(join(backupDir, stale), { force: true });
   }
+};
+
+const metaValue = (db: DatabaseSync, key: string): number => {
+  const row = db.prepare("SELECT value FROM _meta WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row === undefined ? 0 : Number(row.value);
+};
+
+export interface RollBackupOptions {
+  readonly backupDir?: string;
+  readonly now?: () => number;
+  /** Rolling interval; RT-STO-07 freezes it at 24h. */
+  readonly intervalMs?: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * RT-STO-07 — create a verified rolling backup when the database changed and
+ * the last backup is at least 24h old; keep the newest 3. Returns the backup
+ * path, or null when nothing is due.
+ */
+export const rollBackupIfDue = (
+  db: DatabaseSync,
+  path: string,
+  options: RollBackupOptions = {},
+): string | null => {
+  const backupDir = options.backupDir ?? join(path, "..", "backups");
+  const now = options.now ?? (() => Date.now());
+  const interval = options.intervalMs ?? DAY_MS;
+
+  const changeSeq = metaValue(db, "change_seq");
+  const backedUpSeq = metaValue(db, "backup_change_seq");
+  const lastBackupAt = metaValue(db, "last_backup_at");
+  if (changeSeq <= backedUpSeq) return null; // nothing changed since the last backup
+  // the interval runs from the last backup, or from the first recorded change
+  const baseline = lastBackupAt > 0 ? lastBackupAt : metaValue(db, "last_change_at");
+  if (now() - baseline < interval) return null;
+
+  const target = verifiedBackup(db, path, backupDir, now());
+  pruneBackups(backupDir, 3);
+  db.prepare("UPDATE _meta SET value = ? WHERE key = 'backup_change_seq'").run(String(changeSeq));
+  db.prepare("UPDATE _meta SET value = ? WHERE key = 'last_backup_at'").run(String(now()));
+  return target;
+};
+
+/**
+ * RT-STO-06 — user-confirmed restore from a verified backup. The backup must
+ * pass an integrity check first; the corrupt sample is moved aside (never
+ * overwritten), then the backup takes the original's place.
+ */
+export const restoreFromBackup = (corruptPath: string, backupPath: string): void => {
+  const check = new DatabaseSync(backupPath, { readOnly: true });
+  try {
+    if (!integrityOk(check)) {
+      throw new Error(`restore refused: backup failed integrity check: ${backupPath}`);
+    }
+  } finally {
+    check.close();
+  }
+  const stamp = Date.now();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const live = `${corruptPath}${suffix}`;
+    if (existsSync(live)) {
+      renameSync(live, `${corruptPath}.corrupt-${stamp}${suffix}`);
+    }
+  }
+  copyFileSync(backupPath, corruptPath);
 };
 
 const migrate = (db: DatabaseSync, migrations: readonly Migration[], fromVersion: number): void => {

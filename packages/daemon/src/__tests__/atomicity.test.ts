@@ -72,7 +72,9 @@ describe("transaction atomicity (RT-STO-01)", () => {
       idem.record("cmd_2", "hash-b", { status: "done" });
       db.prepare("UPDATE tasks SET lifecycle = 'Cancelled' WHERE task_id = ?").run(task.taskId);
       db.prepare(
-        "INSERT INTO domain_events (event_id, task_id, timeline_seq, type, confidence, payload_json, occurred_at) VALUES ('ev_manual', ?, 2, 'task-cancelled', 'authoritative', '{}', 'now')",
+        `INSERT INTO domain_events
+         (event_id, schema_version, task_id, attempt_id, session_id, timeline_seq, type, source, confidence, payload_json, occurred_at, observed_at)
+         VALUES ('ev_manual', 1, ?, NULL, NULL, 2, 'task-cancelled', 'daemon', 'authoritative', '{}', 'now', 'now')`,
       ).run(task.taskId);
     });
 

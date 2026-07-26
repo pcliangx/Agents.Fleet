@@ -8,8 +8,35 @@
 // (RT-CMD-07).
 
 import type { DatabaseSync } from "node:sqlite";
+import { hashPreviewFact } from "../confirmation/challenge-issuer.js";
 import type { Migration } from "./database.js";
+import { transact } from "./database.js";
 import { StoreError } from "./task-store.js";
+
+/** Canonical hash of a command payload (RT-CMD-01/02 — same canonicalization as confirmation facts). */
+export const hashCommandPayload = (payload: unknown): string => hashPreviewFact(payload);
+
+/**
+ * RT-T-04 / RT-CMD-02/03 — run a mutating command idempotently: a replayed
+ * commandId with the same payload returns the ORIGINAL result without
+ * re-executing; the same commandId with a different payload is
+ * IdempotencyConflict. State writes, the idempotency record and domain
+ * events commit in one transaction (RT-STO-01).
+ */
+export const executeIdempotent = <T>(
+  db: DatabaseSync,
+  idem: IdempotencyStore,
+  command: { readonly commandId: string; readonly payload: unknown },
+  fn: () => T,
+): T =>
+  transact(db, () => {
+    const payloadHash = hashCommandPayload(command.payload);
+    const hit = idem.lookup(command.commandId, payloadHash);
+    if (hit !== null) return hit as T;
+    const result = fn();
+    idem.record(command.commandId, payloadHash, result);
+    return result;
+  });
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -40,33 +67,38 @@ export class IdempotencyStore {
     this.#now = now;
   }
 
-  /** Original result, null when unseen; IdempotencyConflict on hash mismatch. */
-  lookup(commandId: string, payloadHash: string): unknown {
+  #storedHash(commandId: string): string | undefined {
     const row = this.#db
-      .prepare("SELECT payload_hash, result_json FROM command_records WHERE command_id = ?")
-      .get(commandId) as { payload_hash: string; result_json: string } | undefined;
-    if (row === undefined) return null;
-    if (row.payload_hash !== payloadHash) {
+      .prepare("SELECT payload_hash FROM command_records WHERE command_id = ?")
+      .get(commandId) as { payload_hash: string } | undefined;
+    return row?.payload_hash;
+  }
+
+  #assertSamePayload(commandId: string, storedHash: string, payloadHash: string): void {
+    if (storedHash !== payloadHash) {
       throw new StoreError(
         "IdempotencyConflict",
         `commandId ${commandId} was used with a different payload`,
       );
     }
+  }
+
+  /** Original result, null when unseen; IdempotencyConflict on hash mismatch. */
+  lookup(commandId: string, payloadHash: string): unknown {
+    const stored = this.#storedHash(commandId);
+    if (stored === undefined) return null;
+    this.#assertSamePayload(commandId, stored, payloadHash);
+    const row = this.#db
+      .prepare("SELECT result_json FROM command_records WHERE command_id = ?")
+      .get(commandId) as { result_json: string };
     return JSON.parse(row.result_json);
   }
 
   /** First write wins: a replayed record keeps the original result. */
   record(commandId: string, payloadHash: string, result: unknown): void {
-    const existing = this.#db
-      .prepare("SELECT payload_hash FROM command_records WHERE command_id = ?")
-      .get(commandId) as { payload_hash: string } | undefined;
-    if (existing !== undefined) {
-      if (existing.payload_hash !== payloadHash) {
-        throw new StoreError(
-          "IdempotencyConflict",
-          `commandId ${commandId} was used with a different payload`,
-        );
-      }
+    const stored = this.#storedHash(commandId);
+    if (stored !== undefined) {
+      this.#assertSamePayload(commandId, stored, payloadHash);
       return; // replay: keep the original result
     }
     this.#db

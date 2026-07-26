@@ -1,13 +1,13 @@
-// S2 — Task store (RT-TASK-01/02/03, RT-STATE-15): bounded versioned Task
-// specs, TaskLifecycle transitions, Queued Attempt atomically created on
-// start, cancel ≠ delete.
+// S2 — Task store (RT-TASK-01/02/03, RT-STATE-15, RT-EVENT-01/02/03):
+// bounded versioned Task specs, TaskLifecycle transitions, Queued Attempt
+// atomically created on start, cancel ≠ delete, full event envelope.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../storage/database.js";
-import { TASK_MIGRATIONS, TaskStore } from "../storage/task-store.js";
+import { TASK_MIGRATIONS, type TaskSpec, TaskStore } from "../storage/task-store.js";
 
 let dir: string;
 afterEach(() => {
@@ -15,14 +15,16 @@ afterEach(() => {
   dir = "";
 });
 
+const T0 = 1_800_000_000_000;
+
 const makeStore = (): TaskStore => {
   dir = mkdtempSync(join(tmpdir(), "af-r101-task-"));
   const result = openDatabase({ path: join(dir, "fleet.db"), migrations: TASK_MIGRATIONS });
   if (result.kind !== "ready") throw new Error(`db not ready: ${result.kind}`);
-  return new TaskStore(result.db);
+  return new TaskStore(result.db, () => T0);
 };
 
-const spec = (goal = "fix the bug"): { goal: string } => ({ goal });
+const spec = (goal = "fix the bug"): TaskSpec => ({ goal });
 
 describe("TaskStore.createTask (RT-TASK-01)", () => {
   it("creates a Draft task with taskSpecVersion 1", () => {
@@ -30,6 +32,7 @@ describe("TaskStore.createTask (RT-TASK-01)", () => {
     const task = store.createTask({ workspaceId: "ws1", spec: spec() });
     expect(task.lifecycle).toBe("Draft");
     expect(task.taskSpecVersion).toBe(1);
+    expect(task.workspaceId).toBe("ws1");
   });
 
   it("each field is bounded at 512 KiB and the whole spec at 1 MiB (limit / limit+1)", () => {
@@ -54,11 +57,22 @@ describe("TaskStore.createTask (RT-TASK-01)", () => {
     expect(store.listTasks("ws1")).toHaveLength(0);
   });
 
+  it("rejects fields outside the RT-TASK-01 four-field schema", () => {
+    const store = makeStore();
+    expect(() =>
+      store.createTask({
+        workspaceId: "ws1",
+        spec: { goal: "g", priority: "high" } as unknown as TaskSpec,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "InvalidRequest" }));
+  });
+
   it("updating the spec of a Draft bumps taskSpecVersion", () => {
     const store = makeStore();
     const task = store.createTask({ workspaceId: "ws1", spec: spec("v1") });
     const updated = store.updateTaskSpec(task.taskId, spec("v2"));
     expect(updated.taskSpecVersion).toBe(2);
+    expect(updated.workspaceId).toBe("ws1");
   });
 });
 
@@ -76,14 +90,23 @@ describe("TaskStore lifecycle (RT-STATE-15, RT-TASK-02/03)", () => {
     expect(attempts[0]?.specSnapshot).toEqual(spec());
   });
 
-  it("the attempt snapshot is immutable against later spec edits", () => {
+  it("the attempt snapshot freezes the spec as last edited before start", () => {
     const store = makeStore();
     const task = store.createTask({ workspaceId: "ws1", spec: spec("before") });
-    store.startTask(task.taskId);
     store.updateTaskSpec(task.taskId, spec("after"));
+    store.startTask(task.taskId);
     const attempts = store.listAttempts(task.taskId);
-    expect(attempts[0]?.specSnapshot).toEqual(spec("before"));
-    expect(attempts[0]?.taskSpecVersion).toBe(1);
+    expect(attempts[0]?.specSnapshot).toEqual(spec("after"));
+    expect(attempts[0]?.taskSpecVersion).toBe(2);
+  });
+
+  it("spec edits are Draft-only (RT-TASK-01)", () => {
+    const store = makeStore();
+    const task = store.createTask({ workspaceId: "ws1", spec: spec() });
+    store.startTask(task.taskId);
+    expect(() => store.updateTaskSpec(task.taskId, spec("too late"))).toThrowError(
+      expect.objectContaining({ code: "Conflict" }),
+    );
   });
 
   it("start is not idempotent on an already Runnable task", () => {
@@ -126,7 +149,7 @@ describe("TaskStore lifecycle (RT-STATE-15, RT-TASK-02/03)", () => {
     );
   });
 
-  it("every transition records a domain event (RT-EVENT-01/02)", () => {
+  it("every transition records a full-envelope domain event (RT-EVENT-01/02/03)", () => {
     const store = makeStore();
     const task = store.createTask({ workspaceId: "ws1", spec: spec() });
     store.startTask(task.taskId);
@@ -139,6 +162,17 @@ describe("TaskStore lifecycle (RT-STATE-15, RT-TASK-02/03)", () => {
       "task-cancelled",
     ]);
     expect(events.map((e) => e.timelineSeq)).toEqual([1, 2, 3, 4]);
-    expect(events.every((e) => e.confidence === "authoritative")).toBe(true);
+    for (const e of events) {
+      expect(e.schemaVersion).toBe(1);
+      expect(e.confidence).toBe("authoritative");
+      expect(e.source).toBe("daemon");
+      expect(e.occurredAt).toBe(new Date(T0).toISOString());
+      expect(e.observedAt).toBe(e.occurredAt);
+    }
+    // the attempt-queued event carries the attempt identity
+    const queued = events.find((e) => e.type === "attempt-queued");
+    const attempts = store.listAttempts(task.taskId);
+    expect(queued?.attemptId).toBe(attempts[0]?.attemptId);
+    expect(events.find((e) => e.type === "task-created")?.attemptId).toBeNull();
   });
 });
