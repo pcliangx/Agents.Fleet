@@ -1,4 +1,4 @@
-// RT-DIST-08 — frozen R0 SupportedPlatformMatrix (matrixVersion 1).
+// RT-DIST-08 — frozen R0 SupportedPlatformMatrix (matrixVersion 2).
 //
 // This is the canonical, versioned platform matrix. Concrete values are frozen
 // here (not in the spec schema) and referenced by matrixVersion across the
@@ -9,15 +9,17 @@
 // Field provenance is recorded in evidenceRefs and in
 // docs/probes/r0-15-supported-platform-matrix.md.
 //
+// History: v1 = R0-15 initial freeze (#14); v2 = R0-16 froze
+// runtimeLimitProfileVersion at 1 (#15).
+//
 // Pending fields (kept at 0 until their owning slice lands; a change there bumps
 // this matrix to a new version per RT-DIST-08):
-//   - runtimeLimitProfileVersion: R0-16 (issue #15)
 //   - signingAndNotarizationPolicyVersion: R5 distribution
 
 import type { SupportedPlatformMatrix } from "./platform.js";
 
 export const FROZEN_PLATFORM_MATRIX: SupportedPlatformMatrix = {
-  matrixVersion: 1,
+  matrixVersion: 2,
   architecture: "arm64",
   minimumMacOSVersion: "26",
   minimumHardware: {
@@ -36,7 +38,8 @@ export const FROZEN_PLATFORM_MATRIX: SupportedPlatformMatrix = {
   // recorded in docs/probes/r0-15/evidence.json.
   terminalPackageSetIdentity:
     "@xterm/addon-serialize@0.14.0,@xterm/addon-unicode11@0.9.0,@xterm/addon-webgl@0.19.0,@xterm/headless@6.0.0,@xterm/xterm@6.0.0",
-  runtimeLimitProfileVersion: 0,
+  // R0-16 RuntimeLimitProfile freeze (issue #15) — version 1.
+  runtimeLimitProfileVersion: 1,
   rendererPaths: ["WebGL2", "DOM"],
   // R0-12 Keychain capability-proof scheme (issue #11) — version 1.
   keychainPolicyVersion: 1,
@@ -48,6 +51,7 @@ export const FROZEN_PLATFORM_MATRIX: SupportedPlatformMatrix = {
     "RT-T-45",
     "docs/probes/r0-10-node-pty-isolation.md",
     "docs/probes/r0-15-supported-platform-matrix.md",
+    "docs/probes/r0-16-runtime-limit-profile.md",
   ],
 };
 

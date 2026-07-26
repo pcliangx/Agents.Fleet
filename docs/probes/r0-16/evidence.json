@@ -1,0 +1,190 @@
+{
+  "probeId": "r0-16-runtime-limit-profile",
+  "capturedAt": "2026-07-26T03:41:49.373Z",
+  "baseCommit": "3380594283344dceea4687203d3fdbb26b670331",
+  "frozenProfile": {
+    "profileVersion": 1,
+    "controlLineBytes": 2097152,
+    "commandPayloadBytes": 1048576,
+    "streamHeaderBytes": 4096,
+    "streamFramePayloadBytes": 65536,
+    "streamFramesPerSecond": 240,
+    "attachmentQueueBytes": 1048576,
+    "attachmentQueueFrames": 32,
+    "inputIntentBytes": 65536,
+    "taskFieldBytes": 524288,
+    "taskSpecBytes": 1048576,
+    "profileBytes": 16384,
+    "pathBytes": 4096,
+    "adapterObservationBytes": 1048576,
+    "adapterObservationsPerSecond": 60,
+    "challengeBytes": 65536,
+    "artifactMetadataBytes": 65536,
+    "artifactContentStreamChunkBytes": 1048576,
+    "notificationPayloadBytes": 4096,
+    "snapshotBytes": 16777216,
+    "fileTreeEntries": 50000,
+    "diffBytes": 8388608,
+    "fingerprintFiles": 20000,
+    "fingerprintBytes": 268435456,
+    "fingerprintDurationMs": 10000,
+    "controlRequestsPerSecond": 60,
+    "rendererMemoryBytes": 2147483648,
+    "snapshotWorkerMemoryBytes": 1073741824,
+    "terminal": {
+      "scrollbackLines": 10000,
+      "glyphs": 5000000,
+      "imagePlaceholderBytes": 65536,
+      "webglTextureBytes": 268435456,
+      "domNodes": 200000,
+      "pendingWriteBytes": 4194304,
+      "pendingInputBytes": 65536,
+      "paintQueueItems": 240,
+      "effectPayloadBytes": 4096,
+      "effectsPerSecond": 60
+    }
+  },
+  "frozenPerformanceBudget": {
+    "budgetVersion": 1,
+    "matrixVersion": 2,
+    "runtimeLimitProfileVersion": 1,
+    "fixedLoad": {
+      "aliveSessions": 10,
+      "hotProducerBytesPerSecond": 5242880,
+      "durationSeconds": 60
+    },
+    "inputLatencyMs": {
+      "median": 75,
+      "p99": 300
+    },
+    "outputLatencyMs": {
+      "p95": 100,
+      "p99": 300
+    },
+    "sessionRestoreMs": {
+      "p95": 1000
+    },
+    "presentationMsPerRendererPath": {
+      "WebGL2": {
+        "p95": 150,
+        "p99": 500
+      },
+      "DOM": {
+        "p95": 150,
+        "p99": 500
+      }
+    },
+    "loadClasses": {
+      "activeVisible": {
+        "rendererRssBytes": 2147483648,
+        "mainRssBytes": 536870912,
+        "daemonRssBytes": 536870912,
+        "rendererCpuPercent": 100,
+        "mainCpuPercent": 25,
+        "daemonCpuPercent": 100,
+        "paintLatencyP95Ms": 16,
+        "durableLagP95Ms": 250,
+        "snapshotLatencyP95Ms": 1000
+      },
+      "activeHidden": {
+        "rendererRssBytes": 1073741824,
+        "mainRssBytes": 536870912,
+        "daemonRssBytes": 536870912,
+        "rendererCpuPercent": 25,
+        "mainCpuPercent": 10,
+        "daemonCpuPercent": 100,
+        "paintLatencyP95Ms": null,
+        "durableLagP95Ms": 250,
+        "snapshotLatencyP95Ms": 1000
+      },
+      "electronClosed": {
+        "rendererRssBytes": 0,
+        "mainRssBytes": 0,
+        "daemonRssBytes": 536870912,
+        "rendererCpuPercent": 0,
+        "mainCpuPercent": 0,
+        "daemonCpuPercent": 100,
+        "paintLatencyP95Ms": null,
+        "durableLagP95Ms": 250,
+        "snapshotLatencyP95Ms": 1000
+      }
+    }
+  },
+  "provenance": {
+    "specDerived": "taskFieldBytes / taskSpecBytes (RT-TASK-01); terminal.scrollbackLines (RT-PERF-03); latency gates and fixed load (RT-PERF-01/02/03/08/09)",
+    "r0_06Measured": "attachmentQueueBytes / attachmentQueueFrames / streamFramePayloadBytes; streamFramesPerSecond = 3x the observed hot-session 80 fps",
+    "aPrioriTargets": "all remaining fields and the RSS / CPU / paint / lag budgets — engineering bounds to be validated on the matrix floor fixture (M1 / 8 GiB) in R4"
+  },
+  "crossChecks": [
+    {
+      "source": "RT-TASK-01 (spec)",
+      "checks": {
+        "taskFieldBytes": true,
+        "taskSpecBytes": true
+      }
+    },
+    {
+      "source": "R0-06 measured prototype",
+      "checks": {
+        "attachmentQueueBytes": true,
+        "attachmentQueueFrames": true,
+        "streamFramePayloadBytes": true
+      }
+    },
+    {
+      "source": "RT-PERF-01/02/03/09 latency gates (spec)",
+      "checks": {
+        "inputLatencyMs": true,
+        "outputLatencyMs": true,
+        "sessionRestoreMs": true,
+        "presentationMsPerRendererPath": true
+      }
+    },
+    {
+      "source": "RT-PERF-08 fixed load (spec)",
+      "checks": {
+        "fixedLoad": true
+      }
+    },
+    {
+      "source": "version coherence (RT-DIST-08 / RT-LIMIT-03)",
+      "checks": {
+        "profileVersion": true,
+        "matrixRecordsProfile": true,
+        "matrixBumped": true,
+        "budgetReferences": true
+      }
+    }
+  ],
+  "boundaryVerdicts": [
+    {
+      "field": "attachmentQueueBytes",
+      "allowed": 1048576,
+      "results": {
+        "limitMinus1": "pass",
+        "limit": "pass",
+        "limitPlus1": "violation",
+        "nan": "violation",
+        "infinity": "violation",
+        "negative": "violation",
+        "maliciousOverflow": "violation"
+      },
+      "correct": true
+    },
+    {
+      "field": "terminal.pendingWriteBytes",
+      "allowed": 4194304,
+      "results": {
+        "limitMinus1": "pass",
+        "limit": "pass",
+        "limitPlus1": "violation",
+        "nan": "violation",
+        "infinity": "violation",
+        "negative": "violation",
+        "maliciousOverflow": "violation"
+      },
+      "correct": true
+    }
+  ],
+  "verdict": "PASS"
+}

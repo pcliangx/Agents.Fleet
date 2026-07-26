@@ -24,6 +24,10 @@ _Avoid_: supported machines list, latest macOS
 一个带版本的全局资源边界，统一 Control / stream、IPC、Task / Profile、Adapter、Observation / Artifact、Notification、Snapshot、Renderer 与 Terminal Surface 的大小、数量、速率和内存上限。各组件必须声明并执行同一 profile version，不能各自保留漂移的默认值。
 _Avoid_: magic limits, per-component defaults
 
+**Performance Budget**:
+一个带版本的定量性能门槛集合：spec 延迟门槛（输入 / 输出 / restore / presentation，presentation 按绘制路径 WebGL2 / DOM 分轨）、RT-PERF-08 固定负载，以及三类负载（activeVisible / activeHidden / electronClosed）各自的 RSS、CPU、paint latency、durable lag 与 Snapshot latency 预算。冻结值是 a-priori 目标，验收必须在 Supported Platform Matrix 的最低硬件上运行，不能把高配置机器上的结果当作预算达成。
+_Avoid_: perf targets, SLO, 性能指标（用预算）
+
 **Repository**:
 用户打开以进行工作的一个 Git 仓库。
 _Avoid_: project（歧义，项目作用域用 Workspace）

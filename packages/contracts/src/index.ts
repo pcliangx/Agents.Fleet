@@ -2,7 +2,13 @@
 // Pure types + pure functions; zero runtime deps; no Electron/Node-only imports.
 
 export * from "./adapter.js";
+export type { LoadClassBudget, PerformanceBudget } from "./frozen-performance-budget.js";
+export { FROZEN_PERFORMANCE_BUDGET } from "./frozen-performance-budget.js";
 export { FROZEN_PLATFORM_MATRIX, PLATFORM_MATRIX_VERSION } from "./frozen-platform-matrix.js";
+export {
+  FROZEN_RUNTIME_LIMIT_PROFILE,
+  RUNTIME_LIMIT_PROFILE_VERSION,
+} from "./frozen-runtime-limit-profile.js";
 export * from "./identity.js";
 export * as Attachment from "./lifecycle/attachment.js";
 // Lifecycle state machines are namespaced: each exports canTransition/allowedNext,
@@ -23,6 +29,13 @@ export * as RepositoryTrust from "./lifecycle/repository-trust.js";
 export * as Session from "./lifecycle/session.js";
 export * as Task from "./lifecycle/task.js";
 export * as Worktree from "./lifecycle/worktree.js";
+export type {
+  LimitCheckResult,
+  LimitViolation,
+  ProfileLimitField,
+  TerminalLimitField,
+} from "./limit-guard.js";
+export { checkLimit, checkTerminalLimit } from "./limit-guard.js";
 export type { RuntimeLimitProfile, TerminalLimits } from "./limits.js";
 export type { AgentAdapter, LaunchSpec, PrepareInput } from "./modules/agent-adapter.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";

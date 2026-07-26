@@ -10,7 +10,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
-import { PLATFORM_MATRIX_VERSION } from "@agents-fleet/contracts";
+import { PLATFORM_MATRIX_VERSION, RUNTIME_LIMIT_PROFILE_VERSION } from "@agents-fleet/contracts";
 import {
   buildProofTranscript,
   computeProof,
@@ -31,7 +31,7 @@ const config: DaemonHandshakeConfig = {
   daemonId: "d" as never,
   daemonGeneration: 1 as never,
   platformMatrixVersion: PLATFORM_MATRIX_VERSION,
-  runtimeLimitProfileVersion: 0,
+  runtimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
 };
 
 const readOne = (sock: Socket, dec: NdjsonDecoder, timeoutMs = 1000): Promise<unknown> =>
@@ -63,7 +63,7 @@ const clientHandshake = async (
     const hello: ClientHello = {
       protocolVersions: [1],
       expectedPlatformMatrixVersion: PLATFORM_MATRIX_VERSION,
-      expectedRuntimeLimitProfileVersion: 0,
+      expectedRuntimeLimitProfileVersion: RUNTIME_LIMIT_PROFILE_VERSION,
       clientInstanceId: "c",
       clientKind: "electron-main",
       clientNonce,

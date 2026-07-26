@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { FROZEN_PLATFORM_MATRIX, PLATFORM_MATRIX_VERSION } from "../frozen-platform-matrix.js";
 import { checkPlatform } from "../platform-gate.js";
 
-describe("RT-DIST-08 frozen SupportedPlatformMatrix v1", () => {
-  it("matrixVersion is 1 and the constant agrees", () => {
-    expect(FROZEN_PLATFORM_MATRIX.matrixVersion).toBe(1);
-    expect(PLATFORM_MATRIX_VERSION).toBe(1);
+describe("RT-DIST-08 frozen SupportedPlatformMatrix v2", () => {
+  it("matrixVersion is 2 and the constant agrees (bumped by R0-16 profile freeze)", () => {
+    expect(FROZEN_PLATFORM_MATRIX.matrixVersion).toBe(2);
+    expect(PLATFORM_MATRIX_VERSION).toBe(2);
   });
 
   it("freezes Apple Silicon / Tahoe / WebGL2+DOM per PLATFORM-1", () => {
@@ -48,8 +48,8 @@ describe("RT-DIST-08 frozen SupportedPlatformMatrix v1", () => {
     expect(checkPlatform(atFloor, m)).toEqual({ ok: true });
   });
 
-  it("marks not-yet-frozen policy fields explicitly 0", () => {
-    expect(FROZEN_PLATFORM_MATRIX.runtimeLimitProfileVersion).toBe(0);
+  it("records the frozen limit profile; not-yet-frozen policy fields stay explicitly 0", () => {
+    expect(FROZEN_PLATFORM_MATRIX.runtimeLimitProfileVersion).toBe(1);
     expect(FROZEN_PLATFORM_MATRIX.signingAndNotarizationPolicyVersion).toBe(0);
     expect(FROZEN_PLATFORM_MATRIX.keychainPolicyVersion).toBe(1);
   });

@@ -93,6 +93,8 @@ RuntimeLimitProfile = {
 - **RT-LIMIT-02**：Daemon、Electron Main、Renderer 与 worker 必须在解析、分配内存、持久化或转发前按同一 `profileVersion` 检查相关 limit；超过上限返回 `InvalidRequest` / `StoragePressure` 或明确的截断 metadata，且不产生部分命令、副作用、跨 Session 影响或无界 diagnostic payload。来源不可信的长度字段不能决定预分配大小。
 - **RT-LIMIT-03**：`RuntimeLimitProfile` 与 `SupportedPlatformMatrix` 一同进入签名 release manifest；每个安全、terminal 与性能结果记录 `profileVersion`。更改任一 limit 都生成新 version，并重跑对应 boundary、资源耗尽、恢复与性能 fixture，不能沿用旧版本结果。
 
+> _Changelog (R0-16, [probe](../probes/r0-16-runtime-limit-profile.md))_：R0 冻结 `profileVersion = 1` 的 `RuntimeLimitProfile` 与 `budgetVersion = 1` 的性能预算，固化于 `packages/contracts/src/frozen-runtime-limit-profile.ts` 与 `frozen-performance-budget.ts`；`SupportedPlatformMatrix` 按 RT-DIST-08 升为 `matrixVersion = 2`（`runtimeLimitProfileVersion = 1`）。数值来源：`taskFieldBytes` / `taskSpecBytes`（RT-TASK-01）、RT-PERF-01/02/03/08/09 延迟门槛与固定负载为 spec 原值；`attachmentQueueBytes` / `attachmentQueueFrames` / `streamFramePayloadBytes` 为 R0-06 实测；其余为 a-priori 目标值，R4 在矩阵最低硬件（M1 / 8 GiB）fixture 上验证。纯 limit guard（`packages/contracts/src/limit-guard.ts`）已证明 limit - 1 / limit / limit + 1 与非有限输入的 fail-closed 边界；各组件（Daemon / Main / Renderer / worker）的实际接入属 R1+。
+
 ## 3. Ownership and Cardinality
 
 - **RT-OWN-01**：一个 Workspace 绑定一个 Repository 和一组默认选择。
