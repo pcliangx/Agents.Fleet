@@ -1,38 +1,16 @@
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  copyNodePtyWithHelperMode,
+  type TempNodePtyCopy,
+} from "../native-artifact/temp-node-pty-copy.js";
 import {
   createProcessSupervisor,
   type PtyDriver,
   type PtyDriverProcess,
   type SupervisedPtyProcess,
 } from "../session-runtime/process-supervisor.js";
-
-interface NativePtyProcess {
-  readonly pid: number;
-  write(data: Buffer): void;
-  resize(cols: number, rows: number): void;
-  kill(): void;
-  onData(listener: (data: unknown) => void): { dispose(): void };
-  onExit(listener: () => void): { dispose(): void };
-}
-
-interface NativePtyModule {
-  spawn(
-    executablePath: string,
-    args: string[],
-    options: {
-      readonly cwd: string;
-      readonly env: Record<string, string>;
-      readonly cols: number;
-      readonly rows: number;
-      readonly encoding: null;
-    },
-  ): NativePtyProcess;
-}
 
 const HOSTILE_BYTES = [0x00, 0xff, 0xfe, 0xf0, 0x9f, 0x98, 0x80, 0x41] as const;
 const HOSTILE_SHA256 = "0e94bd7e52cb67fb1255a75a0c98112b748d360fa14d96a278a22828aa26ccf8";
@@ -56,20 +34,12 @@ describe("node-pty native raw-byte boundary", () => {
   itMacArm64(
     "preserves hostile Buffer bytes and keeps display replacement out of the recovery source",
     async () => {
-      const requireFromTest = createRequire(import.meta.url);
-      const installedRoot = dirname(requireFromTest.resolve("node-pty/package.json"));
-      const tempRoot = await mkdtemp(join(tmpdir(), "af-r010-node-pty-"));
-      const copiedRoot = join(tempRoot, "node-pty");
+      let copy: TempNodePtyCopy | undefined;
       let supervisedProcess: SupervisedPtyProcess | undefined;
 
       try {
-        await cp(installedRoot, copiedRoot, { recursive: true });
-        await chmod(
-          join(copiedRoot, "prebuilds", `${process.platform}-${process.arch}`, "spawn-helper"),
-          0o755,
-        );
-        const requireFromCopy = createRequire(join(copiedRoot, "package.json"));
-        const nodePty = requireFromCopy(copiedRoot) as NativePtyModule;
+        copy = await copyNodePtyWithHelperMode(0o755);
+        const { nodePty } = copy;
         let resolveExit: (() => void) | undefined;
         const exited = new Promise<void>((resolve) => {
           resolveExit = resolve;
@@ -114,7 +84,7 @@ describe("node-pty native raw-byte boundary", () => {
         expect({
           bytes: [...recoverySource],
           checksumBeforeDisplay,
-          displayContainsReplacement: displayText.includes("\ufffd"),
+          displayContainsReplacement: displayText.includes("�"),
           checksumAfterDisplay,
         }).toEqual({
           bytes: [...HOSTILE_BYTES],
@@ -124,7 +94,7 @@ describe("node-pty native raw-byte boundary", () => {
         });
       } finally {
         await supervisedProcess?.terminate().catch(() => {});
-        await rm(tempRoot, { recursive: true, force: true });
+        await copy?.cleanup().catch(() => {});
       }
     },
     10_000,
