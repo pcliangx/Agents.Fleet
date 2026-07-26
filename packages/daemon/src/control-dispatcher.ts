@@ -17,6 +17,7 @@ import type {
   Nonce,
 } from "@agents-fleet/contracts";
 import {
+  buildProofTranscript,
   computeProof,
   type DaemonHandshakeConfig,
   negotiate,
@@ -75,17 +76,7 @@ export class ControlDispatcher {
       this.fail(result.code, result.message);
       return;
     }
-    const transcript: ProofTranscript = {
-      clientNonce: hello.clientNonce,
-      daemonNonce,
-      selectedProtocolVersion: result.challenge.selectedProtocolVersion,
-      clientInstanceId: hello.clientInstanceId,
-      clientKind: hello.clientKind,
-      daemonId: this.config.daemonId,
-      daemonGeneration: this.config.daemonGeneration,
-      platformMatrixVersion: this.config.platformMatrixVersion,
-      runtimeLimitProfileVersion: this.config.runtimeLimitProfileVersion,
-    };
+    const transcript = buildProofTranscript(hello, result.challenge);
     this.transcript = transcript;
     this.selectedProtocolVersion = result.challenge.selectedProtocolVersion;
     this.state = "awaiting-auth";

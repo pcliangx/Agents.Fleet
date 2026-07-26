@@ -1,7 +1,7 @@
 export type { DecodedFrame } from "./binary-frame.js";
 export { decodeFrame, encodeFrame } from "./binary-frame.js";
 export type { ProofRole, ProofTranscript } from "./capability-proof.js";
-export { computeProof, verifyProof } from "./capability-proof.js";
+export { buildProofTranscript, computeProof, verifyProof } from "./capability-proof.js";
 export type {
   CapabilityTokenSource,
   KeychainLookup,

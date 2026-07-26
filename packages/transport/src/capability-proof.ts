@@ -10,6 +10,8 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import type { ClientHello, DaemonChallenge } from "@agents-fleet/contracts";
+
 export type ProofRole = "daemon" | "client";
 
 export interface ProofTranscript {
@@ -72,3 +74,23 @@ export const verifyProof = (
   if (candidate.length !== expected.length) return false;
   return timingSafeEqual(u(expected), u(candidate));
 };
+
+// RT-HS-04 — single source of truth for assembling the MAC transcript from the
+// handshake messages. Both peers (Daemon from negotiate's challenge; Electron
+// Main from the received challenge) build the identical 9-field transcript, so
+// any field drift between the two sides shows up as a proof mismatch rather
+// than silent divergence at one call site.
+export const buildProofTranscript = (
+  hello: ClientHello,
+  challenge: DaemonChallenge,
+): ProofTranscript => ({
+  clientNonce: hello.clientNonce,
+  daemonNonce: challenge.daemonNonce,
+  selectedProtocolVersion: challenge.selectedProtocolVersion,
+  clientInstanceId: hello.clientInstanceId,
+  clientKind: hello.clientKind,
+  daemonId: challenge.daemonId,
+  daemonGeneration: challenge.daemonGeneration,
+  platformMatrixVersion: challenge.platformMatrixVersion,
+  runtimeLimitProfileVersion: challenge.runtimeLimitProfileVersion,
+});

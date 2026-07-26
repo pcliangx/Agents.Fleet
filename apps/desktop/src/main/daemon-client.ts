@@ -7,9 +7,9 @@ import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
 import {
+  buildProofTranscript,
   computeProof,
   NdjsonDecoder,
-  type ProofTranscript,
   verifyProof,
 } from "@agents-fleet/transport";
 
@@ -57,17 +57,7 @@ export const connectDaemon = (opts: ConnectOptions): Promise<DaemonHello> => {
         reject(new Error("handshake failed (no challenge)"));
         return;
       }
-      const transcript: ProofTranscript = {
-        clientNonce,
-        daemonNonce: challenge.daemonNonce,
-        selectedProtocolVersion: challenge.selectedProtocolVersion,
-        clientInstanceId: hello.clientInstanceId,
-        clientKind: hello.clientKind,
-        daemonId: challenge.daemonId,
-        daemonGeneration: challenge.daemonGeneration,
-        platformMatrixVersion: challenge.platformMatrixVersion,
-        runtimeLimitProfileVersion: challenge.runtimeLimitProfileVersion,
-      };
+      const transcript = buildProofTranscript(hello, challenge);
       // RT-HS-04 — verify the daemon proof before trusting the challenge.
       if (!verifyProof("daemon", transcript, opts.token, challenge.daemonProof)) {
         reject(new Error("handshake failed (bad daemon proof)"));

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
 import {
+  buildProofTranscript,
   computeProof,
   type DaemonHandshakeConfig,
   NdjsonDecoder,
@@ -68,17 +69,7 @@ const clientHandshake = async (
     };
     sock.write(`${JSON.stringify(hello)}\n`);
     const challenge = (await readOne(sock, dec)) as DaemonChallenge;
-    const transcript: ProofTranscript = {
-      clientNonce,
-      daemonNonce: challenge.daemonNonce,
-      selectedProtocolVersion: challenge.selectedProtocolVersion,
-      clientInstanceId: hello.clientInstanceId,
-      clientKind: hello.clientKind,
-      daemonId: challenge.daemonId,
-      daemonGeneration: challenge.daemonGeneration,
-      platformMatrixVersion: challenge.platformMatrixVersion,
-      runtimeLimitProfileVersion: challenge.runtimeLimitProfileVersion,
-    };
+    const transcript = buildProofTranscript(hello, challenge);
     // RT-HS-04 — client verifies the daemon proof (mutual).
     expect(verifyProof("daemon", transcript, tok, challenge.daemonProof)).toBe(true);
     const clientProof = computeProof("client", transcript, tok);
