@@ -1,3 +1,18 @@
 packages:
   - 'packages/*'
   - 'apps/*'
+
+# SV1-SUPPLY-02 — Node version is pinned in two places by design:
+#  - useNodeVersion (here): the authoritative value pnpm consumes to install
+#    and run a managed Node for dependency lifecycle (reflected in lockfile
+#    node@runtime:<version>).
+#  - package.json devEngines.runtime.version: a hint for IDEs/tools that read
+#    the Node devEngines proposal (not consumed by pnpm).
+# Keep both in sync on bump; useNodeVersion is the source of truth.
+useNodeVersion: 22.17.1
+
+allowBuilds:
+  electron@34.5.8: true
+  esbuild@0.25.12: false
+  esbuild@0.28.1: false
+  node-pty@1.1.0: false
