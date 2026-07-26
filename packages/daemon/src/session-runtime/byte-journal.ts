@@ -6,13 +6,13 @@
 // 读取只提供 cursor 覆盖的 frame；索引在而文件缺失 / checksum 失败返回
 // DataIntegrityFailure，绝不用空 bytes 或旧数据伪装（RT-STO-03、RT-REC-10）。
 
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   type ContentObjectStep,
   durableWriteContentObject,
   sha256Hex,
+  verifyContentObject,
 } from "./content-object-io.js";
 import { withTx } from "./store-schema.js";
 
@@ -24,9 +24,13 @@ export class DataIntegrityFailure extends Error {
   }
 }
 
-export interface FrameRef {
+/** 一条 Session stream 的命名空间（RT-ORDER-01：seq 只在其内单调）。 */
+export interface StreamRef {
   readonly sessionId: string;
   readonly generation: number;
+}
+
+export interface FrameRef extends StreamRef {
   readonly seq: number;
 }
 
@@ -65,10 +69,10 @@ export class ByteJournal {
   }
 
   /** RT-ORDER-07：最大连续 durable seq；无 frame 时为 0。 */
-  readonly durableCursor = (sessionId: string, generation: number): number => {
+  readonly durableCursor = (ref: StreamRef): number => {
     const row = this.db
       .prepare("SELECT durable_seq FROM stream_cursors WHERE session_id = ? AND generation = ?")
-      .get(sessionId, generation) as { durable_seq: number } | undefined;
+      .get(ref.sessionId, ref.generation) as { durable_seq: number } | undefined;
     return row?.durable_seq ?? 0;
   };
 
@@ -81,14 +85,14 @@ export class ByteJournal {
     const { sessionId, generation, seq, bytes } = frame;
     const sha256 = sha256Hex(bytes);
 
-    const existing = this.chunkRow(sessionId, generation, seq);
+    const existing = this.chunkRow(frame);
     if (existing) {
       if (existing.sha256 !== sha256) {
         throw new Error(
           `appendFrame: seq ${seq} already durable with different content (RT-ORDER-01/02 violation)`,
         );
       }
-      const cursor = this.durableCursor(sessionId, generation);
+      const cursor = this.durableCursor(frame);
       return { publishable: seq <= cursor, durableCursor: cursor };
     }
 
@@ -107,7 +111,7 @@ export class ByteJournal {
           "INSERT INTO chunks (session_id, generation, seq, chunk_path, byte_length, sha256) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .run(sessionId, generation, seq, written.relativePath, written.byteLength, written.sha256);
-      return this.advanceContiguousCursor(sessionId, generation);
+      return advanceContiguousCursor(this.db, frame);
     });
     this.onStep?.("afterIndexTx", frame);
 
@@ -119,66 +123,47 @@ export class ByteJournal {
    * cursor 覆盖但 index 缺失 / 文件缺失 / checksum 失败抛 DataIntegrityFailure
    * （RT-STO-03：显式 dataGap，不伪装）。
    */
-  readonly readFrame = (sessionId: string, generation: number, seq: number): Uint8Array | null => {
-    const cursor = this.durableCursor(sessionId, generation);
-    const row = this.chunkRow(sessionId, generation, seq);
+  readonly readFrame = (frame: FrameRef): Uint8Array | null => {
+    const cursor = this.durableCursor(frame);
+    const row = this.chunkRow(frame);
     if (!row) {
-      if (seq <= cursor) {
+      if (frame.seq <= cursor) {
         throw new DataIntegrityFailure(
-          `chunk index missing for ${sessionId}/${generation}/seq ${seq} within durable cursor ${cursor}`,
+          `chunk index missing for ${frame.sessionId}/${frame.generation}/seq ${frame.seq} within durable cursor ${cursor}`,
         );
       }
       return null;
     }
-    if (seq > cursor) return null; // 未覆盖，不可发布（RT-STO-08）
+    if (frame.seq > cursor) return null; // 未覆盖，不可发布（RT-STO-08）
 
-    let bytes: Uint8Array;
-    try {
-      bytes = readFileSync(join(this.storeDir, row.chunk_path));
-    } catch {
+    const verification = verifyContentObject(join(this.storeDir, row.chunk_path), row.sha256);
+    if (!verification.ok) {
       throw new DataIntegrityFailure(
-        `chunk file missing for ${sessionId}/${generation}/seq ${seq} (${row.chunk_path})`,
+        `chunk ${verification.reason} for ${frame.sessionId}/${frame.generation}/seq ${frame.seq} (${row.chunk_path})`,
       );
     }
-    if (sha256Hex(bytes) !== row.sha256) {
-      throw new DataIntegrityFailure(
-        `chunk checksum mismatch for ${sessionId}/${generation}/seq ${seq} (${row.chunk_path})`,
-      );
-    }
-    return bytes;
+    return verification.bytes;
   };
 
-  private readonly chunkRow = (
-    sessionId: string,
-    generation: number,
-    seq: number,
-  ): ChunkRow | undefined =>
+  private readonly chunkRow = (frame: FrameRef): ChunkRow | undefined =>
     this.db
       .prepare(
         "SELECT chunk_path, byte_length, sha256 FROM chunks WHERE session_id = ? AND generation = ? AND seq = ?",
       )
-      .get(sessionId, generation, seq) as ChunkRow | undefined;
-
-  /** 从事务内调用：cursor 只前进到仍存在连续 chunk index 的位置，绝不跳 seq。 */
-  private readonly advanceContiguousCursor = (sessionId: string, generation: number): number =>
-    advanceContiguousCursor(this.db, sessionId, generation);
+      .get(frame.sessionId, frame.generation, frame.seq) as ChunkRow | undefined;
 }
 
 /** RT-ORDER-07：cursor 只前进到连续 chunk index 覆盖处；调用方负责事务上下文。 */
-export const advanceContiguousCursor = (
-  db: DatabaseSync,
-  sessionId: string,
-  generation: number,
-): number => {
+export const advanceContiguousCursor = (db: DatabaseSync, ref: StreamRef): number => {
   const row = db
     .prepare("SELECT durable_seq FROM stream_cursors WHERE session_id = ? AND generation = ?")
-    .get(sessionId, generation) as { durable_seq: number } | undefined;
+    .get(ref.sessionId, ref.generation) as { durable_seq: number } | undefined;
   const current = row?.durable_seq ?? 0;
   let next = current + 1;
   while (
     db
       .prepare("SELECT 1 AS x FROM chunks WHERE session_id = ? AND generation = ? AND seq = ?")
-      .get(sessionId, generation, next) !== undefined
+      .get(ref.sessionId, ref.generation, next) !== undefined
   ) {
     next += 1;
   }
@@ -186,7 +171,7 @@ export const advanceContiguousCursor = (
   if (advanced > current) {
     db.prepare(
       "INSERT INTO stream_cursors (session_id, generation, durable_seq) VALUES (?, ?, ?) ON CONFLICT (session_id, generation) DO UPDATE SET durable_seq = excluded.durable_seq",
-    ).run(sessionId, generation, advanced);
+    ).run(ref.sessionId, ref.generation, advanced);
   }
   return Math.max(current, advanced);
 };

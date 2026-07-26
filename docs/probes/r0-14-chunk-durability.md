@@ -2,7 +2,11 @@
 
 > Branch: `r0-14-chunk-durability`。**本次实测**为以下契约提供协议层面的证据:
 > RT-STO-02 / RT-STO-03 / RT-STO-08 / RT-STO-11(§8 chunk 与 Input Intent 持久化协议)、
-> RT-ORDER-07(Durable Stream Cursor 连续性)、RT-INPUT-01..04(§6.5 Input Observation)、
+> RT-ORDER-07(Durable Stream Cursor 连续性)、
+> RT-INPUT-01..04(**partial**: 仅 durability 顺序(content object 先 durable → Prepared
+> record → PTY write → Dispatched record)、崩溃窗口标 Uncertain 与相同 commandId 幂等
+> 不重放子句; §6.5 InputIntent shape 的 `source` / `attachmentId` / `fencingToken`
+> provenance 字段未实现, 见「边界与后续」)、
 > RT-REC-10(§5 chunk 缺失 / checksum 失败的显式 dataGap)、
 > RT-PERF-05(`publishedButUnrecoverableFrameCount = 0`、cursor 内 `missingByteCount = 0`)、
 > RT-T-23 / RT-T-24(§13 崩溃矩阵验收)。
@@ -61,7 +65,7 @@ Input Intent 结果只可能是原成功 / 明确失败 / Uncertain, 绝不自�
    才提交 Dispatched(RT-INPUT-02)。DB 只存 provenance、sha256 与 byteLength,
    原始 bytes 只存 content object(恢复源)。已有 record 的重发永不写 PTY:
    Dispatched → 原结果; Prepared / Uncertain → Uncertain; object 缺失 / 损坏 →
-   DataIntegrityFailure。
+   DataGap(明确失败)。
 6. **Reconciliation 把每个 Prepared(非 Dispatched)一律标 Uncertain**
    (`reconcileInputIntents`): 从幸存 record 无法判定 PTY write 是否发生
    (RT-INPUT-03); 无 record 的 object(含临时残骸)隔离回收, 绝不作为输入来源。
@@ -132,7 +136,7 @@ Input Intent 结果只可能是原成功 / 明确失败 / Uncertain, 绝不自�
 - 幂等: 同 commandId 同 bytes 返回原结果(byteLength / inputIntentId 一致)不重复写;
   同 commandId 不同 bytes 返回 IdempotencyConflict 不写(行为测试)。
 - object 缺失 / 损坏: 行为测试 + reconcile 实测标 dataGap, 重发返回
-  DataIntegrityFailure 且 PTY 0 写; `readContent` 同样显式失败(RT-STO-11)。
+  DataGap(明确失败)且 PTY 0 写; `readContent` 抛 `DataIntegrityFailure`(RT-STO-11)。
 - 无 record orphan object: 实测隔离后可作为全新命令正常 dispatch(此前从未有 record)。
 
 ## 证据与复现
@@ -158,6 +162,19 @@ Input Intent 结果只可能是原成功 / 明确失败 / Uncertain, 绝不自�
 - **Snapshot 安全 checkpoint(RT-ORDER-08 / RT-TERM-12)与 RT-REC-09**: 本原型只有
   Durable Stream Cursor, 无 Snapshot; 「Snapshot 损坏但 chunk 完整 → 重建」未实测
   (chunk 逐字节可恢复是其前提, 属 R0-08 / R0-09 范围)。
+- **RT-ORDER-09 后半(delta 保留)**: 「Durable Stream Cursor 之内、Snapshot 安全
+  checkpoint 之后的原始 frame 保留为 delta, 不得为推进 Snapshot 丢弃或替换」
+  依赖 Snapshot 的存在, 本原型无 Snapshot, 未覆盖(随 R0-08 / R0-09 一并验收)。
+- **RT-INPUT-01..04 provenance 字段缺口(partial)**: §6.5 InputIntent shape 要求
+  `source`(Keyboard / IME / Paste / Mouse / Automation)、`attachmentId` 与
+  `fencingToken`; 本原型的 record 只有 commandId / sessionId / generation /
+  contentRef / hash。provenance 与 Control Lease 的复合属 R1 Session Runtime,
+  届时 RT-INPUT-01 的「durable 记录来源」子句才算完整覆盖。
+- **orphan 接纳的来源信任(R1 注明)**: `reconcileStore` 的 orphan 接纳「校验」
+  只是自算 sha256 入库(协议内自洽); 一个非协议来源的同名最终文件(外部进程
+  按命名规则投放到 storeDir)同样会被接纳。本原型接受这一点(orphan 只在
+  Daemon 自己的 storeDir 内产生); R1 若放宽 storeDir 的信任边界, 需要更强的
+  来源判定。
 - **StoragePressure 与保留上限(RT-BP-03..07、RT-REC-11)**: 无容量上限、ENOSPC 与
   emergency reserve 路径未实测。
 - **跨 Session 并发与 Runtime Limit Profile(RT-PERF-06、RT-STREAM-05)**: 单 session /

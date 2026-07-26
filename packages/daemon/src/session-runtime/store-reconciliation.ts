@@ -6,11 +6,16 @@
 // - 有索引无文件 / checksum 失败 = 显式 dataGap：保留索引与 cursor 原状，
 //   读取走 ByteJournal 返回 DataIntegrityFailure，不用空 bytes 或旧数据伪装。
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { advanceContiguousCursor } from "./byte-journal.js";
-import { sha256Hex } from "./content-object-io.js";
+import {
+  type QuarantinedFile,
+  quarantineFile,
+  sha256Hex,
+  verifyContentObject,
+} from "./content-object-io.js";
 import { withTx } from "./store-schema.js";
 
 export interface AdoptedOrphan {
@@ -19,10 +24,7 @@ export interface AdoptedOrphan {
   readonly seq: number;
 }
 
-export interface IsolatedOrphan {
-  readonly originalPath: string;
-  readonly quarantinePath: string;
-}
+export type IsolatedOrphan = QuarantinedFile;
 
 export interface StoreDataGap {
   readonly sessionId: string;
@@ -63,22 +65,15 @@ export const reconcileStore = (storeDir: string, db: DatabaseSync): StoreReconci
   }[];
 
   for (const row of rows) {
-    const abs = join(storeDir, row.chunk_path);
-    const gap = (reason: StoreDataGap["reason"]): void => {
+    const verification = verifyContentObject(join(storeDir, row.chunk_path), row.sha256);
+    if (!verification.ok) {
       dataGaps.push({
         sessionId: row.session_id,
         generation: row.generation,
         seq: row.seq,
-        reason,
+        reason: verification.reason,
         byteLength: row.byte_length,
       });
-    };
-    if (!existsSync(abs)) {
-      gap("file-missing");
-      continue;
-    }
-    if (sha256Hex(readFileSync(abs)) !== row.sha256) {
-      gap("checksum-mismatch");
       continue;
     }
     verifiedChunks += 1;
@@ -97,20 +92,14 @@ export const reconcileStore = (storeDir: string, db: DatabaseSync): StoreReconci
           const abs = join(generationDir, file);
           if (file.startsWith(".tmp-")) {
             // rename 前崩溃的残骸：内容完整性无从保证 → 隔离，绝不接纳。
-            const quarantineDir = join(storeDir, "quarantine");
-            mkdirSync(quarantineDir, { recursive: true });
-            const quarantinePath = join(
-              quarantineDir,
-              `${sessionId}-${generationName}-${file.replace(/^\.tmp-/, "tmp-")}`,
+            isolatedOrphans.push(
+              quarantineFile({
+                storeDir,
+                relativeDir: join("chunks", sessionId, generationName),
+                fileName: file,
+                quarantineName: `${sessionId}-${generationName}-${file.replace(/^\.tmp-/, "tmp-")}`,
+              }),
             );
-            renameSync(abs, quarantinePath);
-            isolatedOrphans.push({
-              originalPath: join("chunks", sessionId, generationName, file),
-              quarantinePath: join(
-                "quarantine",
-                `${sessionId}-${generationName}-${file.replace(/^\.tmp-/, "tmp-")}`,
-              ),
-            });
             continue;
           }
           const match = CHUNK_FILE_RE.exec(file);
@@ -124,6 +113,10 @@ export const reconcileStore = (storeDir: string, db: DatabaseSync): StoreReconci
           if (indexed !== undefined) continue; // 已在索引视角验证
 
           // orphan 最终文件：文件协议保证 rename 即完整 + 已 fsync → 校验后接纳。
+          // R1 注明：这里的「校验」只是自算 sha256 入库（协议内自洽）；一个
+          // 非协议来源的同名最终文件（外部进程按命名规则投放）同样会被接纳。
+          // 本原型接受这一点（orphan 只在 Daemon 自己的 storeDir 内产生）；
+          // R1 若放宽 storeDir 的信任边界，需要更强的来源判定。
           const bytes = readFileSync(abs);
           withTx(db, () => {
             db.prepare(
@@ -143,7 +136,7 @@ export const reconcileStore = (storeDir: string, db: DatabaseSync): StoreReconci
         // 接纳后按连续性推进 cursor（绝不跳 seq，RT-ORDER-07）。
         if (adoptedHere.length > 0) {
           withTx(db, () => {
-            advanceContiguousCursor(db, sessionId, generation);
+            advanceContiguousCursor(db, { sessionId, generation });
           });
           adoptedOrphans.push(...adoptedHere.sort((a, b) => a.seq - b.seq));
         }

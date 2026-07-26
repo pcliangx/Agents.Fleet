@@ -4,7 +4,15 @@
 // 文件即「完整写入且已 fsync」，这是 Reconciliation 能接纳 orphan 的依据。
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /** RT-T-23/24 的文件协议边界，供崩溃注入在每个步骤之间 SIGKILL。 */
@@ -33,6 +41,57 @@ export const fsyncDir = (dir: string): void => {
   } finally {
     closeSync(fd);
   }
+};
+
+export type ContentObjectVerification =
+  | { readonly ok: true; readonly bytes: Uint8Array }
+  | { readonly ok: false; readonly reason: "file-missing" | "checksum-mismatch" };
+
+/**
+ * 读取 content object 并对期望 sha256 校验（RT-STO-03/11 的统一判定）：
+ * 缺失或 checksum 失败都是显式失败原因，调用方据此抛 DataIntegrityFailure
+ * 或记 dataGap——任何路径都不得用空 bytes 或旧数据伪装。
+ */
+export const verifyContentObject = (
+  absPath: string,
+  expectedSha256: string,
+): ContentObjectVerification => {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(absPath);
+  } catch {
+    return { ok: false, reason: "file-missing" };
+  }
+  if (sha256Hex(bytes) !== expectedSha256) {
+    return { ok: false, reason: "checksum-mismatch" };
+  }
+  return { ok: true, bytes };
+};
+
+export interface QuarantinedFile {
+  /** 相对 storeDir 的原路径。 */
+  readonly originalPath: string;
+  /** 相对 storeDir 的隔离后路径。 */
+  readonly quarantinePath: string;
+}
+
+/** 把 rename 前崩溃留下的残骸隔离到 quarantine/，绝不进索引（RT-STO-03/11）。 */
+export const quarantineFile = (opts: {
+  readonly storeDir: string;
+  readonly relativeDir: string;
+  readonly fileName: string;
+  readonly quarantineName: string;
+}): QuarantinedFile => {
+  const quarantineDir = join(opts.storeDir, "quarantine");
+  mkdirSync(quarantineDir, { recursive: true });
+  renameSync(
+    join(opts.storeDir, opts.relativeDir, opts.fileName),
+    join(quarantineDir, opts.quarantineName),
+  );
+  return {
+    originalPath: join(opts.relativeDir, opts.fileName),
+    quarantinePath: join("quarantine", opts.quarantineName),
+  };
 };
 
 /**

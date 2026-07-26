@@ -1,4 +1,4 @@
-// R0-14 — intent recover child。writer 死后从**新进程**执行 Input Intent
+// R0-14 — intent reconcile child。writer 死后从**新进程**执行 Input Intent
 // Reconciliation（Prepared → Uncertain、object 缺失 / 损坏 → dataGap、
 // 无 record orphan 隔离），然后用**相同 commandId + 相同 bytes** 重发
 // （RT-INPUT-03/04：只能得到原结果，绝不自动重放）。pty-writes.log 继续
@@ -13,7 +13,7 @@ import {
 import { openSessionStoreDb } from "../../../session-runtime/store-schema.js";
 import { durableFakeSink } from "./durable-sink.js";
 
-interface IntentRecoverConfig {
+interface IntentReconcileConfig {
   readonly workDir: string;
   readonly commandId: string;
   readonly sessionId: string;
@@ -23,8 +23,8 @@ interface IntentRecoverConfig {
 
 const main = async (): Promise<void> => {
   const configPath = process.argv[2];
-  if (!configPath) throw new Error("usage: intent-recover-child <config.json>");
-  const config = JSON.parse(readFileSync(configPath, "utf8")) as IntentRecoverConfig;
+  if (!configPath) throw new Error("usage: intent-reconcile-child <config.json>");
+  const config = JSON.parse(readFileSync(configPath, "utf8")) as IntentReconcileConfig;
 
   const db = openSessionStoreDb(join(config.workDir, "session-store.db"));
   const report = reconcileInputIntents(config.workDir, db);
@@ -42,7 +42,7 @@ const main = async (): Promise<void> => {
   });
 
   writeFileSync(
-    join(config.workDir, "intent-recover-outcome.json"),
+    join(config.workDir, "intent-reconcile-outcome.json"),
     JSON.stringify({ report, redispatchResult }),
   );
   db.close();

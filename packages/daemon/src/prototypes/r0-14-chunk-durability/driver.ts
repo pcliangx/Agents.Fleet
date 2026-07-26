@@ -4,6 +4,9 @@
 // orchestrator）经公开 seam（ByteJournal / InputIntentStore）+ 子进程
 // 留下的 durable 证据（published.log / pty-writes.log）断言。
 // 被 vitest 崩溃矩阵与 evidence CLI 共用。
+//
+// 崩溃边界定义是数据驱动的（JOURNAL_BOUNDARIES / INTENT_BOUNDARIES），
+// driver 的检查与 crash-matrix.test.ts 的断言共享同一张表——新增边界只改一处。
 
 import { spawn } from "node:child_process";
 import {
@@ -31,32 +34,96 @@ import { openSessionStoreDb } from "../../session-runtime/store-schema.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const JOURNAL_CHILD = join(here, "children", "journal-child.ts");
-const JOURNAL_RECOVER_CHILD = join(here, "children", "journal-recover-child.ts");
+const JOURNAL_RECONCILE_CHILD = join(here, "children", "journal-reconcile-child.ts");
 const INTENT_CHILD = join(here, "children", "intent-child.ts");
-const INTENT_RECOVER_CHILD = join(here, "children", "intent-recover-child.ts");
+const INTENT_RECONCILE_CHILD = join(here, "children", "intent-reconcile-child.ts");
 
-/** RT-T-23：文件协议四步 + SQLite index + cursor commit + publish。 */
-export const JOURNAL_CRASH_POINTS = [
-  "afterChecksum",
-  "afterFileFsync",
-  "afterRename",
-  "afterDirFsync",
-  "afterIndexTx",
-  "beforePublish",
+/**
+ * RT-T-23：文件协议四步 + SQLite index + cursor commit + publish。
+ * expectation 是崩溃瞬间的持久化形态，决定 Reconciliation 的期望动作：
+ * - temp-isolated：rename 前崩溃，临时残骸被隔离（RT-STO-03）；
+ * - orphan-adopted：rename 后、index 前崩溃，完整文件被校验后接纳；
+ * - index-committed：index + cursor 已提交，无 orphan，frame durable 但未发布。
+ */
+export const JOURNAL_BOUNDARIES = [
+  { point: "afterChecksum", expectation: "temp-isolated" },
+  { point: "afterFileFsync", expectation: "temp-isolated" },
+  { point: "afterRename", expectation: "orphan-adopted" },
+  { point: "afterDirFsync", expectation: "orphan-adopted" },
+  { point: "afterIndexTx", expectation: "index-committed" },
+  { point: "beforePublish", expectation: "index-committed" },
 ] as const;
-export type JournalCrashPoint = (typeof JOURNAL_CRASH_POINTS)[number];
+export type JournalCrashPoint = (typeof JOURNAL_BOUNDARIES)[number]["point"];
+export type JournalExpectation = (typeof JOURNAL_BOUNDARIES)[number]["expectation"];
 
-/** RT-T-24：文件协议四步 + Prepared commit + PTY write + Dispatched commit。 */
-export const INTENT_CRASH_POINTS = [
-  "afterChecksum",
-  "afterFileFsync",
-  "afterRename",
-  "afterDirFsync",
-  "afterPreparedTx",
-  "afterPtyWrite",
-  "afterDispatchedTx",
+/**
+ * RT-T-24：文件协议四步 + Prepared commit + PTY write + Dispatched commit。
+ * outcome 是重发的期望结果（RT-T-24：只可能是原成功 / 明确失败 / Uncertain）；
+ * expectedPtyWrites 是崩溃 + 重发全程的 PTY write 总次数（绝不自动重放）。
+ */
+export const INTENT_BOUNDARIES = [
+  {
+    point: "afterChecksum",
+    outcome: "Dispatched",
+    orphanIsolated: true,
+    expectedPtyWrites: 1,
+  },
+  {
+    point: "afterFileFsync",
+    outcome: "Dispatched",
+    orphanIsolated: true,
+    expectedPtyWrites: 1,
+  },
+  {
+    point: "afterRename",
+    outcome: "Dispatched",
+    orphanIsolated: true,
+    expectedPtyWrites: 1,
+  },
+  {
+    point: "afterDirFsync",
+    outcome: "Dispatched",
+    orphanIsolated: true,
+    expectedPtyWrites: 1,
+  },
+  {
+    point: "afterPreparedTx",
+    outcome: "Uncertain",
+    orphanIsolated: false,
+    expectedPtyWrites: 0,
+  },
+  {
+    point: "afterPtyWrite",
+    outcome: "Uncertain",
+    orphanIsolated: false,
+    expectedPtyWrites: 1,
+  },
+  {
+    point: "afterDispatchedTx",
+    outcome: "Dispatched",
+    orphanIsolated: false,
+    expectedPtyWrites: 1,
+  },
 ] as const;
-export type IntentCrashPoint = (typeof INTENT_CRASH_POINTS)[number];
+export type IntentCrashPoint = (typeof INTENT_BOUNDARIES)[number]["point"];
+
+export const JOURNAL_CRASH_POINTS: readonly JournalCrashPoint[] = JOURNAL_BOUNDARIES.map(
+  (b) => b.point,
+);
+export const INTENT_CRASH_POINTS: readonly IntentCrashPoint[] = INTENT_BOUNDARIES.map(
+  (b) => b.point,
+);
+
+const journalBoundary = (point: JournalCrashPoint) =>
+  JOURNAL_BOUNDARIES.find((b) => b.point === point) ??
+  (() => {
+    throw new Error(`unknown journal crash point ${point}`);
+  })();
+const intentBoundary = (point: IntentCrashPoint) =>
+  INTENT_BOUNDARIES.find((b) => b.point === point) ??
+  (() => {
+    throw new Error(`unknown intent crash point ${point}`);
+  })();
 
 /** 独立已知字节 fixture（含 NUL、invalid UTF-8、跨字节 multibyte）。 */
 export const JOURNAL_FIXTURES: readonly { seq: number; bytes: Uint8Array }[] = [
@@ -114,15 +181,8 @@ const runChild = (script: string, configPath: string, killAfterMs = 60_000): Pro
 
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString("hex");
 
-const readSeqLog = (path: string): number[] =>
-  existsSync(path)
-    ? readFileSync(path, "utf8")
-        .split("\n")
-        .filter((l) => l.length > 0)
-        .map(Number)
-    : [];
-
-const readHexLog = (path: string): string[] =>
+/** 子进程留下的 durable 证据日志（一行一条），不存在视为空。 */
+const readDurableLogLines = (path: string): string[] =>
   existsSync(path)
     ? readFileSync(path, "utf8")
         .split("\n")
@@ -145,7 +205,7 @@ export interface JournalScenarioChecks {
   readonly missingByteCountZero: boolean;
   /** 无静默缺口：无 dataGap、无残留临时文件。 */
   readonly noSilentGap: boolean;
-  /** 收敛：恢复后全部 frame 都已发布且 cursor 覆盖到末尾。 */
+  /** 收敛：Reconciliation 后全部 frame 都已发布且 cursor 覆盖到末尾。 */
   readonly convergedAllFramesPublished: boolean;
 }
 
@@ -166,14 +226,12 @@ export const runJournalScenario = async (
   keepDir = false,
 ): Promise<JournalScenarioEvidence> => {
   const workDir = mkdtempSync(join(tmpdir(), "r0-14-journal-scenario-"));
-  const sessionId = "ses-crash";
-  const generation = 1;
+  const stream = { sessionId: "ses-crash", generation: 1 } as const;
   try {
     // --- phase 1: 注定要崩的写入进程 ---
     const writerConfig = {
       workDir,
-      sessionId,
-      generation,
+      ...stream,
       frames: JOURNAL_FIXTURES.map((f) => ({ seq: f.seq, bytesHex: toHex(f.bytes) })),
       crashPoint: input.crashPoint,
       crashOnSeq: CRASH_ON_SEQ,
@@ -183,35 +241,34 @@ export const runJournalScenario = async (
     const writerExit = await runChild(JOURNAL_CHILD, writerConfigPath);
 
     // --- phase 2: 新进程 Reconciliation + 续写余下 frame ---
-    const recoverConfig = {
+    const reconcileConfig = {
       workDir,
-      sessionId,
-      generation,
+      ...stream,
       resumeFrames: JOURNAL_FIXTURES.filter((f) => f.seq >= CRASH_ON_SEQ).map((f) => ({
         seq: f.seq,
         bytesHex: toHex(f.bytes),
       })),
     };
-    const recoverConfigPath = join(workDir, "journal-recover-config.json");
-    writeFileSync(recoverConfigPath, JSON.stringify(recoverConfig));
-    await runChild(JOURNAL_RECOVER_CHILD, recoverConfigPath);
+    const reconcileConfigPath = join(workDir, "journal-reconcile-config.json");
+    writeFileSync(reconcileConfigPath, JSON.stringify(reconcileConfig));
+    await runChild(JOURNAL_RECONCILE_CHILD, reconcileConfigPath);
 
     // --- phase 3: 独立断言（本进程重开 store，只经公开 seam） ---
-    const outcome = JSON.parse(readFileSync(join(workDir, "recover-outcome.json"), "utf8")) as {
+    const outcome = JSON.parse(readFileSync(join(workDir, "reconcile-outcome.json"), "utf8")) as {
       report: StoreReconciliationReport;
     };
-    const publishedSeqs = readSeqLog(join(workDir, "published.log"));
+    const publishedSeqs = readDurableLogLines(join(workDir, "published.log")).map(Number);
     const crashedAtMarker = readdirSync(workDir).find((f) => f.startsWith("crashed-at-")) ?? null;
 
     const db = openSessionStoreDb(join(workDir, "session-store.db"));
     try {
       const journal = new ByteJournal({ storeDir: workDir, db });
-      const cursor = journal.durableCursor(sessionId, generation);
+      const cursor = journal.durableCursor(stream);
 
       let publishedButUnrecoverable = 0;
       for (const seq of new Set(publishedSeqs)) {
         const expected = JOURNAL_FIXTURES.find((f) => f.seq === seq);
-        const read = seq <= cursor ? journal.readFrame(sessionId, generation, seq) : null;
+        const read = seq <= cursor ? journal.readFrame({ ...stream, seq }) : null;
         if (!expected || !read || toHex(read) !== toHex(expected.bytes)) {
           publishedButUnrecoverable += 1;
         }
@@ -221,7 +278,7 @@ export const runJournalScenario = async (
       const recoveredFrameHex: string[] = [];
       for (let seq = 1; seq <= cursor; seq += 1) {
         const expected = JOURNAL_FIXTURES.find((f) => f.seq === seq);
-        const read = journal.readFrame(sessionId, generation, seq);
+        const read = journal.readFrame({ ...stream, seq });
         if (!expected || !read) {
           missingBytes += expected?.bytes.byteLength ?? 1;
         } else {
@@ -230,7 +287,7 @@ export const runJournalScenario = async (
         }
       }
 
-      const chunksDir = join(workDir, "chunks", sessionId, String(generation));
+      const chunksDir = join(workDir, "chunks", stream.sessionId, String(stream.generation));
       const leftoverTempFiles = existsSync(chunksDir)
         ? readdirSync(chunksDir).filter((f) => f.startsWith(".tmp-"))
         : [];
@@ -305,15 +362,6 @@ export interface IntentScenarioEvidence {
   readonly checks: IntentScenarioChecks;
 }
 
-/** 这些边界崩溃后，record 为 Prepared 或已 Dispatched；重发绝不产生第二次 PTY write。 */
-const INTENT_UNCERTAIN_POINTS: readonly IntentCrashPoint[] = ["afterPreparedTx", "afterPtyWrite"];
-const INTENT_ORPHAN_OBJECT_POINTS: readonly IntentCrashPoint[] = [
-  "afterChecksum",
-  "afterFileFsync",
-  "afterRename",
-  "afterDirFsync",
-];
-
 export const runIntentScenario = async (
   input: IntentScenarioInput,
   keepDir = false,
@@ -343,32 +391,29 @@ export const runIntentScenario = async (
       : null;
 
     // --- phase 2: 新进程 Reconciliation + 相同 commandId 重发 ---
-    const recoverConfig = {
+    const reconcileConfig = {
       workDir,
       commandId,
       bytesHex: toHex(INTENT_FIXTURE),
       sessionId: "ses-crash",
       generation: 1,
     };
-    const recoverConfigPath = join(workDir, "intent-recover-config.json");
-    writeFileSync(recoverConfigPath, JSON.stringify(recoverConfig));
-    await runChild(INTENT_RECOVER_CHILD, recoverConfigPath);
+    const reconcileConfigPath = join(workDir, "intent-reconcile-config.json");
+    writeFileSync(reconcileConfigPath, JSON.stringify(reconcileConfig));
+    await runChild(INTENT_RECONCILE_CHILD, reconcileConfigPath);
 
     // --- phase 3: 独立断言 ---
     const outcome = JSON.parse(
-      readFileSync(join(workDir, "intent-recover-outcome.json"), "utf8"),
+      readFileSync(join(workDir, "intent-reconcile-outcome.json"), "utf8"),
     ) as {
       report: InputIntentReconciliationReport;
       redispatchResult: DispatchResult;
     };
     const crashedAtMarker = readdirSync(workDir).find((f) => f.startsWith("crashed-at-")) ?? null;
-    const ptyWrites = readHexLog(join(workDir, "pty-writes.log"));
+    const ptyWrites = readDurableLogLines(join(workDir, "pty-writes.log"));
     const fixtureHex = toHex(INTENT_FIXTURE);
 
-    const expectUncertain =
-      input.crashPoint !== null && INTENT_UNCERTAIN_POINTS.includes(input.crashPoint);
-    const expectOrphanIsolated =
-      input.crashPoint !== null && INTENT_ORPHAN_OBJECT_POINTS.includes(input.crashPoint);
+    const boundary = input.crashPoint === null ? null : intentBoundary(input.crashPoint);
     const final = outcome.redispatchResult;
 
     const checks: IntentScenarioChecks = {
@@ -379,19 +424,19 @@ export const runIntentScenario = async (
       resultIsOriginalSuccessOrExplicitFailureOrUncertain: [
         "Dispatched",
         "Uncertain",
-        "DataIntegrityFailure",
+        "DataGap",
       ].includes(final.status),
       neverRePlayedBytes:
         ptyWrites.length <= 1 &&
         (final.status !== "Dispatched" ||
           (ptyWrites.length === 1 && ptyWrites[0] === fixtureHex)) &&
         (final.status !== "Uncertain" || ptyWrites.every((w) => w === fixtureHex)),
-      uncertainMarkedWhenExpected: expectUncertain
-        ? outcome.report.markedUncertain.includes(commandId) && final.status === "Uncertain"
-        : !outcome.report.markedUncertain.includes(commandId),
-      orphanObjectsIsolated: expectOrphanIsolated
-        ? outcome.report.isolatedOrphans.length === 1
-        : true,
+      uncertainMarkedWhenExpected:
+        boundary?.outcome === "Uncertain"
+          ? outcome.report.markedUncertain.includes(commandId) && final.status === "Uncertain"
+          : !outcome.report.markedUncertain.includes(commandId),
+      orphanObjectsIsolated:
+        boundary?.orphanIsolated === true ? outcome.report.isolatedOrphans.length === 1 : true,
       noDataGap: outcome.report.dataGaps.length === 0,
     };
 
@@ -428,3 +473,5 @@ export const appendDurableLogLine = (path: string, line: string): void => {
     closeSync(fd);
   }
 };
+
+export { intentBoundary, journalBoundary };

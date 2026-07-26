@@ -19,10 +19,10 @@ Layout:
   Reconciliation + 续写/重发 → 独立 orchestrator 经公开 seam 断言）。
   核心断言：`publishedButUnrecoverableFrameCount = 0`、cursor 内
   `missingByteCount = 0`、无静默缺口、PTY write 总数 ≤ 1（绝不自动重放）。
-- `children/journal-child.ts` / `children/journal-recover-child.ts` — chunk
-  写入方与恢复方真实子进程；publish 证据写入 `published.log`（含 fsync）。
-- `children/intent-child.ts` / `children/intent-recover-child.ts` — Input
-  Intent 写入方与恢复方真实子进程。
+- `children/journal-child.ts` / `children/journal-reconcile-child.ts` — chunk
+  写入方与 Reconciliation 方真实子进程；publish 证据写入 `published.log`（含 fsync）。
+- `children/intent-child.ts` / `children/intent-reconcile-child.ts` — Input
+  Intent 写入方与 Reconciliation 方真实子进程。
 - `children/durable-sink.ts` — 每次 write 追加 `pty-writes.log`（含 fsync）
   的 fake PTY sink；是「是否重放」的独立证据源。
 - `crash-matrix.test.ts` — RT-T-23（基线 + 6 边界）与 RT-T-24（基线 + 7 边界）。

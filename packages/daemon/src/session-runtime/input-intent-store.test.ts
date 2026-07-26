@@ -2,7 +2,7 @@
 // 原始 bytes 的 content object 先 durable（与 chunk 同一文件协议），再落
 // SQLite Prepared record，此前绝不写 PTY；Prepared/Dispatched 之间崩溃
 // 标 Uncertain 绝不自动重放；同 commandId 重试返回原结果不重复写 PTY；
-// object 缺失/损坏 → DataIntegrityFailure 且绝不写 PTY。
+// object 缺失/损坏 → DataGap（明确失败）且绝不写 PTY。
 // PTY 用 fake sink（@agents-fleet/testing 的 FakePty，PtySink 契约）。
 
 import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -119,7 +119,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
     expect(sink.writtenBytes.byteLength).toBe(0); // 绝不自动重放
   });
 
-  it("有 record 但 content object 缺失 → dataGap + DataIntegrityFailure，绝不写 PTY（RT-STO-11）", async () => {
+  it("有 record 但 content object 缺失 → 重发返回 DataGap（明确失败），绝不写 PTY（RT-STO-11）", async () => {
     const doomed = new InputIntentStore({
       storeDir,
       db,
@@ -149,7 +149,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       generation: GENERATION,
       bytes: INPUT_BYTES,
     });
-    expect(retry.status).toBe("DataIntegrityFailure");
+    expect(retry.status).toBe("DataGap");
     expect(sink.writtenBytes.byteLength).toBe(0);
   });
 

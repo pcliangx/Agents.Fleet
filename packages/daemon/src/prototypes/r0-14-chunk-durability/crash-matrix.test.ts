@@ -5,13 +5,16 @@
 // 被 SIGKILL；Reconciliation 与重发在新进程执行；断言由本独立 orchestrator
 // 经公开 seam 完成。核心断言：publishedButUnrecoverableFrameCount = 0、
 // cursor 内 missingByteCount = 0、无静默缺口、绝不自动重放。
+//
+// 边界与期望形态共享 driver.ts 的 JOURNAL_BOUNDARIES / INTENT_BOUNDARIES
+// 一张表——新增边界只改 driver.ts 一处。
 
 import { describe, expect, it } from "vitest";
 import {
   allIntentChecksPass,
   allJournalChecksPass,
-  INTENT_CRASH_POINTS,
-  JOURNAL_CRASH_POINTS,
+  INTENT_BOUNDARIES,
+  JOURNAL_BOUNDARIES,
   runIntentScenario,
   runJournalScenario,
 } from "./driver.js";
@@ -29,25 +32,25 @@ describe("R0-14 chunk durability — RT-T-23 crash matrix", () => {
     TIMEOUT,
   );
 
-  for (const crashPoint of JOURNAL_CRASH_POINTS) {
+  for (const boundary of JOURNAL_BOUNDARIES) {
     it.concurrent(
-      `crash ${crashPoint}`,
+      `crash ${boundary.point}`,
       async () => {
-        const e = await runJournalScenario({ crashPoint });
+        const e = await runJournalScenario({ crashPoint: boundary.point });
         expect(allJournalChecksPass(e), JSON.stringify(e.checks)).toBe(true);
 
-        if (crashPoint === "afterRename" || crashPoint === "afterDirFsync") {
+        if (boundary.expectation === "orphan-adopted") {
           // rename 完成、index tx 未提交：完整文件被校验后接纳（RT-STO-03）。
           expect(e.reconcileReport.adoptedOrphans).toEqual([
             { sessionId: "ses-crash", generation: 1, seq: 2 },
           ]);
         }
-        if (crashPoint === "afterChecksum" || crashPoint === "afterFileFsync") {
+        if (boundary.expectation === "temp-isolated") {
           // rename 前崩溃：临时残骸被隔离，绝不进索引（RT-STO-03）。
           expect(e.reconcileReport.isolatedOrphans).toHaveLength(1);
           expect(e.reconcileReport.adoptedOrphans).toEqual([]);
         }
-        if (crashPoint === "afterIndexTx" || crashPoint === "beforePublish") {
+        if (boundary.expectation === "index-committed") {
           // index + cursor 已提交：无 orphan，frame 2 durable 但崩溃前未发布。
           expect(e.reconcileReport.adoptedOrphans).toEqual([]);
           expect(e.reconcileReport.isolatedOrphans).toEqual([]);
@@ -71,38 +74,15 @@ describe("R0-14 Input Intent — RT-T-24 crash matrix", () => {
     TIMEOUT,
   );
 
-  for (const crashPoint of INTENT_CRASH_POINTS) {
+  for (const boundary of INTENT_BOUNDARIES) {
     it.concurrent(
-      `crash ${crashPoint}`,
+      `crash ${boundary.point}`,
       async () => {
-        const e = await runIntentScenario({ crashPoint });
+        const e = await runIntentScenario({ crashPoint: boundary.point });
         expect(allIntentChecksPass(e), JSON.stringify(e.checks)).toBe(true);
-
-        if (crashPoint === "afterPreparedTx") {
-          // Prepared 已提交、PTY 从未写入 → Uncertain，绝不重放（RT-INPUT-03）。
-          expect(e.redispatchResult.status).toBe("Uncertain");
-          expect(e.ptyWriteCount).toBe(0);
-        }
-        if (crashPoint === "afterPtyWrite") {
-          // PTY 已写入、Dispatched 未提交 → Uncertain，第二次 write 绝不发生。
-          expect(e.redispatchResult.status).toBe("Uncertain");
-          expect(e.ptyWriteCount).toBe(1);
-        }
-        if (crashPoint === "afterDispatchedTx") {
-          // Dispatched 已提交 → 重发返回原结果，不重复写 PTY（RT-INPUT-04）。
-          expect(e.redispatchResult.status).toBe("Dispatched");
-          expect(e.ptyWriteCount).toBe(1);
-        }
-        if (
-          crashPoint === "afterChecksum" ||
-          crashPoint === "afterFileFsync" ||
-          crashPoint === "afterRename" ||
-          crashPoint === "afterDirFsync"
-        ) {
-          // record 从未提交：命令可安全地作为首次执行完成（PTY 总共恰好一次）。
-          expect(e.redispatchResult.status).toBe("Dispatched");
-          expect(e.ptyWriteCount).toBe(1);
-        }
+        // RT-T-24：结果只可能是原成功 / 明确失败 / Uncertain；绝不自动重放。
+        expect(e.redispatchResult.status).toBe(boundary.outcome);
+        expect(e.ptyWriteCount).toBe(boundary.expectedPtyWrites);
       },
       TIMEOUT,
     );

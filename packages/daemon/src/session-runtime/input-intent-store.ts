@@ -7,7 +7,7 @@
 // Reconciliation 标 Uncertain，绝不自动重放（RT-INPUT-03）；同 commandId
 // 已有 Dispatched 时返回原结果，不重复写 PTY（RT-INPUT-04）。
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { PtySink } from "@agents-fleet/contracts";
@@ -15,7 +15,10 @@ import { DataIntegrityFailure } from "./byte-journal.js";
 import {
   type ContentObjectStep,
   durableWriteContentObject,
+  type QuarantinedFile,
+  quarantineFile,
   sha256Hex,
+  verifyContentObject,
 } from "./content-object-io.js";
 import { withTx } from "./store-schema.js";
 
@@ -36,11 +39,7 @@ export interface DispatchCommand {
 export type DispatchResult =
   | { readonly status: "Dispatched"; readonly inputIntentId: string; readonly byteLength: number }
   | { readonly status: "Uncertain"; readonly inputIntentId: string }
-  | {
-      readonly status: "DataIntegrityFailure";
-      readonly inputIntentId: string;
-      readonly reason: string;
-    }
+  | { readonly status: "DataGap"; readonly inputIntentId: string; readonly reason: string }
   | { readonly status: "IdempotencyConflict"; readonly commandId: string };
 
 interface IntentRow {
@@ -82,9 +81,13 @@ export class InputIntentStore {
         return { status: "IdempotencyConflict", commandId: cmd.commandId };
       }
       // 已有 record：绝不重放 bytes。结果只能是原成功 / Uncertain / 明确失败。
-      if (existing.data_gap === 1 || !this.objectIntact(existing)) {
+      const verification = verifyContentObject(
+        join(this.storeDir, existing.content_ref),
+        existing.sha256,
+      );
+      if (existing.data_gap === 1 || !verification.ok) {
         return {
-          status: "DataIntegrityFailure",
+          status: "DataGap",
           inputIntentId: existing.input_intent_id,
           reason: "content-object-missing-or-corrupt",
         };
@@ -150,16 +153,13 @@ export class InputIntentStore {
   readonly readContent = (commandId: string): Uint8Array => {
     const row = this.intentRow(commandId);
     if (!row) throw new DataIntegrityFailure(`no Input Intent record for ${commandId}`);
-    let bytes: Uint8Array;
-    try {
-      bytes = readFileSync(join(this.storeDir, row.content_ref));
-    } catch {
-      throw new DataIntegrityFailure(`Input Intent content object missing for ${commandId}`);
+    const verification = verifyContentObject(join(this.storeDir, row.content_ref), row.sha256);
+    if (!verification.ok) {
+      throw new DataIntegrityFailure(
+        `Input Intent content ${verification.reason} for ${commandId}`,
+      );
     }
-    if (sha256Hex(bytes) !== row.sha256) {
-      throw new DataIntegrityFailure(`Input Intent content checksum mismatch for ${commandId}`);
-    }
-    return bytes;
+    return verification.bytes;
   };
 
   private readonly intentRow = (commandId: string): IntentRow | undefined =>
@@ -168,12 +168,6 @@ export class InputIntentStore {
         "SELECT input_intent_id, content_ref, sha256, byte_length, status, data_gap FROM input_intents WHERE command_id = ?",
       )
       .get(commandId) as IntentRow | undefined;
-
-  private readonly objectIntact = (row: IntentRow): boolean => {
-    const abs = join(this.storeDir, row.content_ref);
-    if (!existsSync(abs)) return false;
-    return sha256Hex(readFileSync(abs)) === row.sha256;
-  };
 }
 
 export interface InputIntentReconciliationReport {
@@ -182,10 +176,7 @@ export interface InputIntentReconciliationReport {
   /** record 在而 object 缺失 / checksum 失败的 commandId（RT-STO-11 的 dataGap）。 */
   readonly dataGaps: readonly string[];
   /** 无 record 的 orphan content object（含临时残骸），隔离到 quarantine。 */
-  readonly isolatedOrphans: readonly {
-    readonly originalPath: string;
-    readonly quarantinePath: string;
-  }[];
+  readonly isolatedOrphans: readonly QuarantinedFile[];
 }
 
 /**
@@ -199,7 +190,7 @@ export const reconcileInputIntents = (
 ): InputIntentReconciliationReport => {
   const markedUncertain: string[] = [];
   const dataGaps: string[] = [];
-  const isolatedOrphans: { originalPath: string; quarantinePath: string }[] = [];
+  const isolatedOrphans: QuarantinedFile[] = [];
 
   const rows = db
     .prepare(
@@ -208,8 +199,7 @@ export const reconcileInputIntents = (
     .all() as unknown as (IntentRow & { readonly command_id: string })[];
 
   for (const row of rows) {
-    const abs = join(storeDir, row.content_ref);
-    const intact = existsSync(abs) && sha256Hex(readFileSync(abs)) === row.sha256;
+    const intact = verifyContentObject(join(storeDir, row.content_ref), row.sha256).ok;
     withTx(db, () => {
       if (!intact && row.data_gap !== 1) {
         db.prepare("UPDATE input_intents SET data_gap = 1 WHERE input_intent_id = ?").run(
@@ -237,14 +227,14 @@ export const reconcileInputIntents = (
         db.prepare("SELECT 1 AS x FROM input_intents WHERE command_id = ?").get(commandId) !==
           undefined;
       if (hasRecord) continue;
-      const quarantineDir = join(storeDir, "quarantine");
-      mkdirSync(quarantineDir, { recursive: true });
-      const quarantinePath = join(quarantineDir, `input-intent-${file.replace(/^\.tmp-/, "tmp-")}`);
-      renameSync(join(intentsDir, file), quarantinePath);
-      isolatedOrphans.push({
-        originalPath: join("input-intents", file),
-        quarantinePath: join("quarantine", `input-intent-${file.replace(/^\.tmp-/, "tmp-")}`),
-      });
+      isolatedOrphans.push(
+        quarantineFile({
+          storeDir,
+          relativeDir: "input-intents",
+          fileName: file,
+          quarantineName: `input-intent-${file.replace(/^\.tmp-/, "tmp-")}`,
+        }),
+      );
     }
   }
 
