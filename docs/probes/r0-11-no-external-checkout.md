@@ -52,7 +52,7 @@ Deliverable: `packages/daemon/src/git/provision-worktree.ts` — Fleet-managed W
 | process filter（filter.x.process） | **否** | 同上（S4 + CU 测试） |
 | external diff / diff.\<drv\>.command / textconv | **否** | provision 不跑 diff；`-c diff.external=` 兜底（P11） |
 | fsmonitor hook | **否** | `-c core.fsmonitor=false`（P9） |
-| submodule recursion | **否** | `worktree add` 本身不递归（P10）；`-c submodule.recurse=false` 钉死；测试断言 submodule 工作目录不填充 |
+| submodule recursion | **否** | `worktree add` 本身不递归（P10）；`-c submodule.recurse=false` 钉死；fixture 配置 `submodule.sub.update = !canary.sh` 自定义更新命令 + `submodule.recurse=true`，断言工作目录不填充、sentinel 静默、零联网 |
 | pager | **否** | `--no-pager` + `-c core.pager=cat` + `GIT_PAGER=cat`/`PAGER=cat`（P11） |
 | credential helper | **否** | 无网络操作；`-c credential.helper=` + `GIT_TERMINAL_PROMPT=0`（P11） |
 | Worktree 内可执行文件（build.sh fixture） | **否** | 物化只写数据；测试断言文件落地但 sentinel 静默 |

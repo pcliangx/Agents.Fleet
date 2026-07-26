@@ -8,18 +8,52 @@
 // - strict CSP on every af-app response
 // - navigation / new-window / webview / download / permission all denied
 // - IPC only via handleTrustedIpc (sender + frame + origin validation)
+// - packaged builds verify the release fuse posture before booting
+//   (SV1-ELECTRON-05); dev binaries ship Electron's default fuses and skip
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, BrowserWindow, session } from "electron";
+import { app, BrowserWindow, dialog, session } from "electron";
 import { APP_ORIGIN, installAppProtocol, registerAppSchemePrivileges } from "./app-protocol.js";
 import { installContentSecurityPolicy, RENDERER_CSP } from "./csp.js";
 import { connectDaemon } from "./daemon-client.js";
+import { type FuseReport, frameworkBinaryPath, verifyReleaseFuses } from "./fuses.js";
 import { handleTrustedIpc } from "./trusted-ipc.js";
 import { guardSession, guardWebContents } from "./window-guard.js";
 
 // Must run before app is ready (SV1-ELECTRON-01).
 registerAppSchemePrivileges();
+
+// SV1-ELECTRON-05 — a packaged build must fail closed on a non-compliant
+// fuse posture (or on a binary whose wire cannot be verified at all). Dev
+// runs skip this: the shipped dev binary carries Electron's default fuses
+// (docs/probes/r0-11-electron-boundary.md), and only the release pipeline
+// can fix and sign the final posture.
+const enforceReleaseFusePosture = (): boolean => {
+  if (!app.isPackaged) return true;
+  let report: FuseReport;
+  try {
+    report = verifyReleaseFuses(readFileSync(frameworkBinaryPath(app.getPath("exe"))));
+  } catch (e) {
+    dialog.showErrorBox(
+      "Agents.Fleet cannot start",
+      `fuse verification could not read the framework binary: ${String(e)}`,
+    );
+    app.exit(1);
+    return false;
+  }
+  if (!report.compliant) {
+    // Violations are fuse names and on/off states only — no paths or secrets.
+    dialog.showErrorBox(
+      "Agents.Fleet cannot start",
+      `non-compliant release fuse posture:\n${report.violations.join("\n")}`,
+    );
+    app.exit(1);
+    return false;
+  }
+  return true;
+};
 
 const channel = "af:get-connection-info";
 let connectionInfo = "connecting…";
@@ -48,6 +82,7 @@ const createWindow = (devUrl: string | undefined): BrowserWindow => {
 };
 
 app.whenReady().then(() => {
+  if (!enforceReleaseFusePosture()) return;
   const defaultSession = session.defaultSession;
   installAppProtocol({
     assetRoot: join(__dirname, "..", "renderer"),

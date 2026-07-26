@@ -54,8 +54,8 @@ Electron 出厂 dev 二进制的默认 fuse 姿态(wire `10110001`)允许 `ELECT
 | `external-url.ts` | SV1-ELECTRON-03 | 外部 URL 独立策略:仅 https + 显式用户手势 + 可选 host allowlist + 系统默认浏览器(`shell` 注入,便于测试) |
 | `ipc-guard.ts` | SV1-ELECTRON-02 | 纯校验:预期 webContents、顶层 frame、应用 origin,缺一项即拒(注释记录了 schema/速率/route capability 属 Daemon 侧) |
 | `trusted-ipc.ts` | SV1-ELECTRON-02 | `handleTrustedIpc`:所有 channel 必须经校验注册,拒绝即 throw,fail closed |
-| `fuses.ts` | SV1-ELECTRON-05 | fuse wire 解析 / `REQUIRED_RELEASE_FUSES` 验证 / `flipFuseWire`(仅供 fixture 在 tmp 克隆上使用) |
-| `index.ts` | — | 装配:release 走 `af-app://app/index.html`,dev 走 `ELECTRON_RENDERER_URL`;IPC origin 白名单绑定实际加载 origin |
+| `fuses.ts` | SV1-ELECTRON-05 | fuse wire 解析 / `REQUIRED_RELEASE_FUSES` 验证（`flipFuseWire` 为攻击 fixture 专用工具，已移至 `src/__tests__/flip-fuse-wire.ts`，production Main 不携带 fuse 改写能力） |
+| `index.ts` | SV1-ELECTRON-05 | 装配：release 走 `af-app://app/index.html`，dev 走 `ELECTRON_RENDERER_URL`；IPC origin 白名单绑定实际加载 origin；启动时先执行 fuse 姿态验证——`app.isPackaged` 时 non-compliant 或不可读即 fail closed 拒绝启动（dev 二进制出厂 fuse 不合规，跳过） |
 
 Renderer(`src/renderer/`)已改为外链 `app.js` / `style.css`(无 inline script/style),使
 `script-src 'self'` 成立;daemon 状态文本只经 `textContent` 渲染(SV1-ELECTRON-04)。

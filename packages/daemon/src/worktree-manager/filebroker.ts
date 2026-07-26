@@ -36,13 +36,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
+import type { FilesystemIdentity } from "../git/restricted-git.js";
 
-/** SV1-FILE-01 — canonicalize 后保存的稳定文件系统 identity。 */
-export interface FilesystemIdentity {
-  readonly dev: number;
-  readonly ino: number;
-}
+// SV1-FILE-01 的 filesystem identity 概念只有单一类型来源（R0-05 的
+// restricted-git.ts），此处 re-export 以保持本模块的对外形状不变。
+export type { FilesystemIdentity };
 
+// SV1-FILE-10 — common-git-dir 仅供 Worktree Manager 内部的 provision /
+// inspect / dispose 复合流程以已验证 identity 访问 common Git directory；
+// 它绝不能作为 Renderer 可浏览的 root 暴露（SV1-T-26）。
 export type RootKind = "repository" | "worktree" | "app-data" | "common-git-dir";
 
 /** 声明式 root 注册结果；id 不透明，Renderer 侧不可伪造（SV1-FILE-08：私有 Implementation）。 */

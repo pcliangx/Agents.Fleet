@@ -187,11 +187,14 @@ export class WorktreeProvisioner {
   private readonly gitPath: string;
   private readonly exec: GitExec;
   private readonly neutralCwd: string;
+  /** Scrubbed environment for every Git invocation; fixed at construction. */
+  private readonly env: Record<string, string>;
 
   constructor(options: WorktreeProvisionerOptions = {}) {
     this.gitPath = options.gitPath ?? "/usr/bin/git";
     this.exec = options.exec ?? defaultProvisionGitExec;
     this.neutralCwd = options.neutralCwd ?? process.env.TMPDIR ?? tmpdir();
+    this.env = buildProvisionGitEnv();
   }
 
   // SV1-FILE-11 / RT-WORKTREE-11 — materialize a Fleet-managed Worktree at a
@@ -235,12 +238,11 @@ export class WorktreeProvisioner {
       return failed("target-exists", `planned worktree path already exists: ${targetPath}`);
     }
 
-    const env = buildProvisionGitEnv();
     const root = repository.workingTreeRoot;
 
     // Step 0 — record the binary version as evidence, from the app-owned
     // neutral cwd. Does not touch the Repository.
-    const version = await this.runGit(["--version"], this.neutralCwd, env);
+    const version = await this.runGit(["--version"], this.neutralCwd);
     if (!version.ok) return version;
     const gitVersion = version.stdout.trim();
     if (!/git version \d+\.\d+/.test(gitVersion)) {
@@ -255,7 +257,7 @@ export class WorktreeProvisioner {
     // current working tree's (P5); .git/info/attributes and core.attributesFile
     // stay in the stack for scan and checkout alike, so both see the same set
     // (P5b/S1).
-    const tree = await this.runGit(["-C", root, "ls-tree", "-r", "-z", baseCommitSha], root, env);
+    const tree = await this.runGit(["-C", root, "ls-tree", "-r", "-z", baseCommitSha], root);
     if (!tree.ok) return tree;
     const treeEntries = parseLsTree(tree.stdout);
 
@@ -267,7 +269,6 @@ export class WorktreeProvisioner {
       const attr = await this.runGit(
         ["-C", root, "check-attr", "--source", baseCommitSha, "-z", "filter", "--", ...chunk],
         root,
-        env,
       );
       if (!attr.ok) {
         // git < 2.40 has no check-attr --source: the no-external-program path
@@ -302,7 +303,6 @@ export class WorktreeProvisioner {
       const filterConfig = await this.runGit(
         ["-C", root, "config", "--local", "--get-regexp", "^filter\\."],
         root,
-        env,
         { allowExitCodes: [1] },
       );
       if (!filterConfig.ok) return filterConfig;
@@ -317,8 +317,7 @@ export class WorktreeProvisioner {
       for (const f of findings) {
         const entry = blobByPath.get(f.path);
         const configured = configuredDrivers.has(f.driver);
-        const lfsPointer =
-          entry?.type === "blob" ? await this.isLfsPointer(root, entry.sha, env) : null;
+        const lfsPointer = entry?.type === "blob" ? await this.isLfsPointer(root, entry.sha) : null;
         enriched.push({ ...f, configured, lfsPointer });
       }
       // SV1-FILE-11: the repository needs an external filter for a correct
@@ -347,7 +346,6 @@ export class WorktreeProvisioner {
     const add = await this.runGit(
       ["-C", root, "worktree", "add", "--detach", targetPath, baseCommitSha],
       root,
-      env,
     );
     if (!add.ok) {
       // RT-WORKTREE-11: only a proven-clean failure may become Failed.
@@ -363,62 +361,42 @@ export class WorktreeProvisioner {
     // worktree root is exactly the target (SV1-FILE-10 / RT-WORKTREE-10
     // inputs). rev-parse only — status/diff could reach clean filters and are
     // the inspection slice's business, not provision's.
+    // From here on the Worktree may exist: any failure has unproven side
+    // effects and must not be reported as cleanly Failed (RT-WORKTREE-11).
     let canonicalTarget: string;
     try {
       canonicalTarget = await realpath(targetPath);
     } catch (e) {
-      return {
-        ok: false,
-        failure: {
-          kind: "ProvisionFailed",
-          reason: "git-failed",
-          detail: `worktree target missing after successful add: ${message(e)}`,
-          leftover: "unknown",
-        },
-      };
+      return failed(
+        "git-failed",
+        `worktree target missing after successful add: ${message(e)}`,
+        "unknown",
+      );
     }
     if (canonicalTarget !== targetPath) {
-      return {
-        ok: false,
-        failure: {
-          kind: "ProvisionFailed",
-          reason: "identity-drift",
-          detail: `materialized path ${canonicalTarget} != planned ${targetPath}`,
-          leftover: "unknown",
-        },
-      };
+      return failed(
+        "identity-drift",
+        `materialized path ${canonicalTarget} != planned ${targetPath}`,
+        "unknown",
+      );
     }
-    // From here on the Worktree may exist: any failure has unproven side
-    // effects and must not be reported as cleanly Failed (RT-WORKTREE-11).
-    const head = await this.runGit(["-C", targetPath, "rev-parse", "--verify", "HEAD"], root, env);
+    const head = await this.runGit(["-C", targetPath, "rev-parse", "--verify", "HEAD"], root);
     if (!head.ok) return withUnknownLeftover(head);
     if (head.stdout.trim() !== baseCommitSha) {
-      return {
-        ok: false,
-        failure: {
-          kind: "ProvisionFailed",
-          reason: "output-unparseable",
-          detail: `materialized HEAD ${head.stdout.trim()} != ${baseCommitSha}`,
-          leftover: "unknown",
-        },
-      };
+      return failed(
+        "output-unparseable",
+        `materialized HEAD ${head.stdout.trim()} != ${baseCommitSha}`,
+        "unknown",
+      );
     }
-    const toplevel = await this.runGit(
-      ["-C", targetPath, "rev-parse", "--show-toplevel"],
-      root,
-      env,
-    );
+    const toplevel = await this.runGit(["-C", targetPath, "rev-parse", "--show-toplevel"], root);
     if (!toplevel.ok) return withUnknownLeftover(toplevel);
     if (toplevel.stdout.trim() !== targetPath) {
-      return {
-        ok: false,
-        failure: {
-          kind: "ProvisionFailed",
-          reason: "output-unparseable",
-          detail: `materialized toplevel ${toplevel.stdout.trim()} != ${targetPath}`,
-          leftover: "unknown",
-        },
-      };
+      return failed(
+        "output-unparseable",
+        `materialized toplevel ${toplevel.stdout.trim()} != ${targetPath}`,
+        "unknown",
+      );
     }
 
     const st = await lstat(targetPath);
@@ -438,17 +416,13 @@ export class WorktreeProvisioner {
 
   // Bounded pointer check on a small blob: cat-file reads raw object data and
   // never runs filters (no --filters/--textconv/--path flags).
-  private async isLfsPointer(
-    root: string,
-    blobSha: string,
-    env: Record<string, string>,
-  ): Promise<boolean | null> {
+  private async isLfsPointer(root: string, blobSha: string): Promise<boolean | null> {
     if (!SHA_RE.test(blobSha)) return null;
-    const size = await this.runGit(["-C", root, "cat-file", "-s", blobSha], root, env);
+    const size = await this.runGit(["-C", root, "cat-file", "-s", blobSha], root);
     if (!size.ok) return null;
     const bytes = Number.parseInt(size.stdout.trim(), 10);
     if (!Number.isFinite(bytes) || bytes > LFS_POINTER_MAX_BYTES) return null;
-    const blob = await this.runGit(["-C", root, "cat-file", "blob", blobSha], root, env);
+    const blob = await this.runGit(["-C", root, "cat-file", "blob", blobSha], root);
     if (!blob.ok) return null;
     return LFS_POINTER_RE.test(blob.stdout);
   }
@@ -456,7 +430,6 @@ export class WorktreeProvisioner {
   private async runGit(
     args: readonly string[],
     cwd: string,
-    env: Record<string, string>,
     opts: { allowExitCodes?: readonly number[] } = {},
   ): Promise<{ ok: true; stdout: string } | { ok: false; failure: ProvisionFailure }> {
     const argv = [
@@ -466,7 +439,7 @@ export class WorktreeProvisioner {
       ...args,
     ];
     try {
-      const { stdout } = await this.exec({ argv, cwd, env });
+      const { stdout } = await this.exec({ argv, cwd, env: this.env });
       return { ok: true, stdout };
     } catch (e) {
       const err = e as {
@@ -477,40 +450,16 @@ export class WorktreeProvisioner {
         message?: string;
       };
       if (err.killed === true) {
-        return {
-          ok: false,
-          failure: {
-            kind: "ProvisionFailed",
-            reason: "git-timeout",
-            detail: argv.join(" "),
-            leftover: "none",
-          },
-        };
+        return failed("git-timeout", argv.join(" "));
       }
       if (typeof err.code === "number" && opts.allowExitCodes?.includes(err.code)) {
         return { ok: true, stdout: String(err.stdout ?? "") };
       }
       const stderr = String(err.stderr ?? err.message ?? "unknown git failure").trim();
       if (/not a git repository/i.test(stderr)) {
-        return {
-          ok: false,
-          failure: {
-            kind: "ProvisionFailed",
-            reason: "not-a-repository",
-            detail: stderr.slice(0, 500),
-            leftover: "none",
-          },
-        };
+        return failed("not-a-repository", stderr.slice(0, 500));
       }
-      return {
-        ok: false,
-        failure: {
-          kind: "ProvisionFailed",
-          reason: "git-failed",
-          detail: stderr.slice(0, 500),
-          leftover: "none",
-        },
-      };
+      return failed("git-failed", stderr.slice(0, 500));
     }
   }
 }
@@ -561,9 +510,10 @@ const exists = async (path: string): Promise<boolean> => {
 const failed = (
   reason: Extract<ProvisionFailure, { kind: "ProvisionFailed" }>["reason"],
   detail: string,
-): ProvisionResult => ({
+  leftover: "none" | "unknown" = "none",
+): { ok: false; failure: ProvisionFailure } => ({
   ok: false,
-  failure: { kind: "ProvisionFailed", reason, detail, leftover: "none" },
+  failure: { kind: "ProvisionFailed", reason, detail, leftover },
 });
 
 // runGit reports leftover "none" — correct only before materialization. Once

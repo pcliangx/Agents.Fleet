@@ -371,38 +371,66 @@ describe("WorktreeProvisioner.provisionWorktree (SV1-FILE-11 / RT-WORKTREE-11)",
     });
   });
 
-  it("never populates submodule working dirs during provision", async () => {
+  it("SV1-T-27: submodule entry — no recursion, no canary execution", async () => {
     await withTempRoot(async (root) => {
-      const sub = await makeRepo(join(root, "subsrc"));
-      const repo = await makeRepo(join(root, "repo"));
-      setupGit(
-        [
-          ...IDENTITY,
-          "-c",
-          "protocol.file.allow=always",
-          "submodule",
-          "add",
-          "-q",
-          sub.root,
-          "sub",
-        ],
-        repo.root,
-      );
-      setupGit([...IDENTITY, "commit", "-qm", "add submodule"], repo.root);
-      const head = setupGit(["rev-parse", "HEAD"], repo.root);
-      setupGit(["config", "submodule.recurse", "true"], repo.root);
+      const observer = await startHostileObserver(root);
+      try {
+        const sub = await makeRepo(join(root, "subsrc"));
+        const repo = await makeRepo(join(root, "repo"));
+        setupGit(
+          [
+            ...IDENTITY,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.root,
+            "sub",
+          ],
+          repo.root,
+        );
+        setupGit([...IDENTITY, "commit", "-qm", "add submodule"], repo.root);
+        const head = setupGit(["rev-parse", "HEAD"], repo.root);
+        // Wire the submodule entry point to a canary, like every other entry
+        // in this fixture: a custom update command executes whenever git
+        // recurses into this submodule, writing the sentinel and attempting
+        // a network connection. Config is set after the commit so setup
+        // itself cannot execute it. (No trailing `cat` here — that passthrough
+        // is only for filter scripts, which receive blob content on stdin.)
+        writeScript(
+          join(root, "submodule-update.sh"),
+          [
+            "#!/bin/sh",
+            `echo 'submodule-update' >> '${observer.sentinel}'`,
+            `/bin/bash -c 'echo pwn > /dev/tcp/127.0.0.1/${observer.networkPort}' 2>/dev/null`,
+            "exit 0",
+            "",
+          ].join("\n"),
+        );
+        setupGit(
+          ["config", "submodule.sub.update", `!${join(root, "submodule-update.sh")}`],
+          repo.root,
+        );
+        setupGit(["config", "submodule.recurse", "true"], repo.root);
 
-      const target = join(root, "wt");
-      const result = await new WorktreeProvisioner().provisionWorktree({
-        repository: await repoOf(repo.root),
-        baseCommitSha: head,
-        targetPath: target,
-      });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      // probed (P10): worktree add does not recurse even with
-      // submodule.recurse=true; assert the boundary pins that behavior
-      expect(existsSync(join(target, "sub", "a.txt"))).toBe(false);
+        const target = join(root, "wt");
+        const result = await new WorktreeProvisioner().provisionWorktree({
+          repository: await repoOf(repo.root),
+          baseCommitSha: head,
+          targetPath: target,
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        // probed (P10): worktree add does not recurse even with
+        // submodule.recurse=true; assert the boundary pins that behavior
+        expect(existsSync(join(target, "sub", "a.txt"))).toBe(false);
+        // the submodule canary never executed: no sentinel write, no network
+        expect(existsSync(observer.sentinel)).toBe(false);
+        expect(observer.connections).toEqual([]);
+      } finally {
+        await observer.close();
+      }
     });
   });
 

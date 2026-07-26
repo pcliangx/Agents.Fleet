@@ -8,12 +8,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   FUSE_SENTINEL,
-  flipFuseWire,
   frameworkBinaryPath,
   parseFuseWire,
   REQUIRED_RELEASE_FUSES,
   verifyReleaseFuses,
 } from "../main/fuses.js";
+import { flipFuseWire } from "./flip-fuse-wire.js";
 
 // SV1-ELECTRON-05 / SV1-T-16 / SV1-T-21 — the release fuse posture is
 // verified from the binary itself, a wrong-fuse image fails closed, and the
