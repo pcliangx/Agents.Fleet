@@ -119,8 +119,8 @@ Electron Main 不接触 SQLite，也不能把 URL、path、argv 或 command 作�
   [`packages/daemon/src/prototypes/r0-13-notification-gateway/`](../../packages/daemon/src/prototypes/r0-13-notification-gateway/README.md)
 - 机器证据：[`r0-13/evidence.json`](r0-13/evidence.json)，包含 20 个布尔检查、实测
   payload bytes、重试时点，以及 atomic/delivered/failed/crash 四组脱敏 DB snapshot。
-- 聚焦测试：4 个文件、10 个测试，覆盖事务回滚与重放、投递与失败、真实子进程崩溃、
-  内容和 activation 安全。
+- 聚焦测试：4 个文件、12 个测试，覆盖事务回滚与重放、投递与失败、真实子进程崩溃、
+  内容和 activation 安全，以及 Task 与 Task+Attempt route identity 的解析与鉴权。
 - 重跑证据：`pnpm prototype:r0-13`。
 - 全仓验收：`pnpm test && pnpm typecheck && pnpm lint`。
 
@@ -140,8 +140,9 @@ Electron Main 不接触 SQLite，也不能把 URL、path、argv 或 command 作�
   用户关闭通知、Focus mode 或通知中心清理后的 UX。
 - **平台样本单一。** 只在一台 macOS 26.5.2 / Apple Silicon 主机上运行；最低系统和最低
   硬件仍由 SupportedPlatformMatrix 冻结。
-- **schema 是原型。** DDL、事件目录和 migration 不是 R3 生产 schema；Task-only route
-  parser 已实现，但本次权威状态 fixture 只覆盖 Attempt 事件。
+- **schema 是原型。** DDL、事件目录和 migration 不是 R3 生产 schema；Task-only route 已在
+  route 解析与 activation envelope 层覆盖（含过权 route 拒绝），但 Attempt-scoped writer
+  仍只产出 Attempt 事件 intent，Task-only intent 的权威来源留待 R3。
 
 建议：保留当前接口分层进入 R3；把“真实 macOS adapter 的稳定 ID 语义”“#10/#11 的
 认证链组合测试”“#15 的预算值”作为合并生产 Notification Gateway 前的硬门槛。

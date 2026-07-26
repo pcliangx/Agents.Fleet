@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCrashChild } from "./crash-child-runner.js";
 import {
   type DispatchOutcome,
   NotificationGateway,
@@ -85,56 +85,15 @@ const throws = (work: () => unknown): boolean => {
   }
 };
 
-const resolveTsxLoader = (): string => {
-  let dir = here;
-  for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = join(dir, "node_modules", "tsx", "dist", "esm", "index.mjs");
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
-  }
-  throw new Error("tsx loader not found");
-};
-
-const runCrashChild = (
-  configPath: string,
-): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> =>
-  new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ["--import", resolveTsxLoader(), CRASH_CHILD, configPath],
-      { stdio: "pipe" },
-    );
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`gateway child timed out: ${stderr}`));
-    }, 10_000);
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("exit", (code, signal) => {
-      clearTimeout(timeout);
-      if (code !== null && code !== 0) {
-        reject(new Error(`gateway child exited ${code}: ${stderr}`));
-        return;
-      }
-      resolve({ code, signal });
-    });
-  });
-
 export interface NotificationProbeResult {
   readonly checks: Readonly<Record<string, boolean>>;
   readonly allChecksPass: boolean;
   readonly measurements: {
     readonly retryTimelineMs: {
-      readonly firstAttempt: number;
+      readonly firstDelivery: number;
       readonly earlyPoll: number;
-      readonly secondAttempt: number;
-      readonly thirdAttempt: number;
+      readonly secondDelivery: number;
+      readonly thirdDelivery: number;
       readonly terminalPoll: number;
     };
     readonly notificationPayloadBytes: number;
@@ -172,7 +131,7 @@ export const runNotificationGatewayProbe = async (): Promise<NotificationProbeRe
         `INSERT INTO notification_intents (
            notification_intent_id, dedupe_key, task_id, attempt_id,
            authoritative_state_version, event_type, route_json, content_class,
-           created_at_ms, delivery_state, attempt_count, next_attempt_at_ms
+           created_at_ms, delivery_state, delivery_count, next_delivery_at_ms
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 0, ?)`,
       )
       .run(
@@ -298,7 +257,7 @@ export const runNotificationGatewayProbe = async (): Promise<NotificationProbeRe
         nowMs: 1_000,
       }),
     );
-    const crashExit = await runCrashChild(childConfigPath);
+    const crashExit = await runCrashChild(CRASH_CHILD, childConfigPath);
     const afterCrashDb = openNotificationDb(crashDbPath);
     const afterCrashSnapshot = readNotificationSnapshot(afterCrashDb);
     const visibleAfterCrash = readPersistentCenterSnapshot(centerDbPath);
@@ -380,10 +339,10 @@ export const runNotificationGatewayProbe = async (): Promise<NotificationProbeRe
       allChecksPass: Object.values(checks).every(Boolean),
       measurements: {
         retryTimelineMs: {
-          firstAttempt: 1_000,
+          firstDelivery: 1_000,
           earlyPoll: 1_099,
-          secondAttempt: 1_100,
-          thirdAttempt: 1_300,
+          secondDelivery: 1_100,
+          thirdDelivery: 1_300,
           terminalPoll: 99_999,
         },
         notificationPayloadBytes: Buffer.byteLength(serializedNotification, "utf8"),

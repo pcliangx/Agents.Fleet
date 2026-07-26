@@ -77,7 +77,7 @@ describe("R0-13 notification delivery", () => {
     const gateway = new NotificationGateway({ db, center, policy, activationSigner });
 
     await expect(gateway.dispatchDue(1_000)).resolves.toEqual([
-      { notificationIntentId: "notification-1", outcome: "Delivered", attemptNumber: 1 },
+      { notificationIntentId: "notification-1", outcome: "Delivered", deliveryNumber: 1 },
     ]);
     await expect(
       new NotificationGateway({ db, center, policy, activationSigner }).dispatchDue(2_000),
@@ -92,14 +92,14 @@ describe("R0-13 notification delivery", () => {
     const snapshot = readNotificationSnapshot(db);
     expect(snapshot.notificationIntents[0]).toMatchObject({
       deliveryState: "Delivered",
-      attemptCount: 1,
+      deliveryCount: 1,
       lastErrorCode: null,
     });
     expect(snapshot.deliveryObservations).toEqual([
       {
         observationId: 1,
         notificationIntentId: "notification-1",
-        attemptNumber: 1,
+        deliveryNumber: 1,
         outcome: "Delivered",
         errorCode: null,
         observedAtMs: 1_000,
@@ -121,20 +121,20 @@ describe("R0-13 notification delivery", () => {
     const gateway = new NotificationGateway({ db, center, policy, activationSigner });
 
     await expect(gateway.dispatchDue(1_000)).resolves.toEqual([
-      { notificationIntentId: "notification-1", outcome: "RetryScheduled", attemptNumber: 1 },
+      { notificationIntentId: "notification-1", outcome: "RetryScheduled", deliveryNumber: 1 },
     ]);
     expect(readNotificationSnapshot(db).notificationIntents[0]).toMatchObject({
       deliveryState: "Pending",
-      attemptCount: 1,
-      nextAttemptAtMs: 1_100,
+      deliveryCount: 1,
+      nextDeliveryAtMs: 1_100,
     });
     await expect(gateway.dispatchDue(1_099)).resolves.toEqual([]);
     await expect(gateway.dispatchDue(1_100)).resolves.toEqual([
-      { notificationIntentId: "notification-1", outcome: "RetryScheduled", attemptNumber: 2 },
+      { notificationIntentId: "notification-1", outcome: "RetryScheduled", deliveryNumber: 2 },
     ]);
-    expect(readNotificationSnapshot(db).notificationIntents[0]?.nextAttemptAtMs).toBe(1_300);
+    expect(readNotificationSnapshot(db).notificationIntents[0]?.nextDeliveryAtMs).toBe(1_300);
     await expect(gateway.dispatchDue(1_300)).resolves.toEqual([
-      { notificationIntentId: "notification-1", outcome: "Failed", attemptNumber: 3 },
+      { notificationIntentId: "notification-1", outcome: "Failed", deliveryNumber: 3 },
     ]);
     await expect(gateway.dispatchDue(99_999)).resolves.toEqual([]);
 
@@ -142,7 +142,7 @@ describe("R0-13 notification delivery", () => {
     expect(center.deliveries).toHaveLength(3);
     expect(snapshot.notificationIntents[0]).toMatchObject({
       deliveryState: "Failed",
-      attemptCount: 3,
+      deliveryCount: 3,
       lastErrorCode: "CENTER_UNAVAILABLE",
     });
     expect(snapshot.deliveryObservations.map((item) => item.outcome)).toEqual([

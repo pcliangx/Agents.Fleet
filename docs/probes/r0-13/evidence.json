@@ -12,7 +12,7 @@
     "SV1-DATA-09",
     "SV1-T-23"
   ],
-  "capturedAt": "2026-07-26T01:00:44.294Z",
+  "capturedAt": "2026-07-26T01:42:04.504Z",
   "platform": {
     "macOS": "26.5.2",
     "kernel": "Darwin 25.5.0 arm64"
@@ -52,10 +52,10 @@
   "allChecksPass": true,
   "measurements": {
     "retryTimelineMs": {
-      "firstAttempt": 1000,
+      "firstDelivery": 1000,
       "earlyPoll": 1099,
-      "secondAttempt": 1100,
-      "thirdAttempt": 1300,
+      "secondDelivery": 1100,
+      "thirdDelivery": 1300,
       "terminalPoll": 99999
     },
     "notificationPayloadBytes": 336,
@@ -87,8 +87,8 @@
         "contentClass": "AttemptCompleted",
         "createdAtMs": 1000,
         "deliveryState": "Pending",
-        "attemptCount": 0,
-        "nextAttemptAtMs": 1000,
+        "deliveryCount": 0,
+        "nextDeliveryAtMs": 1000,
         "lastErrorCode": null
       }
     ],
@@ -119,8 +119,8 @@
         "contentClass": "AttemptCompleted",
         "createdAtMs": 1000,
         "deliveryState": "Acknowledged",
-        "attemptCount": 1,
-        "nextAttemptAtMs": 1000,
+        "deliveryCount": 1,
+        "nextDeliveryAtMs": 1000,
         "lastErrorCode": null
       }
     ],
@@ -128,7 +128,7 @@
       {
         "observationId": 1,
         "notificationIntentId": "notification-1",
-        "attemptNumber": 1,
+        "deliveryNumber": 1,
         "outcome": "Delivered",
         "errorCode": null,
         "observedAtMs": 1000
@@ -160,8 +160,8 @@
         "contentClass": "AttemptCompleted",
         "createdAtMs": 1000,
         "deliveryState": "Failed",
-        "attemptCount": 3,
-        "nextAttemptAtMs": 1550,
+        "deliveryCount": 3,
+        "nextDeliveryAtMs": 1550,
         "lastErrorCode": "CENTER_UNAVAILABLE"
       }
     ],
@@ -169,7 +169,7 @@
       {
         "observationId": 1,
         "notificationIntentId": "notification-1",
-        "attemptNumber": 1,
+        "deliveryNumber": 1,
         "outcome": "RetryScheduled",
         "errorCode": "CENTER_UNAVAILABLE",
         "observedAtMs": 1000
@@ -177,7 +177,7 @@
       {
         "observationId": 2,
         "notificationIntentId": "notification-1",
-        "attemptNumber": 2,
+        "deliveryNumber": 2,
         "outcome": "RetryScheduled",
         "errorCode": "CENTER_UNAVAILABLE",
         "observedAtMs": 1100
@@ -185,7 +185,7 @@
       {
         "observationId": 3,
         "notificationIntentId": "notification-1",
-        "attemptNumber": 3,
+        "deliveryNumber": 3,
         "outcome": "Failed",
         "errorCode": "CENTER_UNAVAILABLE",
         "observedAtMs": 1300
@@ -217,8 +217,8 @@
         "contentClass": "AttemptCompleted",
         "createdAtMs": 1000,
         "deliveryState": "Delivered",
-        "attemptCount": 1,
-        "nextAttemptAtMs": 1000,
+        "deliveryCount": 1,
+        "nextDeliveryAtMs": 1000,
         "lastErrorCode": null
       }
     ],
@@ -226,7 +226,7 @@
       {
         "observationId": 1,
         "notificationIntentId": "notification-1",
-        "attemptNumber": 1,
+        "deliveryNumber": 1,
         "outcome": "Delivered",
         "errorCode": null,
         "observedAtMs": 1001
@@ -238,31 +238,31 @@
       {
         "notificationIntentId": "notification-1",
         "outcome": "Delivered",
-        "attemptNumber": 1
+        "deliveryNumber": 1
       }
     ],
     "retries": [
       {
         "notificationIntentId": "notification-1",
         "outcome": "RetryScheduled",
-        "attemptNumber": 1
+        "deliveryNumber": 1
       },
       {
         "notificationIntentId": "notification-1",
         "outcome": "RetryScheduled",
-        "attemptNumber": 2
+        "deliveryNumber": 2
       },
       {
         "notificationIntentId": "notification-1",
         "outcome": "Failed",
-        "attemptNumber": 3
+        "deliveryNumber": 3
       }
     ],
     "crashRecovery": [
       {
         "notificationIntentId": "notification-1",
         "outcome": "Delivered",
-        "attemptNumber": 1
+        "deliveryNumber": 1
       }
     ]
   }

@@ -1,12 +1,15 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { type NotificationRoute, parseNotificationRoute } from "./notification-outbox.js";
+import {
+  type NotificationRoute,
+  parseNotificationRoute,
+  STABLE_ID,
+} from "./notification-outbox.js";
 
 export interface ActivationIdentity {
   readonly notificationIntentId: string;
   readonly route: NotificationRoute;
 }
 
-const STABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_ACTIVATION_BYTES = 2_048;
 
 const activationError = (): Error => new Error("invalid notification activation envelope");

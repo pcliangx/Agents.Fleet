@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { runCrashChild } from "./crash-child-runner.js";
 import { NotificationGateway } from "./notification-gateway.js";
 import {
   AuthoritativeAttemptWriter,
@@ -23,37 +23,6 @@ const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
-
-const resolveTsxLoader = (): string => {
-  let dir = here;
-  for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = join(dir, "node_modules", "tsx", "dist", "esm", "index.mjs");
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
-  }
-  throw new Error("tsx loader not found");
-};
-
-const runCrashChild = (
-  configPath: string,
-): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> =>
-  new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", resolveTsxLoader(), CHILD, configPath], {
-      stdio: "pipe",
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code !== null && code !== 0) {
-        reject(new Error(`gateway child exited ${code}: ${stderr}`));
-        return;
-      }
-      resolve({ code, signal });
-    });
-  });
 
 const policy = {
   maxAttempts: 3,
@@ -93,12 +62,15 @@ describe("R0-13 notification crash recovery", () => {
       configPath,
       JSON.stringify({ lifecycleDbPath, centerDbPath, policy, nowMs: 1_000 }),
     );
-    await expect(runCrashChild(configPath)).resolves.toEqual({ code: null, signal: "SIGKILL" });
+    await expect(runCrashChild(CHILD, configPath)).resolves.toEqual({
+      code: null,
+      signal: "SIGKILL",
+    });
 
     const afterCrashDb = openNotificationDb(lifecycleDbPath);
     expect(readNotificationSnapshot(afterCrashDb).notificationIntents[0]).toMatchObject({
       deliveryState: "Pending",
-      attemptCount: 0,
+      deliveryCount: 0,
     });
 
     const center = new PersistentFakeNotificationCenter(centerDbPath);
@@ -109,7 +81,7 @@ describe("R0-13 notification crash recovery", () => {
       activationSigner,
     });
     await expect(restarted.dispatchDue(1_001)).resolves.toEqual([
-      { notificationIntentId: "notification-1", outcome: "Delivered", attemptNumber: 1 },
+      { notificationIntentId: "notification-1", outcome: "Delivered", deliveryNumber: 1 },
     ]);
     await expect(restarted.dispatchDue(2_000)).resolves.toEqual([]);
 

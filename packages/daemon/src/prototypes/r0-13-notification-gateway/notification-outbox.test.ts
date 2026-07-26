@@ -6,6 +6,7 @@ import {
   AuthoritativeAttemptWriter,
   notificationDedupeKey,
   openNotificationDb,
+  parseNotificationRoute,
   readNotificationSnapshot,
   type SqliteDatabase,
 } from "./notification-outbox.js";
@@ -61,8 +62,8 @@ describe("R0-13 durable notification outbox", () => {
         authoritativeStateVersion: 5,
       }),
       deliveryState: "Pending",
-      attemptCount: 0,
-      nextAttemptAtMs: 1_000,
+      deliveryCount: 0,
+      nextDeliveryAtMs: 1_000,
     });
     expect(snapshot.attempts).toEqual([
       {
@@ -81,7 +82,7 @@ describe("R0-13 durable notification outbox", () => {
       `INSERT INTO notification_intents (
         notification_intent_id, dedupe_key, task_id, attempt_id,
         authoritative_state_version, event_type, route_json, content_class,
-        created_at_ms, delivery_state, attempt_count, next_attempt_at_ms
+        created_at_ms, delivery_state, delivery_count, next_delivery_at_ms
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 0, ?)`,
     ).run(
       "conflicting-notification",
@@ -115,5 +116,36 @@ describe("R0-13 durable notification outbox", () => {
         nextStatus: "Running",
       }),
     ).toThrow(/event type.*status/i);
+  });
+});
+
+describe("R0-13 notification route identity", () => {
+  it("parses a strict Task or Task+Attempt route and rejects anything richer or malformed", () => {
+    // The Task-only branch (RT-MOD-11 / RT-NOTIFY-04) must resolve the same way
+    // as the Attempt branch — both are valid activation identities.
+    expect(parseNotificationRoute({ kind: "task", taskId: "task-1" })).toEqual({
+      kind: "task",
+      taskId: "task-1",
+    });
+    expect(
+      parseNotificationRoute({ kind: "attempt", taskId: "task-1", attemptId: "attempt-1" }),
+    ).toEqual({ kind: "attempt", taskId: "task-1", attemptId: "attempt-1" });
+
+    // No URL/path/argv/command may hitchhike onto either route shape.
+    expect(() =>
+      parseNotificationRoute({ kind: "task", taskId: "task-1", url: "file:///private/repository" }),
+    ).toThrow(/route/i);
+    expect(() =>
+      parseNotificationRoute({
+        kind: "attempt",
+        taskId: "task-1",
+        attemptId: "attempt-1",
+        argv: ["rm", "-rf"],
+      }),
+    ).toThrow(/route/i);
+
+    // Missing identity and unstable ids are not canonical either.
+    expect(() => parseNotificationRoute({ kind: "task" })).toThrow(/route/i);
+    expect(() => parseNotificationRoute({ kind: "task", taskId: "has space" })).toThrow(/route/i);
   });
 });

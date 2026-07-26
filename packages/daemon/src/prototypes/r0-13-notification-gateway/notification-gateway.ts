@@ -4,6 +4,7 @@ import {
   type NotificationRoute,
   parseNotificationRoute,
   readNotificationSnapshot,
+  withTransaction,
 } from "./notification-outbox.js";
 import type { ActivationIdentity, NotificationActivationSigner } from "./notification-security.js";
 
@@ -39,7 +40,7 @@ export interface NotificationGatewayOptions {
 export interface DispatchOutcome {
   readonly notificationIntentId: string;
   readonly outcome: "Delivered" | "RetryScheduled" | "Failed";
-  readonly attemptNumber: number;
+  readonly deliveryNumber: number;
 }
 
 interface PersistedActivationRow {
@@ -73,18 +74,6 @@ const toSystemNotification = (
     route: intent.route,
   }),
 });
-
-const withTransaction = <T>(db: DatabaseSync, work: () => T): T => {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = work();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-};
 
 const safeErrorCode = (error: unknown): string => {
   if (error instanceof Error && error.name === "AbortError") return "CENTER_ABORTED";
@@ -128,7 +117,7 @@ export class NotificationGateway {
 
   async dispatchDue(nowMs: number): Promise<DispatchOutcome[]> {
     const due = readNotificationSnapshot(this.#db).notificationIntents.filter(
-      (intent) => intent.deliveryState === "Pending" && intent.nextAttemptAtMs <= nowMs,
+      (intent) => intent.deliveryState === "Pending" && intent.nextDeliveryAtMs <= nowMs,
     );
     const outcomes: DispatchOutcome[] = [];
 
@@ -188,30 +177,36 @@ export class NotificationGateway {
   }
 
   #recordDelivered(intent: NotificationIntent, nowMs: number): DispatchOutcome {
-    const attemptNumber = intent.attemptCount + 1;
+    const deliveryNumber = intent.deliveryCount + 1;
     return withTransaction(this.#db, () => {
       this.#db
         .prepare(
           `UPDATE notification_intents
-           SET delivery_state = 'Delivered', attempt_count = ?, last_error_code = NULL
+           SET delivery_state = 'Delivered', delivery_count = ?, last_error_code = NULL
            WHERE notification_intent_id = ? AND delivery_state = 'Pending'`,
         )
-        .run(attemptNumber, intent.notificationIntentId);
-      this.#insertObservation(intent.notificationIntentId, attemptNumber, "Delivered", null, nowMs);
+        .run(deliveryNumber, intent.notificationIntentId);
+      this.#insertObservation(
+        intent.notificationIntentId,
+        deliveryNumber,
+        "Delivered",
+        null,
+        nowMs,
+      );
       return {
         notificationIntentId: intent.notificationIntentId,
         outcome: "Delivered",
-        attemptNumber,
+        deliveryNumber,
       };
     });
   }
 
   #recordFailure(intent: NotificationIntent, nowMs: number, errorCode: string): DispatchOutcome {
-    const attemptNumber = intent.attemptCount + 1;
-    const exhausted = attemptNumber >= this.#policy.maxAttempts;
+    const deliveryNumber = intent.deliveryCount + 1;
+    const exhausted = deliveryNumber >= this.#policy.maxAttempts;
     const outcome = exhausted ? "Failed" : "RetryScheduled";
     const delayMs = Math.min(
-      this.#policy.retryBaseMs * 2 ** (attemptNumber - 1),
+      this.#policy.retryBaseMs * 2 ** (deliveryNumber - 1),
       this.#policy.retryMaxMs,
     );
 
@@ -219,20 +214,20 @@ export class NotificationGateway {
       this.#db
         .prepare(
           `UPDATE notification_intents
-           SET delivery_state = ?, attempt_count = ?, next_attempt_at_ms = ?,
+           SET delivery_state = ?, delivery_count = ?, next_delivery_at_ms = ?,
                last_error_code = ?
            WHERE notification_intent_id = ? AND delivery_state = 'Pending'`,
         )
         .run(
           exhausted ? "Failed" : "Pending",
-          attemptNumber,
+          deliveryNumber,
           nowMs + delayMs,
           errorCode,
           intent.notificationIntentId,
         );
       this.#insertObservation(
         intent.notificationIntentId,
-        attemptNumber,
+        deliveryNumber,
         outcome,
         errorCode,
         nowMs,
@@ -240,14 +235,14 @@ export class NotificationGateway {
       return {
         notificationIntentId: intent.notificationIntentId,
         outcome,
-        attemptNumber,
+        deliveryNumber,
       };
     });
   }
 
   #insertObservation(
     notificationIntentId: string,
-    attemptNumber: number,
+    deliveryNumber: number,
     outcome: DispatchOutcome["outcome"],
     errorCode: string | null,
     observedAtMs: number,
@@ -255,9 +250,9 @@ export class NotificationGateway {
     this.#db
       .prepare(
         `INSERT INTO notification_delivery_observations (
-           notification_intent_id, attempt_number, outcome, error_code, observed_at_ms
+           notification_intent_id, delivery_number, outcome, error_code, observed_at_ms
          ) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(notificationIntentId, attemptNumber, outcome, errorCode, observedAtMs);
+      .run(notificationIntentId, deliveryNumber, outcome, errorCode, observedAtMs);
   }
 }

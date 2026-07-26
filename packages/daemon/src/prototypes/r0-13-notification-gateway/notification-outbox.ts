@@ -28,8 +28,8 @@ export interface NotificationIntent {
   readonly contentClass: string;
   readonly createdAtMs: number;
   readonly deliveryState: DeliveryState;
-  readonly attemptCount: number;
-  readonly nextAttemptAtMs: number;
+  readonly deliveryCount: number;
+  readonly nextDeliveryAtMs: number;
   readonly lastErrorCode: string | null;
 }
 
@@ -57,8 +57,8 @@ interface NotificationIntentRow {
   readonly content_class: string;
   readonly created_at_ms: number;
   readonly delivery_state: DeliveryState;
-  readonly attempt_count: number;
-  readonly next_attempt_at_ms: number;
+  readonly delivery_count: number;
+  readonly next_delivery_at_ms: number;
   readonly last_error_code: string | null;
 }
 
@@ -83,7 +83,7 @@ export interface NotificationSnapshot {
 export interface DeliveryObservation {
   readonly observationId: number;
   readonly notificationIntentId: string;
-  readonly attemptNumber: number;
+  readonly deliveryNumber: number;
   readonly outcome: "Delivered" | "RetryScheduled" | "Failed";
   readonly errorCode: string | null;
   readonly observedAtMs: number;
@@ -92,7 +92,7 @@ export interface DeliveryObservation {
 interface DeliveryObservationRow {
   readonly observation_id: number;
   readonly notification_intent_id: string;
-  readonly attempt_number: number;
+  readonly delivery_number: number;
   readonly outcome: "Delivered" | "RetryScheduled" | "Failed";
   readonly error_code: string | null;
   readonly observed_at_ms: number;
@@ -122,8 +122,8 @@ CREATE TABLE IF NOT EXISTS notification_intents (
   created_at_ms INTEGER NOT NULL,
   delivery_state TEXT NOT NULL
     CHECK (delivery_state IN ('Pending', 'Delivered', 'Failed', 'Acknowledged')),
-  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-  next_attempt_at_ms INTEGER NOT NULL,
+  delivery_count INTEGER NOT NULL DEFAULT 0 CHECK (delivery_count >= 0),
+  next_delivery_at_ms INTEGER NOT NULL,
   last_error_code TEXT
 );
 
@@ -134,15 +134,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS notification_intents_attempt_version
 CREATE TABLE IF NOT EXISTS notification_delivery_observations (
   observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
   notification_intent_id TEXT NOT NULL REFERENCES notification_intents(notification_intent_id),
-  attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+  delivery_number INTEGER NOT NULL CHECK (delivery_number > 0),
   outcome TEXT NOT NULL CHECK (outcome IN ('Delivered', 'RetryScheduled', 'Failed')),
   error_code TEXT,
   observed_at_ms INTEGER NOT NULL,
-  UNIQUE(notification_intent_id, attempt_number)
+  UNIQUE(notification_intent_id, delivery_number)
 );
 `;
 
-const STABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const STABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const EVENT_PRESENTATION = new Map([
   ["AttemptSucceeded", { contentClass: "AttemptCompleted", status: "Succeeded" }],
   ["AttemptFailed", { contentClass: "AttemptNeedsAttention", status: "Failed" }],
@@ -194,7 +194,7 @@ export const openNotificationDb = (path: string): DatabaseSync => {
   return db;
 };
 
-const withTransaction = <T>(db: DatabaseSync, work: () => T): T => {
+export const withTransaction = <T>(db: DatabaseSync, work: () => T): T => {
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = work();
@@ -230,8 +230,8 @@ const toIntent = (row: NotificationIntentRow): NotificationIntent => ({
   contentClass: row.content_class,
   createdAtMs: row.created_at_ms,
   deliveryState: row.delivery_state,
-  attemptCount: row.attempt_count,
-  nextAttemptAtMs: row.next_attempt_at_ms,
+  deliveryCount: row.delivery_count,
+  nextDeliveryAtMs: row.next_delivery_at_ms,
   lastErrorCode: row.last_error_code,
 });
 
@@ -313,7 +313,7 @@ export class AuthoritativeAttemptWriter {
           `INSERT INTO notification_intents (
              notification_intent_id, dedupe_key, task_id, attempt_id,
              authoritative_state_version, event_type, route_json, content_class,
-             created_at_ms, delivery_state, attempt_count, next_attempt_at_ms
+             created_at_ms, delivery_state, delivery_count, next_delivery_at_ms
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 0, ?)`,
         )
         .run(
@@ -361,7 +361,7 @@ export const readNotificationSnapshot = (db: DatabaseSync): NotificationSnapshot
   ).map((row) => ({
     observationId: row.observation_id,
     notificationIntentId: row.notification_intent_id,
-    attemptNumber: row.attempt_number,
+    deliveryNumber: row.delivery_number,
     outcome: row.outcome,
     errorCode: row.error_code,
     observedAtMs: row.observed_at_ms,

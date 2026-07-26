@@ -173,4 +173,32 @@ describe("R0-13 notification trust boundary", () => {
       ),
     ).toThrow(/activation/i);
   });
+
+  it("round-trips a Task-only activation route and refuses to sign an over-privileged task route", () => {
+    const signer = new NotificationActivationSigner(secret);
+    const authenticator = new NotificationActivationAuthenticator(secret);
+
+    // The Task-only route (RT-MOD-11 / RT-NOTIFY-04) must survive the
+    // sign -> authenticate round-trip with the stable identity intact.
+    const token = signer.sign({
+      notificationIntentId: "notification-task",
+      route: { kind: "task", taskId: "task-1" },
+    });
+    expect(authenticator.authenticate(token)).toEqual({
+      notificationIntentId: "notification-task",
+      route: { kind: "task", taskId: "task-1" },
+    });
+
+    // A Task route carrying URL/argv must not even sign: the canonicalizer
+    // rejects it before any MAC is computed.
+    const overPrivilegedTaskRoute = {
+      kind: "task" as const,
+      taskId: "task-1",
+      url: "file:///private/repository",
+      argv: ["open", "Terminal"],
+    };
+    expect(() =>
+      signer.sign({ notificationIntentId: "notification-task", route: overPrivilegedTaskRoute }),
+    ).toThrow(/route/i);
+  });
 });
