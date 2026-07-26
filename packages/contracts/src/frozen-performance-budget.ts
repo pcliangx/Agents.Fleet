@@ -3,7 +3,7 @@
 // The quantitative budgets RT-PERF-10 requires R0 to freeze: latency gates,
 // the RT-PERF-08 fixed load, and per-load-class resource budgets for the three
 // load classes (active/visible, active/hidden, Electron closed). Bound to the
-// frozen matrix (v2) and limit profile (v1) — per RT-LIMIT-03 and RT-DIST-08,
+// frozen matrix (v3) and limit profile (v1) — per RT-LIMIT-03 and RT-DIST-08,
 // a change to either produces new versions and re-runs the fixtures.
 //
 // Latency gates and the fixed load are spec-verbatim (RT-PERF-01/02/03/08/09).
@@ -79,7 +79,7 @@ const SNAPSHOT_RESTORE_BUDGET_P95_MS = 1000; // RT-PERF-03 gate
 
 export const FROZEN_PERFORMANCE_BUDGET: PerformanceBudget = {
   budgetVersion: 1,
-  matrixVersion: 2,
+  matrixVersion: 3,
   runtimeLimitProfileVersion: 1,
 
   fixedLoad: {

@@ -4,10 +4,11 @@
 // `Electron Framework.framework/Versions/Current/Electron Framework`) as:
 //   sentinel "dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"
 //   1 byte  fuse wire version (currently 1)
-//   1 byte  fuse wire length (8 — one ASCII '0'/'1' flag per fuse)
+//   1 byte  fuse wire length (9 — one ASCII '0'/'1' flag per fuse, Electron 43+)
 //   N bytes flags in FuseKey order
-// (Format confirmed empirically against Electron 34.5.8: wire "10110001",
-// matching Electron's shipped defaults.)
+// (Format confirmed empirically against Electron 43.2.0: wire "101100011",
+// matching Electron's shipped defaults; Electron 34.5.8 carried 8 fuses —
+// wire "10110001" — before WasmTrapHandlers was appended at index 8.)
 //
 // Release builds must fail closed on any violation or on an unparseable wire.
 // Full verification (fuse state + asar integrity + bundle manifest) only
@@ -26,6 +27,7 @@ export const FUSE_KEYS = [
   "OnlyLoadAppFromAsar",
   "LoadBrowserProcessSpecificV8Snapshot",
   "GrantFileProtocolExtraPrivileges",
+  "WasmTrapHandlers",
 ] as const;
 
 export type FuseKey = (typeof FUSE_KEYS)[number];
@@ -36,6 +38,9 @@ export type FuseKey = (typeof FUSE_KEYS)[number];
  * on, no browser-process V8 snapshot from outside the bundle, no extra
  * file:// privileges. EnableCookieEncryption goes beyond the contract minimum
  * but is required by our release policy (protects cookies at rest).
+ * WasmTrapHandlers stays at Electron's default (on): it only selects V8's
+ * WebAssembly OOB-check mechanism (signal handler vs explicit bounds checks)
+ * and is not a code-execution / privilege surface.
  */
 export const REQUIRED_RELEASE_FUSES: Readonly<Record<FuseKey, boolean>> = {
   RunAsNode: false,
@@ -46,6 +51,7 @@ export const REQUIRED_RELEASE_FUSES: Readonly<Record<FuseKey, boolean>> = {
   OnlyLoadAppFromAsar: true,
   LoadBrowserProcessSpecificV8Snapshot: false,
   GrantFileProtocolExtraPrivileges: false,
+  WasmTrapHandlers: true,
 };
 
 export type FuseState = Readonly<Record<FuseKey, boolean>>;

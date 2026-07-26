@@ -1,4 +1,4 @@
-// RT-DIST-08 — frozen R0 SupportedPlatformMatrix (matrixVersion 2).
+// RT-DIST-08 — frozen R0 SupportedPlatformMatrix (matrixVersion 3).
 //
 // This is the canonical, versioned platform matrix. Concrete values are frozen
 // here (not in the spec schema) and referenced by matrixVersion across the
@@ -10,7 +10,8 @@
 // docs/probes/r0-15-supported-platform-matrix.md.
 //
 // History: v1 = R0-15 initial freeze (#14); v2 = R0-16 froze
-// runtimeLimitProfileVersion at 1 (#15).
+// runtimeLimitProfileVersion at 1 (#15); v3 = #57 Electron 34.5.8 → 43.2.0
+// (EOL → supported line; fuse wire gained WasmTrapHandlers at index 8).
 //
 // Pending fields (kept at 0 until their owning slice lands; a change there bumps
 // this matrix to a new version per RT-DIST-08):
@@ -19,7 +20,7 @@
 import type { SupportedPlatformMatrix } from "./platform.js";
 
 export const FROZEN_PLATFORM_MATRIX: SupportedPlatformMatrix = {
-  matrixVersion: 2,
+  matrixVersion: 3,
   architecture: "arm64",
   minimumMacOSVersion: "26",
   minimumHardware: {
@@ -30,7 +31,7 @@ export const FROZEN_PLATFORM_MATRIX: SupportedPlatformMatrix = {
     gpuClass: "apple-integrated",
     memoryBytes: 8589934592,
   },
-  electronVersion: "34.5.8",
+  electronVersion: "43.2.0",
   nodeRuntimeVersion: "22.17.1",
   nodePtyArtifactIdentity: "node-pty@1.1.0;darwin-arm64",
   // Canonical, sorted package@version set (packages/terminal dependencies).

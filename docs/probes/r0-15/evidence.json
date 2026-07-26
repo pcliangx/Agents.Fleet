@@ -1,9 +1,9 @@
 {
   "probeId": "r0-15-supported-platform-matrix",
-  "capturedAt": "2026-07-26T01:42:56.945Z",
-  "baseCommit": "51b0b9c6d712afce9affed500c7af71fd2737986",
+  "capturedAt": "2026-07-26T14:28:59.656Z",
+  "baseCommit": "b6aff9794c4bb0fc166f821f3f00ef8fbc9ac20d",
   "frozenMatrix": {
-    "matrixVersion": 1,
+    "matrixVersion": 3,
     "architecture": "arm64",
     "minimumMacOSVersion": "26",
     "minimumHardware": {
@@ -12,11 +12,11 @@
       "gpuClass": "apple-integrated",
       "memoryBytes": 8589934592
     },
-    "electronVersion": "34.5.8",
+    "electronVersion": "43.2.0",
     "nodeRuntimeVersion": "22.17.1",
     "nodePtyArtifactIdentity": "node-pty@1.1.0;darwin-arm64",
     "terminalPackageSetIdentity": "@xterm/addon-serialize@0.14.0,@xterm/addon-unicode11@0.9.0,@xterm/addon-webgl@0.19.0,@xterm/headless@6.0.0,@xterm/xterm@6.0.0",
-    "runtimeLimitProfileVersion": 0,
+    "runtimeLimitProfileVersion": 1,
     "rendererPaths": ["WebGL2", "DOM"],
     "keychainPolicyVersion": 1,
     "signingAndNotarizationPolicyVersion": 0,
@@ -26,7 +26,8 @@
       "PLATFORM-1",
       "RT-T-45",
       "docs/probes/r0-10-node-pty-isolation.md",
-      "docs/probes/r0-15-supported-platform-matrix.md"
+      "docs/probes/r0-15-supported-platform-matrix.md",
+      "docs/probes/r0-16-runtime-limit-profile.md"
     ]
   },
   "terminalPackageSet": {
@@ -152,7 +153,7 @@
   ],
   "pendingFields": {
     "runtimeLimitProfileVersion": {
-      "value": 0,
+      "value": 1,
       "owner": "R0-16 (issue #15)",
       "bumpEffect": "freezing it produces a new matrixVersion per RT-DIST-08"
     },

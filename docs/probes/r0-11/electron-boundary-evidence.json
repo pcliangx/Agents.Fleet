@@ -33,15 +33,15 @@
     ]
   },
   "environment": {
-    "capturedAt": "2026-07-26T00:53:12Z",
+    "capturedAt": "2026-07-26T14:28:57Z",
     "os": "macOS 26.5.2 (25F84)",
     "kernel": "Darwin 25.5.0 arm64",
     "cpu": "Apple M5 Pro",
     "node": "v26.4.0",
-    "electron": "34.5.8",
-    "electronFrameworkBinarySha256Prefix": "cebc1de6c533accc",
-    "platformMatrixVersion": 0,
-    "provenanceStatus": "unfrozen-r0-placeholder"
+    "electron": "43.2.0",
+    "electronFrameworkBinarySha256Prefix": "ed19685a25af0788",
+    "platformMatrixVersion": 3,
+    "provenanceStatus": "matrix-frozen-v3"
   },
   "fixtures": {
     "electronBoundary": {
@@ -133,7 +133,7 @@
   ],
   "notes": [
     "All fixture Electron apps and flipped binaries are throwaway artifacts under $TMPDIR; node_modules is only read, never modified.",
-    "The macOS fuse wire format (sentinel + version byte 1 + length byte 8 + ASCII flags in FuseKey order) was confirmed empirically against Electron 34.5.8.",
+    "The macOS fuse wire format (sentinel + version byte 1 + length byte 9 + ASCII flags in FuseKey order) was confirmed empirically against Electron 43.2.0 (9 fuses; index 8 = WasmTrapHandlers, added since 34.5.8).",
     "Dev/release difference: dev loads the vite dev server over http://localhost (no af-app, no CSP); the IPC origin allowlist is bound to the actually loaded origin in both forms, tested via the devPosture probe."
   ]
 }

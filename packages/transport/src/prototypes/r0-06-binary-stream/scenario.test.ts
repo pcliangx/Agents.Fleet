@@ -8,7 +8,7 @@ describe("R0-06 fixed load scenario", () => {
     expect(scenario).toMatchObject({
       durationSeconds: 60,
       framePayloadBytes: 65_536,
-      platformMatrixVersion: 2,
+      platformMatrixVersion: 3,
       runtimeLimitProfileVersion: 1,
       provenanceStatus: "matrix-and-profile-frozen",
       queueLimits: { bytes: 1_048_576, frames: 32 },

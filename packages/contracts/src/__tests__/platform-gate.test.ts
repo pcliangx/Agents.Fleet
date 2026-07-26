@@ -20,7 +20,7 @@ const FLOOR: SupportedPlatformMatrix = {
     gpuClass: "apple-integrated",
     memoryBytes: 8589934592,
   },
-  electronVersion: "34.5.8",
+  electronVersion: "43.2.0",
   nodeRuntimeVersion: "22.17.1",
   nodePtyArtifactIdentity: "node-pty@1.1.0;darwin-arm64",
   terminalPackageSetIdentity: "test",

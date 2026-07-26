@@ -704,6 +704,8 @@ SupportedPlatformMatrix = {
 
 > _Changelog (R0-15, [probe](../probes/r0-15-supported-platform-matrix.md))_：R0 冻结 `matrixVersion = 1` 的 `SupportedPlatformMatrix` —— `architecture = arm64`、`minimumMacOSVersion = 26 (Tahoe)`、`minimumHardware = M1 / 8 GiB`、`electronVersion = 34.5.8`、`nodeRuntimeVersion = 22.17.1`、`nodePtyArtifactIdentity = node-pty@1.1.0;darwin-arm64`、R0-09 五包 `terminalPackageSetIdentity`、`rendererPaths = [WebGL2, DOM]`、`keychainPolicyVersion = 1`（R0-12）。冻结值固化于 `packages/contracts/src/frozen-platform-matrix.ts`；`runtimeLimitProfileVersion` 与 `signingAndNotarizationPolicyVersion` 暂记 `0`，分别待 R0-16（#15）与 R5 落地，任一变更按 RT-DIST-08 生成新 `matrixVersion`。RT-DIST-09 的纯主机门（`packages/contracts/src/platform-gate.ts`）已证明；installer / LaunchAgent / migration 接入与最低硬件 RT-PERF-08 验收仍属 R5 / 后续。
 
+> _Changelog (#57)_：Electron 34.5.8 → 43.2.0（EOL → 维护线；fuse wire 加 WasmTrapHandlers），matrixVersion 2 → 3；冻结值固化于 `frozen-platform-matrix.ts`。
+
 - **RT-DIST-01**：发布单元精确锁定并签名 Electron、内置 Node runtime、`node-pty` native binary、Daemon、inert bootstrap、Notification Gateway、native FileBroker、native ConfirmationBroker、terminal package set、migration、`SupportedPlatformMatrix` 与 `RuntimeLimitProfile`；构建产出 SBOM 和各 native artifact hash。
 - **RT-DIST-02**：LaunchAgent 配置只引用签名应用包内的绝对 executable path，使用最小清理环境且不依赖系统 Node、用户 PATH、login shell 或 Repository 内容。
 - **RT-DIST-03**：Electron、Daemon、bootstrap、Notification Gateway、schema、`SupportedPlatformMatrix` 与 `RuntimeLimitProfile` 在启动时执行双向版本握手；不兼容组合 fail closed，并保留只读恢复与诊断路径。
