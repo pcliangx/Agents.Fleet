@@ -173,6 +173,8 @@ Worktree Manager 对 Fleet 自己的文件操作保证。每个操作必须声�
 
 > _Changelog (#57)_：Electron 升级 34.5.8 → 43.2.0。checksums 更新为 darwin-arm64 sha256 `ad4a0ae3…e28` / size 122090802；fuse wire 增至 9 位（`WasmTrapHandlers`，index 8，默认 on，非安全硬约束）。`fuses.ts` 的 `FUSE_KEYS` 追加该 key，`parseFuseWire` 长度守卫因读 `FUSE_KEYS.length` 自洽。node-pty 不受影响（Daemon Node 隔离，SV1-AUTH-09）。
 
+> _Changelog (#58-followup)_：pnpm 10.33.2 → 11.17.0。`sideEffectsCache: false` 经查证在 v11 仍有效（`config get` 回 undefined 是显示 quirk，非字段失效），`pnpm#12859`（side-effects cache 把 electron framework symlink 物理化）未修，故保留该字段继续守护 #36。`allowBuilds.electron@43.2.0` 改为 `electron`（去版本，避免 v11 strictDepBuilds 失配致 postinstall 静默跳过 → dist 缺 binary）。`useNodeVersion` 字段 v11 删除，Node 版本由 `devEngines.runtime` + 新增 `runtimeOnFail: download`（绕 onFail 默认 warn 的 pnpm#11818）保证 pnpm 跨机用 Node 24.18.0。
+
 - **SV1-SUPPLY-03**：应用、Daemon、helper 与 LaunchAgent 目标都必须通过 macOS code-signing、notarization、hardened runtime 和 designated-requirement 验证；签名后 bundle、fuse 或 native artifact 改变即拒绝启动。
 - **SV1-SUPPLY-04**：升级与回滚保持单一可写 Daemon，先 drain 或显式处理 Alive Session 与未决 Process Disposition，验证 backup 与 schema compatibility；不兼容或验证失败时保留旧数据进入只读恢复，不运行混合版本。
 

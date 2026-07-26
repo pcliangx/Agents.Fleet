@@ -2,26 +2,25 @@ packages:
   - 'packages/*'
   - 'apps/*'
 
-# SV1-SUPPLY-02 — Node version is pinned in two places by design:
-#  - useNodeVersion (here): the authoritative value pnpm consumes to install
-#    and run a managed Node for dependency lifecycle (reflected in lockfile
-#    node@runtime:<version>).
-#  - package.json devEngines.runtime.version: a hint for IDEs/tools that read
-#    the Node devEngines proposal (not consumed by pnpm).
-# Keep both in sync on bump; useNodeVersion is the source of truth.
-useNodeVersion: 22.17.1
+# pnpm 11 — `useNodeVersion` was removed; pnpm now sources Node from
+# package.json `devEngines.runtime.version` (24.18.0). Because v11's devEngines
+# onFail defaults to "warn" (silently broken — pnpm#11818), set
+# `runtimeOnFail: download` here so pnpm actually downloads and runs that Node.
+runtimeOnFail: download
 
 # #36 — pnpm's side-effects cache restores postinstall-created symlinks as
-# physical copies (upstream pnpm#12859). electron@43.2.0 is the one package
-# allowed to build here (allowBuilds below), and its framework symlinks are
-# load-bearing (fuse verification edits Versions/Current while the loader
+# physical copies (upstream pnpm#12859, still unfixed in v11). electron is the
+# only package allowed to build (allowBuilds below), and its framework symlinks
+# are load-bearing (fuse verification edits Versions/Current while the loader
 # resolves the top-level path), so build results must never be restored from
-# the cache: postinstall re-runs on every install instead. Cost is a few
-# seconds of re-extraction from the local @electron/get zip.
+# the cache: postinstall re-runs on every install instead.
 sideEffectsCache: false
 
+# pnpm 11 `strictDepBuilds` defaults to true; version-pinned selectors (e.g.
+# electron@43.2.0) can mismatch the resolved lockfile version and silently skip
+# postinstall, so the electron entry drops the version to match all versions.
 allowBuilds:
-  electron@43.2.0: true
+  electron: true
   esbuild@0.25.12: false
   esbuild@0.28.1: false
   node-pty@1.1.0: false

@@ -3,7 +3,7 @@
 > 分支：`r0-13/notification-gateway`。本次原型针对 `RT-MOD-11`、
 > `RT-NOTIFY-01..06`、`RT-T-28`、`SV1-DATA-09`、`SV1-T-23`。
 > 2026-07-26 在 macOS 26.5.2 (25F84) / Apple Silicon 上实测；
-> probe 由 pnpm 固定的 Node v22.17.1 运行，SQLite 使用
+> probe 由 pnpm 固定的 Node v24.18.0 运行，SQLite 使用
 > `node:sqlite`、WAL、`synchronous=FULL`。机器可读证据见
 > [`r0-13/evidence.json`](r0-13/evidence.json)。
 

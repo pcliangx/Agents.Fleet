@@ -706,6 +706,8 @@ SupportedPlatformMatrix = {
 
 > _Changelog (#57)_：Electron 34.5.8 → 43.2.0（EOL → 维护线；fuse wire 加 WasmTrapHandlers），matrixVersion 2 → 3；冻结值固化于 `frozen-platform-matrix.ts`。
 
+> _Changelog (#58-followup)_：Node 22.17.1 → 24.18.0 + pnpm 10.33.2 → 11.17.0，matrixVersion 3 → 4。pnpm 11 删 `useNodeVersion`（改由 `devEngines.runtime` + pnpm-workspace `runtimeOnFail: download` 让 pnpm 实际下载用 Node 24，绕 onFail 默认 warn 的 #11818）；`allowBuilds.electron` 去版本选择器（v11 strictDepBuilds 默认 true，版本精确匹配易失配致 postinstall 跳过）；`sideEffectsCache: false` 保留（v11 仍有效，#12859 未修）。
+
 - **RT-DIST-01**：发布单元精确锁定并签名 Electron、内置 Node runtime、`node-pty` native binary、Daemon、inert bootstrap、Notification Gateway、native FileBroker、native ConfirmationBroker、terminal package set、migration、`SupportedPlatformMatrix` 与 `RuntimeLimitProfile`；构建产出 SBOM 和各 native artifact hash。
 - **RT-DIST-02**：LaunchAgent 配置只引用签名应用包内的绝对 executable path，使用最小清理环境且不依赖系统 Node、用户 PATH、login shell 或 Repository 内容。
 - **RT-DIST-03**：Electron、Daemon、bootstrap、Notification Gateway、schema、`SupportedPlatformMatrix` 与 `RuntimeLimitProfile` 在启动时执行双向版本握手；不兼容组合 fail closed，并保留只读恢复与诊断路径。
