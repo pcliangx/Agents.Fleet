@@ -15,9 +15,9 @@ const config: DaemonHandshakeConfig = {
   daemonGeneration: 1 as never,
   platformMatrixVersion: 0,
   runtimeLimitProfileVersion: 0,
-  daemonNonce: "dn" as never,
-  daemonProof: "p",
 };
+
+const token = new Uint8Array([1, 2, 3, 4]);
 
 const hello = (over: Partial<ClientHello> = {}): ClientHello => ({
   protocolVersions: [1],
@@ -51,7 +51,7 @@ describe("ControlDispatcher handshake (RT-HS-01..05)", () => {
 
   it("completes challenge -> DaemonHello on a full match", async () => {
     const sink = new CapturingSink();
-    const d = new ControlDispatcher(config, new DevProofVerifier(), sink);
+    const d = new ControlDispatcher(config, new DevProofVerifier(), sink, token);
     await d.onMessage(hello());
     expect(d.currentState).toBe("awaiting-auth");
     expect(sink.sent).toHaveLength(1);
@@ -64,7 +64,7 @@ describe("ControlDispatcher handshake (RT-HS-01..05)", () => {
 
   it("is fatal UnsupportedVersion + closed when no common protocol (RT-HS-03)", async () => {
     const sink = new CapturingSink();
-    const d = new ControlDispatcher(config, new DevProofVerifier(), sink);
+    const d = new ControlDispatcher(config, new DevProofVerifier(), sink, token);
     await d.onMessage(hello({ protocolVersions: [99] }));
     expect(d.currentState).toBe("closed");
     expect(sink.closed).toBe(true);
@@ -73,7 +73,7 @@ describe("ControlDispatcher handshake (RT-HS-01..05)", () => {
 
   it("fail-closes on a wrong proof with no DaemonHello (RT-HS-04)", async () => {
     const sink = new CapturingSink();
-    const d = new ControlDispatcher(config, new DevProofVerifier(), sink);
+    const d = new ControlDispatcher(config, new DevProofVerifier(), sink, token);
     await d.onMessage(hello());
     await d.onMessage({ clientProof: "wrong" } as ClientAuth);
     expect(d.currentState).toBe("closed");
@@ -83,7 +83,7 @@ describe("ControlDispatcher handshake (RT-HS-01..05)", () => {
 
   it("routes commands as not-implemented in the #1 stub", async () => {
     const sink = new CapturingSink();
-    const d = new ControlDispatcher(config, new DevProofVerifier(), sink);
+    const d = new ControlDispatcher(config, new DevProofVerifier(), sink, token);
     await d.onMessage(hello());
     await d.onMessage({ clientProof: "dev-proof" } as ClientAuth);
     await d.onMessage({

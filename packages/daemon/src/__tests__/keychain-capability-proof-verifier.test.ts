@@ -43,16 +43,24 @@ describe("KeychainCapabilityProofVerifier (RT-HS-04)", () => {
     const v = new KeychainCapabilityProofVerifier(token);
     const a = { ...base, clientNonce: "cn-a" };
     const b = { ...base, clientNonce: "cn-b" };
-    expect(v.verify({ transcript: a, clientProof: computeProof("client", a, token) }).ok).toBe(true);
-    expect(v.verify({ transcript: b, clientProof: computeProof("client", b, token) }).ok).toBe(true);
+    expect(v.verify({ transcript: a, clientProof: computeProof("client", a, token) }).ok).toBe(
+      true,
+    );
+    expect(v.verify({ transcript: b, clientProof: computeProof("client", b, token) }).ok).toBe(
+      true,
+    );
   });
 
   it("clears replay state when daemonGeneration changes", () => {
     const v = new KeychainCapabilityProofVerifier(token);
     const g1 = base;
     const g2 = { ...base, daemonGeneration: 2 };
-    expect(v.verify({ transcript: g1, clientProof: computeProof("client", g1, token) }).ok).toBe(true);
-    expect(v.verify({ transcript: g2, clientProof: computeProof("client", g2, token) }).ok).toBe(true);
+    expect(v.verify({ transcript: g1, clientProof: computeProof("client", g1, token) }).ok).toBe(
+      true,
+    );
+    expect(v.verify({ transcript: g2, clientProof: computeProof("client", g2, token) }).ok).toBe(
+      true,
+    );
   });
 
   it("does not consume a nonce on a failed proof (retry allowed)", () => {

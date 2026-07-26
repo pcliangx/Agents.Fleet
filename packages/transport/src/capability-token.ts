@@ -24,9 +24,7 @@ export class DevTokenFileTokenSource implements CapabilityTokenSource {
   async read(): Promise<Uint8Array> {
     const st = await stat(this.path);
     if ((st.mode & 0o777) !== 0o600) {
-      throw new Error(
-        `dev token file must be 0600 (got 0${(st.mode & 0o777).toString(8)})`,
-      );
+      throw new Error(`dev token file must be 0600 (got 0${(st.mode & 0o777).toString(8)})`);
     }
     return new Uint8Array(await readFile(this.path));
   }

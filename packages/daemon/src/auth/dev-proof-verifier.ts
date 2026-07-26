@@ -13,7 +13,10 @@ const DEV_PROOF = "dev-proof";
 
 export class DevProofVerifier implements ProofVerifier {
   // transcript is part of the seam but unused by the dev stub.
-  verify(args: { readonly transcript: ProofTranscript; readonly clientProof: string }): ProofResult {
+  verify(args: {
+    readonly transcript: ProofTranscript;
+    readonly clientProof: string;
+  }): ProofResult {
     if (process.env.NODE_ENV === "production") {
       return { ok: false, code: "Unauthorized" as ErrorCode };
     }

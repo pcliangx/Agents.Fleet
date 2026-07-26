@@ -1,8 +1,12 @@
 // RT-MOD-01 — Control Dispatcher. Drives the RT-HS handshake for one connection
 // (version negotiate → challenge → proof verify → DaemonHello), then routes
-// commands. Any handshake failure closes the socket immediately: no Attachment,
-// no command executed (RT-HS-04 / RT-STREAM-03). Command routing is a stub in #1.
+// commands. The daemon generates a fresh daemonNonce per connection and
+// computes daemonProof over the negotiation transcript (RT-HS-04); clientProof
+// is verified by the injected ProofVerifier. Any handshake failure closes the
+// socket immediately: no Attachment, no command executed (RT-HS-04 / RT-STREAM-03).
+// Command routing is a stub.
 
+import { randomUUID } from "node:crypto";
 import type {
   ClientAuth,
   ClientHello,
@@ -10,8 +14,14 @@ import type {
   CommandId,
   DaemonHello,
   ErrorCode,
+  Nonce,
 } from "@agents-fleet/contracts";
-import { type DaemonHandshakeConfig, negotiate, type ProofTranscript } from "@agents-fleet/transport";
+import {
+  computeProof,
+  type DaemonHandshakeConfig,
+  negotiate,
+  type ProofTranscript,
+} from "@agents-fleet/transport";
 import type { ProofVerifier } from "./auth/proof-verifier.js";
 
 export interface ConnectionSink {
@@ -24,12 +34,13 @@ export type DispatcherState = "awaiting-hello" | "awaiting-auth" | "ready" | "cl
 export class ControlDispatcher {
   private state: DispatcherState = "awaiting-hello";
   private selectedProtocolVersion: number | undefined;
-  private hello: ClientHello | undefined;
+  private transcript: ProofTranscript | undefined;
 
   constructor(
     private readonly config: DaemonHandshakeConfig,
     private readonly verifier: ProofVerifier,
     private readonly sink: ConnectionSink,
+    private readonly token: Uint8Array,
   ) {}
 
   get currentState(): DispatcherState {
@@ -55,34 +66,42 @@ export class ControlDispatcher {
   }
 
   private async onHello(hello: ClientHello): Promise<void> {
-    const result = negotiate(this.config, hello);
+    // RT-HS-04 — fresh daemonNonce per connection; the proof is computed after
+    // negotiation (it binds selectedProtocolVersion) and overrides the
+    // placeholder negotiate placed in the challenge.
+    const daemonNonce = randomUUID() as Nonce;
+    const result = negotiate(this.config, hello, { daemonNonce, daemonProof: "" });
     if (result.kind === "fatal") {
       this.fail(result.code, result.message);
       return;
     }
-    this.hello = hello;
-    this.selectedProtocolVersion = result.challenge.selectedProtocolVersion;
-    this.state = "awaiting-auth";
-    this.sink.send(result.challenge);
-  }
-
-  private async onAuth(auth: ClientAuth): Promise<void> {
-    if (this.hello === undefined || this.selectedProtocolVersion === undefined) {
-      this.fail("InternalFailure", "handshake state corrupted");
-      return;
-    }
     const transcript: ProofTranscript = {
-      clientNonce: this.hello.clientNonce as string,
-      daemonNonce: this.config.daemonNonce as string,
-      selectedProtocolVersion: this.selectedProtocolVersion,
-      clientInstanceId: this.hello.clientInstanceId,
-      clientKind: this.hello.clientKind,
+      clientNonce: hello.clientNonce,
+      daemonNonce,
+      selectedProtocolVersion: result.challenge.selectedProtocolVersion,
+      clientInstanceId: hello.clientInstanceId,
+      clientKind: hello.clientKind,
       daemonId: this.config.daemonId,
       daemonGeneration: this.config.daemonGeneration,
       platformMatrixVersion: this.config.platformMatrixVersion,
       runtimeLimitProfileVersion: this.config.runtimeLimitProfileVersion,
     };
-    const res = await this.verifier.verify({ transcript, clientProof: auth.clientProof });
+    this.transcript = transcript;
+    this.selectedProtocolVersion = result.challenge.selectedProtocolVersion;
+    this.state = "awaiting-auth";
+    const daemonProof = computeProof("daemon", transcript, this.token);
+    this.sink.send({ ...result.challenge, daemonProof });
+  }
+
+  private async onAuth(auth: ClientAuth): Promise<void> {
+    if (this.transcript === undefined) {
+      this.fail("InternalFailure", "handshake state corrupted");
+      return;
+    }
+    const res = await this.verifier.verify({
+      transcript: this.transcript,
+      clientProof: auth.clientProof,
+    });
     if (!res.ok) {
       // RT-HS-04 — fail closed: no DaemonHello, no Attachment, close immediately.
       this.sink.close();

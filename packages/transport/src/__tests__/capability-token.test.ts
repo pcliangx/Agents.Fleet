@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DevTokenFileTokenSource,
-  KeychainTokenSource,
   type KeychainRunner,
+  KeychainTokenSource,
 } from "../capability-token.js";
 
 // SV1-AUTH-07 / SV1-AUTH-03 — where the shared capability token comes from.
@@ -56,7 +56,11 @@ describe("KeychainTokenSource (SV1-AUTH-03 read path)", () => {
   });
 
   it("throws when the entry is not found (read boundary — write/ACL is signed-binary)", async () => {
-    const src = new KeychainTokenSource("af", "daemon", fakeRunner({ ok: false, code: "notFound" }));
+    const src = new KeychainTokenSource(
+      "af",
+      "daemon",
+      fakeRunner({ ok: false, code: "notFound" }),
+    );
     await expect(src.read()).rejects.toThrow();
   });
 });

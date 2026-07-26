@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  type ProofTranscript,
-  computeProof,
-  verifyProof,
-} from "../capability-proof.js";
+import { computeProof, type ProofTranscript, verifyProof } from "../capability-proof.js";
 
 // RT-HS-04 — the capability proof is a domain-separated HMAC-SHA256 over the
 // negotiation transcript (both nonces + agreed versions + identities), keyed

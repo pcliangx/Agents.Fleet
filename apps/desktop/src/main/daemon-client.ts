@@ -1,16 +1,22 @@
-// DaemonClient — the Electron Main side of the RT-HS handshake. Uses the same
-// shared transport handshake as the daemon and the e2e test. #1 uses a dev
-// proof under AGENTS_FLEET_DEV_AUTH; #11 replaces it with a Keychain-backed MAC.
+// DaemonClient — the Electron Main side of the RT-HS handshake. Computes the
+// client proof over the negotiation transcript and verifies the daemon's proof
+// (RT-HS-04), keyed by the shared capability token. Uses the same shared
+// transport handshake + capability-proof scheme as the daemon and the e2e test.
 
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { ClientHello, DaemonChallenge, DaemonHello, Nonce } from "@agents-fleet/contracts";
-import { NdjsonDecoder } from "@agents-fleet/transport";
+import {
+  computeProof,
+  NdjsonDecoder,
+  type ProofTranscript,
+  verifyProof,
+} from "@agents-fleet/transport";
 
 export interface ConnectOptions {
   readonly socketPath: string;
   readonly clientInstanceId?: string;
-  readonly devProof?: string;
+  readonly token: Uint8Array;
 }
 
 const readOne = (sock: Socket, dec: NdjsonDecoder, timeoutMs = 2000): Promise<unknown> =>
@@ -35,13 +41,14 @@ export const connectDaemon = (opts: ConnectOptions): Promise<DaemonHello> => {
     sock.on("error", reject);
 
     sock.on("connect", async () => {
+      const clientNonce = randomUUID() as Nonce;
       const hello: ClientHello = {
         protocolVersions: [1],
         expectedPlatformMatrixVersion: 0,
         expectedRuntimeLimitProfileVersion: 0,
         clientInstanceId: opts.clientInstanceId ?? "electron-main",
         clientKind: "electron-main",
-        clientNonce: randomUUID() as Nonce,
+        clientNonce,
       };
       sock.write(`${JSON.stringify(hello)}\n`);
 
@@ -50,7 +57,24 @@ export const connectDaemon = (opts: ConnectOptions): Promise<DaemonHello> => {
         reject(new Error("handshake failed (no challenge)"));
         return;
       }
-      sock.write(`${JSON.stringify({ clientProof: opts.devProof ?? "dev-proof" })}\n`);
+      const transcript: ProofTranscript = {
+        clientNonce,
+        daemonNonce: challenge.daemonNonce,
+        selectedProtocolVersion: challenge.selectedProtocolVersion,
+        clientInstanceId: hello.clientInstanceId,
+        clientKind: hello.clientKind,
+        daemonId: challenge.daemonId,
+        daemonGeneration: challenge.daemonGeneration,
+        platformMatrixVersion: challenge.platformMatrixVersion,
+        runtimeLimitProfileVersion: challenge.runtimeLimitProfileVersion,
+      };
+      // RT-HS-04 — verify the daemon proof before trusting the challenge.
+      if (!verifyProof("daemon", transcript, opts.token, challenge.daemonProof)) {
+        reject(new Error("handshake failed (bad daemon proof)"));
+        return;
+      }
+      const clientProof = computeProof("client", transcript, opts.token);
+      sock.write(`${JSON.stringify({ clientProof })}\n`);
       const helloBack = (await readOne(sock, dec)) as DaemonHello;
       resolve(helloBack);
     });
