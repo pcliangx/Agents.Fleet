@@ -47,7 +47,7 @@ or Renderer from acquiring the native addon through a package or source import?
 - A real sandboxed, context-isolated Electron Renderer compromise fixture
   verifies that `require` and `process` are absent and dynamic
   `import("node-pty")` is rejected.
-- Fresh installs use pnpm's managed Node 22.17.1 runtime. Its platform-specific
+- Fresh installs use pnpm's managed Node 24.18.0 runtime (pnpm 11 `runtimeOnFail: download`). Its platform-specific
   artifact URLs and SHA-256 values are locked in `pnpm-lock.yaml`; this avoids
   the incomplete `extract-zip@2.0.1` result observed when Electron 43.2.0's
   postinstall runs under the Host's Node 26.4.0.

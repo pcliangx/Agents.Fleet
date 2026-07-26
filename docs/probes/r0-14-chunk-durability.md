@@ -15,7 +15,7 @@
 > 见「边界与后续」。
 >
 > 实测于 2026-07-26, macOS (Darwin 25.5.0, xnu-12377.121.10, RELEASE_ARM64_T6050) /
-> Apple Silicon / node v22.17.1(pnpm devEngines) / node:sqlite(WAL + synchronous=FULL)。
+> Apple Silicon / node v24.18.0(pnpm devEngines) / node:sqlite(WAL + synchronous=FULL)。
 > 方法: `driver.ts` 把写入方作为真实子进程 spawn(真实 SQLite、真实临时目录文件系统),
 > 在 RT-T-23(chunk checksum / 文件 fsync / rename / 目录 fsync / SQLite index +
 > cursor commit / publish)与 RT-T-24(content checksum / fsync / rename / 目录 fsync /

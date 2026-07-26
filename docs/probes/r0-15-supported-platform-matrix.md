@@ -29,7 +29,7 @@ write when the host is below the floor?
 | `minimumMacOSVersion` | `"26"` (Tahoe) | product decision; current-only target |
 | `minimumHardware` | `MacBookAir10,1` / `M1` / `apple-integrated` / `8589934592` (8 GiB) | M1 MacBook Air = lowest-config Apple Silicon; RT-PERF-08 budget floor |
 | `electronVersion` | `"43.2.0"` | R0-10 (#57) |
-| `nodeRuntimeVersion` | `"22.17.1"` | R0-10 (managed runtime) |
+| `nodeRuntimeVersion` | `"24.18.0"` | R0-10 (managed runtime; #58-followup bumped 22.17.1 → 24.18.0) |
 | `nodePtyArtifactIdentity` | `"node-pty@1.1.0;darwin-arm64"` | R0-10 |
 | `terminalPackageSetIdentity` | 5-package canonical string (SHA-256 `022372a2…8b4546`) | R0-09; verified against `packages/terminal/package.json` |
 | `runtimeLimitProfileVersion` | `0` | pending R0-16 (#15) — see Pending fields |
@@ -112,7 +112,7 @@ Environment (this Mac, above the floor):
 
 - macOS 26.5.2 (25F84), Apple Silicon
 - `Apple M5 Pro`, `Mac17,8`, 48 GiB (51539607552 bytes), arm64
-- Electron 43.2.0, project Node v22.17.1, pnpm 10.33.2
+- Electron 43.2.0, project Node v24.18.0, pnpm 11.17.0
 
 The sampled host passes the gate. The frozen floor itself (M1 / 8 GiB / macOS 26)
 is below this machine; RT-PERF-08 acceptance must be re-run on a real

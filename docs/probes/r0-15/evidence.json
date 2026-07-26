@@ -1,9 +1,9 @@
 {
   "probeId": "r0-15-supported-platform-matrix",
-  "capturedAt": "2026-07-26T14:28:59.656Z",
-  "baseCommit": "b6aff9794c4bb0fc166f821f3f00ef8fbc9ac20d",
+  "capturedAt": "2026-07-26T15:37:29.384Z",
+  "baseCommit": "99fbb6f9b163d22b03a1a080f235c19571666e03",
   "frozenMatrix": {
-    "matrixVersion": 3,
+    "matrixVersion": 4,
     "architecture": "arm64",
     "minimumMacOSVersion": "26",
     "minimumHardware": {
@@ -13,7 +13,7 @@
       "memoryBytes": 8589934592
     },
     "electronVersion": "43.2.0",
-    "nodeRuntimeVersion": "22.17.1",
+    "nodeRuntimeVersion": "24.18.0",
     "nodePtyArtifactIdentity": "node-pty@1.1.0;darwin-arm64",
     "terminalPackageSetIdentity": "@xterm/addon-serialize@0.14.0,@xterm/addon-unicode11@0.9.0,@xterm/addon-webgl@0.19.0,@xterm/headless@6.0.0,@xterm/xterm@6.0.0",
     "runtimeLimitProfileVersion": 1,
