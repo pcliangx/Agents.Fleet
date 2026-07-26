@@ -115,7 +115,8 @@ const main = async (): Promise<void> => {
       platform: process.platform,
       architecture: process.arch,
       osRelease: release(),
-      hostNode: process.version,
+      node: process.version, // managed runtime via pnpm exec tsx (the host Node is not visible from inside the managed process)
+      matrixVersion: FROZEN_PLATFORM_MATRIX.matrixVersion,
       nodePty: FROZEN_PLATFORM_MATRIX.nodePtyArtifactIdentity,
     },
     installedHelper: {

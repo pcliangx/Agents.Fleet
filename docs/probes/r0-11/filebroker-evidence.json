@@ -14,7 +14,7 @@
   "capturedAt": "2026-07-26T08:40:00+08:00",
   "platform": "Darwin PCs-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64",
   "macOS": "26.5.2 (25F84)",
-  "node": "v26.4.0",
+  "node": "v24.18.0",
   "candidateMechanisms": [
     {
       "id": 1,

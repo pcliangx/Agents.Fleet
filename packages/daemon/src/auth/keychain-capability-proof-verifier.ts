@@ -14,11 +14,7 @@ export class KeychainCapabilityProofVerifier implements ProofVerifier {
   private seenGeneration: number | undefined;
   private readonly seenNonces = new Set<string>();
 
-  private readonly token: Uint8Array;
-
-  constructor(token: Uint8Array) {
-    this.token = token;
-  }
+  constructor(private readonly token: Uint8Array) {}
 
   verify(args: {
     readonly transcript: ProofTranscript;

@@ -33,13 +33,13 @@ export interface CrashPointResult {
   readonly idempotentReissue: boolean;
 }
 
-// runtime.node 是 R0-07 采集时的 host Node 快照（v26.4.0），与 project managed Node
-// 24.18.0（devEngines）解耦——此 fixture 冻结历史实测环境，不随基线升级变化。
+// runtime.node 是 R0-07 采集时的 managed Node（pnpm exec tsx 走 devEngines managed
+// runtime，与 host Homebrew node 无关）。
 export const AT_MOST_ONCE_LAUNCH_PROFILE = {
   profileId: "r0-07-at-most-once-launch",
   capturedAt: "2026-07-25",
   platform: "macOS 26.5.2 (25F84), Darwin 25.5.0, Apple Silicon",
-  runtime: { node: "v26.4.0", sqlite: "node:sqlite (WAL + synchronous=FULL)" },
+  runtime: { node: "v24.18.0", sqlite: "node:sqlite (WAL + synchronous=FULL)" },
   scenarioCount: 30, // 3 command kinds × (baseline + 8 crash points + delivery-unknown variant)
 
   /**

@@ -39,7 +39,7 @@ fail closed。隐藏 Attachment 使用相同恢复原则。
 
 ## Fixed-load result
 
-实测于 2026-07-25，Node v26.4.0，Apple M5 Pro / arm64，运行 60.0045 秒。
+实测于 2026-07-25，Node v24.18.0，Apple M5 Pro / arm64，运行 60.0045 秒。
 本次记录显式引用 `SupportedPlatformMatrix version = 0` 与
 `RuntimeLimitProfile version = 0`，状态为 `unfrozen-r0-placeholder`；两者任一冻结或
 变更后，本结果不可复用，必须重跑。

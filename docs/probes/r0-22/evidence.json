@@ -1,14 +1,15 @@
 {
   "probeId": "r0-22-spawn-helper-exec-bit",
-  "capturedAt": "2026-07-26T16:43:19.764Z",
-  "baseCommit": "aade84c0e51ec6b8f2e3a3d7699a169564e78f7d",
+  "capturedAt": "2026-07-26T17:36:17.188Z",
+  "baseCommit": "a464beb34d685f3a871a61146f1fa6d1e3114d75",
   "issue": 22,
   "contracts": ["RT-DIST-01", "SV1-SUPPLY-02", "SV1-SUPPLY-03", "RT-DIST-08"],
   "environment": {
     "platform": "darwin",
     "architecture": "arm64",
     "osRelease": "25.5.0",
-    "hostNode": "v24.18.0",
+    "node": "v24.18.0",
+    "matrixVersion": 4,
     "nodePty": "node-pty@1.1.0;darwin-arm64"
   },
   "installedHelper": {
