@@ -14,7 +14,8 @@ or Renderer from acquiring the native addon through a package or source import?
   R0 node-pty isolation deliverable
 - `docs/specs/runtime-contracts-v1.md`: `RT-MOD-03`, `RT-MOD-13`,
   `RT-TERM-08`, `RT-T-32`
-- `docs/specs/security-v1.md`: `SV1-AUTH-08`, `SV1-AUTH-09`, `SV1-T-14`
+- `docs/specs/security-v1.md`: `SV1-AUTH-08`, `SV1-AUTH-09`,
+  `SV1-SUPPLY-02`, `SV1-T-14`
 - `docs/adr/0003-upstream-first-terminal.md`
 
 ## Implementation
@@ -46,6 +47,13 @@ or Renderer from acquiring the native addon through a package or source import?
 - A real sandboxed, context-isolated Electron Renderer compromise fixture
   verifies that `require` and `process` are absent and dynamic
   `import("node-pty")` is rejected.
+- Fresh installs use pnpm's managed Node 22.17.1 runtime. Its platform-specific
+  artifact URLs and SHA-256 values are locked in `pnpm-lock.yaml`; this avoids
+  the incomplete `extract-zip@2.0.1` result observed when Electron 34.5.8's
+  postinstall runs under the Host's Node 26.4.0.
+- The dependency-build policy allows only `electron@34.5.8` and explicitly
+  denies the current `esbuild` versions plus `node-pty@1.1.0`. A version change
+  therefore returns to the unreviewed, fail-closed state.
 
 ## TDD evidence
 
@@ -54,6 +62,11 @@ pre-agreed seams:
 
 1. Daemon-private `ProcessSupervisor` behavior.
 2. Repository package/import boundary.
+
+Issue #25 added a third regression seam: a fresh worktree must complete the
+default `pnpm install --frozen-lockfile` workflow and then run the real Electron
+Renderer fixture. The fixture remains mandatory; missing Electron artifacts
+are not converted into a skip or a mock.
 
 Targeted result:
 
@@ -80,16 +93,41 @@ Machine-readable observations are in
 Full repository verification:
 
 - `pnpm typecheck`: PASS
-- `pnpm test`: PASS — 22 files / 110 tests
+- `pnpm test`: PASS — 25 files / 133 tests
 - `pnpm lint`: PASS — only the pre-existing repository warning and infos
 - `git diff --check`: PASS
+
+Fresh-install remediation verification:
+
+- Host Node 26.4.0 + no build policy: Electron postinstall is blocked and the
+  Renderer fixture fails before creating a `BrowserWindow` (RED).
+- Host Node 26.4.0 + Electron-only build permission: Electron's
+  `extract-zip@2.0.1` writes only the first archive entry and exits zero; the
+  fixture still fails because `path.txt` is absent (RED).
+- Host Node 26.4.0 starting pnpm + managed Node 22.17.1 + exact
+  `electron@34.5.8` permission: postinstall completes and the real Renderer
+  fixture passes (GREEN).
+- The complete 25-file / 133-test suite also passes in that isolated fresh
+  worktree using the final committed configuration and no CLI configuration
+  override.
+- The official 99,875,523-byte Electron archive matched SHA-256
+  `56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248`
+  before it was admitted to the isolated verification cache.
+
+This probe approves the permission only for development and test provisioning,
+and did not use the downloaded Electron archive as a release input. The current
+repository does not yet mechanically separate a release install path from this
+workspace policy. Future release work must provide that isolation and satisfy
+`SV1-SUPPLY-02` with independently verified offline inputs and no dependency
+lifecycle or network fallback.
 
 ## Native artifact observation
 
 Environment:
 
 - macOS 26.5.2 (25F84), Apple Silicon
-- Node v26.4.0
+- Host Node v26.4.0
+- pnpm-managed project Node v22.17.1
 - pnpm 10.33.2
 - Electron 34.5.8
 - `node-pty` 1.1.0
@@ -119,6 +157,9 @@ The #9 isolation boundary is **PASS**:
 - Electron Main and Renderer cannot acquire it through production source,
   workspace dependencies, Node package resolution, the typed preload surface,
   or a real sandboxed Renderer;
+- a fresh pnpm install uses the locked project runtime and the exact
+  Electron-only development build permission, then executes the real Renderer
+  fixture rather than skipping it;
 - real node-pty output preserves the hostile raw Buffer and checksum; display
   replacement does not mutate the recovery source;
 - the seam fails closed on decoded output.
@@ -137,4 +178,5 @@ This slice does not prove:
 - Input Intent durability and crash boundaries — #16;
 - FileBroker or Electron control boundary hardening — #10;
 - release artifact installation, signing, or helper repair — #22;
+- a mechanically isolated, offline release artifact provisioning path;
 - frozen SupportedPlatformMatrix acceptance — #14.

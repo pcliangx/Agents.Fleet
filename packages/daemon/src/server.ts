@@ -13,6 +13,7 @@ export interface StartServerOptions {
   readonly socketDir: string;
   readonly config: DaemonHandshakeConfig;
   readonly verifier: ProofVerifier;
+  readonly token: Uint8Array;
 }
 
 export interface StartedServer {
@@ -31,7 +32,7 @@ export const startServer = async (opts: StartServerOptions): Promise<StartedServ
       send: (m) => sock.write(`${JSON.stringify(m)}\n`),
       close: () => sock.destroy(),
     };
-    const dispatcher = new ControlDispatcher(opts.config, opts.verifier, sink);
+    const dispatcher = new ControlDispatcher(opts.config, opts.verifier, sink, opts.token);
     sock.on("data", (chunk: Buffer) => {
       decoder.feed(chunk);
       for (const obj of decoder.drain()) dispatcher.onMessage(obj);

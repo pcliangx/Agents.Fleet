@@ -12,10 +12,10 @@ const config = (over: Partial<DaemonHandshakeConfig> = {}): DaemonHandshakeConfi
   daemonGeneration: 1 as never,
   platformMatrixVersion: 0,
   runtimeLimitProfileVersion: 0,
-  daemonNonce: "n" as never,
-  daemonProof: "p",
   ...over,
 });
+
+const pc = { daemonNonce: "n" as never, daemonProof: "p" };
 
 const hello = (over: Partial<ClientHello>): ClientHello => ({
   protocolVersions: [1],
@@ -47,19 +47,23 @@ describe("handshake-state (RT-HS-01..05)", () => {
   });
 
   it("negotiates a challenge on a full match", () => {
-    expect(negotiate(config(), hello({})).kind).toBe("challenge");
+    expect(negotiate(config(), hello({}), pc).kind).toBe("challenge");
   });
 
   it("is fatal UnsupportedVersion with no common protocol (RT-HS-03, no best-effort)", () => {
     expect(
-      negotiate(config({ supportedProtocolVersions: [1] }), hello({ protocolVersions: [2] })).kind,
+      negotiate(config({ supportedProtocolVersions: [1] }), hello({ protocolVersions: [2] }), pc)
+        .kind,
     ).toBe("fatal");
   });
 
   it("is fatal on platform matrix mismatch", () => {
     expect(
-      negotiate(config({ platformMatrixVersion: 1 }), hello({ expectedPlatformMatrixVersion: 0 }))
-        .kind,
+      negotiate(
+        config({ platformMatrixVersion: 1 }),
+        hello({ expectedPlatformMatrixVersion: 0 }),
+        pc,
+      ).kind,
     ).toBe("fatal");
   });
 
@@ -68,6 +72,7 @@ describe("handshake-state (RT-HS-01..05)", () => {
       negotiate(
         config({ runtimeLimitProfileVersion: 1 }),
         hello({ expectedRuntimeLimitProfileVersion: 0 }),
+        pc,
       ).kind,
     ).toBe("fatal");
   });

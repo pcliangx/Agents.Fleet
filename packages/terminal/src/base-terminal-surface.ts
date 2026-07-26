@@ -84,7 +84,7 @@ export abstract class BaseTerminalSurface implements TerminalSurface {
   protected appliedStreamCursor: SessionStreamCursor | undefined;
 
   constructor(
-    private readonly term: ReadableXtermTerminal,
+    protected readonly term: ReadableXtermTerminal,
     private readonly maxPendingWriteBytes: number = Number.POSITIVE_INFINITY,
   ) {}
 

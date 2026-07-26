@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DevTokenFileTokenSource } from "@agents-fleet/transport";
 import { app, BrowserWindow, dialog, session } from "electron";
 import { APP_ORIGIN, installAppProtocol, registerAppSchemePrivileges } from "./app-protocol.js";
 import { installContentSecurityPolicy, RENDERER_CSP } from "./csp.js";
@@ -81,7 +82,7 @@ const createWindow = (devUrl: string | undefined): BrowserWindow => {
   return win;
 };
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!enforceReleaseFusePosture()) return;
   const defaultSession = session.defaultSession;
   installAppProtocol({
@@ -102,11 +103,26 @@ app.whenReady().then(() => {
   });
 
   const socketPath = process.env.AGENTS_FLEET_SOCKET;
+  const devTokenPath = process.env.AGENTS_FLEET_DEV_TOKEN;
   if (!socketPath) {
     connectionInfo = "no daemon socket (set AGENTS_FLEET_SOCKET)";
     return;
   }
-  connectDaemon({ socketPath, clientInstanceId: randomUUID() })
+  if (!devTokenPath) {
+    connectionInfo = "no dev token (set AGENTS_FLEET_DEV_TOKEN)";
+    return;
+  }
+  // RT-HS-04 — dev path reads the shared capability token from a 0600 file
+  // (SV1-AUTH-07). The prod path reads the Keychain entry via the same access
+  // group as the Daemon (signed-binary boundary, R0-02).
+  let token: Uint8Array;
+  try {
+    token = await new DevTokenFileTokenSource(devTokenPath).read();
+  } catch (err) {
+    connectionInfo = `token error: ${String(err)}`;
+    return;
+  }
+  connectDaemon({ socketPath, token, clientInstanceId: randomUUID() })
     .then((hello) => {
       connectionInfo = `Connected to daemon — protocol v${hello.selectedProtocolVersion}, generation ${hello.daemonGeneration}`;
     })
