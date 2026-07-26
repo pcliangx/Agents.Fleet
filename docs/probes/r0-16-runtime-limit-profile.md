@@ -58,14 +58,14 @@ controlLineBytes`；`attachmentQueueBytes ≥ streamFramePayloadBytes`；
   `FROZEN_RUNTIME_LIMIT_PROFILE` + `RUNTIME_LIMIT_PROFILE_VERSION`（= 1）。
   类型仍在 `limits.ts`。
 - `packages/contracts/src/frozen-performance-budget.ts` —
-  `FROZEN_PERFORMANCE_BUDGET`（= 1），引用 matrix v2 / profile v1。
+  `FROZEN_PERFORMANCE_BUDGET`（= 1），引用 matrix v4 / profile v1。
 - `packages/contracts/src/limit-guard.ts` — 纯、Node-free 边界守卫
   `checkLimit` / `checkTerminalLimit`：cap 为闭区间（limit - 1 / limit 通过、
   limit + 1 违规）；NaN / Infinity / 负数 fail closed（不可信长度字段绝不
   决定预分配）。违规由调用方按表面映射为 `InvalidRequest` /
   `StoragePressure`（RT-LIMIT-02）。
 - `packages/contracts/src/frozen-platform-matrix.ts` — 按 RT-DIST-08 升
-  `matrixVersion = 2`（`runtimeLimitProfileVersion = 1`）。
+  `matrixVersion = 4`（R0-16 时 v2；#57→v3 Electron 43；#59→v4 Node 24/pnpm 11；`runtimeLimitProfileVersion = 1` 不变）。
 - 版本握手全链路从 placeholder 0 切换到冻结常量：Daemon config
   （`packages/daemon/src/version.ts`）、Electron Main `ClientHello`
   （`apps/desktop/src/main/daemon-client.ts`）、capability-proof transcript
@@ -88,7 +88,7 @@ controlLineBytes`；`attachmentQueueBytes ≥ streamFramePayloadBytes`；
 2. **S2 limit guard** — `limit-guard.test.ts`（13 tests）：limit - 1 /
    limit / limit + 1、0、恶意溢出、NaN / Infinity / 负数 fail closed，
    profile 与 terminal 两个作用域。
-3. **S3 握手版本一致性** — matrix v2 / profile v1 贯通既有握手、e2e、
+3. **S3 握手版本一致性** — matrix v4 / profile v1 贯通既有握手、e2e、
    capability-proof、daemon config 与 R0-06 provenance 测试（这些测试即
    验收：版本不匹配时握手 fatal）。
 4. **S4 性能预算冻结** — `frozen-performance-budget.test.ts`（7 tests）：
@@ -109,7 +109,7 @@ Full repository verification:
 
 The R0-16 freeze is **PASS**: a versioned `RuntimeLimitProfile` (v1) and
 performance budget (v1) are frozen with documented provenance; the matrix
-bumped to v2 per RT-DIST-08; the handshake, capability proof, daemon config
+bumped per RT-DIST-08 (v2 at R0-16; →v3 via #57 Electron 43; →v4 via #59 Node 24/pnpm 11; profile v1 unchanged); the handshake, capability proof, daemon config
 and R0-06 provenance carry the frozen versions instead of a placeholder; and
 the shared pure limit guard proves the RT-LIMIT-02 boundary semantics.
 

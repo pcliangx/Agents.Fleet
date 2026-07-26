@@ -38,10 +38,10 @@ Electron 出厂 dev 二进制的默认 fuse 姿态(wire `101100011`,9 位 fuse;i
    sender 也拒绝(fail closed 方向,但会误伤)。`ipc-guard.ts` 改为显式比较 protocol + host,
    并有回归测试。任何未来在 Main 进程做 origin 判断的代码都不能依赖 `URL.origin`。
 2. **fuse wire 格式(实测确认)**:Electron Framework 二进制中 sentinel `dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX`
-   之后是 1 字节 version(=1)+ 1 字节 length(=8)+ 8 个 ASCII `0`/`1` 标志,顺序即 `FuseKey` 枚举序
+   之后是 1 字节 version(=1)+ 1 字节 length(=9)+ 9 个 ASCII `0`/`1` 标志,顺序即 `FuseKey` 枚举序
    (RunAsNode, EnableCookieEncryption, EnableNodeOptionsEnvironmentVariable, EnableNodeCliInspectArguments,
    EnableEmbeddedAsarIntegrityValidation, OnlyLoadAppFromAsar, LoadBrowserProcessSpecificV8Snapshot,
-   GrantFileProtocolExtraPrivileges)。dev 二进制实测为 `10110001`。
+   GrantFileProtocolExtraPrivileges, WasmTrapHandlers)。dev 二进制实测为 `101100011`。
 
 ## 实现(Main 侧,`apps/desktop/src/main/`)
 
@@ -96,7 +96,7 @@ dev-only 与 release 形态差异在测试中被显式区分:release 走 af-app 
 
 ## fuse 实测(SV1-ELECTRON-05)
 
-| 项 | dev 出厂二进制(`10110001`) | 翻转后克隆(注入类 fuse 关) |
+| 项 | dev 出厂二进制(`101100011`) | 翻转后克隆(注入类 fuse 关) |
 | --- | :-: | :-: |
 | `ELECTRON_RUN_AS_NODE=1 electron -p "40+2"` | **输出 `42`(可注入)** | 不执行 payload(报错/空转,非 0 退出) |
 | `NODE_OPTIONS=--require marker.cjs` | **Main 进程被注入,marker 写入** | marker 不存在,app 正常启动退出 0 |

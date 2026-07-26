@@ -33,6 +33,8 @@ export interface CrashPointResult {
   readonly idempotentReissue: boolean;
 }
 
+// runtime.node 是 R0-07 采集时的 host Node 快照（v26.4.0），与 project managed Node
+// 24.18.0（devEngines）解耦——此 fixture 冻结历史实测环境，不随基线升级变化。
 export const AT_MOST_ONCE_LAUNCH_PROFILE = {
   profileId: "r0-07-at-most-once-launch",
   capturedAt: "2026-07-25",

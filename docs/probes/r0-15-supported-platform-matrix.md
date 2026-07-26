@@ -18,13 +18,13 @@ write when the host is below the floor?
   RT-DIST-08, RT-DIST-09, RT-PERF-08
 - `docs/specs/security-v1.md`: SV1-SUPPLY-01, SV1-SUPPLY-02, SV1-T-21
 
-## Frozen matrix (matrixVersion 1)
+## Frozen matrix (matrixVersion 4)
 
 `packages/contracts/src/frozen-platform-matrix.ts` freezes:
 
 | Field | Value | Provenance |
 | --- | --- | --- |
-| `matrixVersion` | `1` | this slice |
+| `matrixVersion` | `4` | this slice (#57→v3 Electron 43; #59→v4 Node 24/pnpm 11) |
 | `architecture` | `arm64` | PLATFORM-1 |
 | `minimumMacOSVersion` | `"26"` (Tahoe) | product decision; current-only target |
 | `minimumHardware` | `MacBookAir10,1` / `M1` / `apple-integrated` / `8589934592` (8 GiB) | M1 MacBook Air = lowest-config Apple Silicon; RT-PERF-08 budget floor |
@@ -32,13 +32,13 @@ write when the host is below the floor?
 | `nodeRuntimeVersion` | `"24.18.0"` | R0-10 (managed runtime; #58-followup bumped 22.17.1 → 24.18.0) |
 | `nodePtyArtifactIdentity` | `"node-pty@1.1.0;darwin-arm64"` | R0-10 |
 | `terminalPackageSetIdentity` | 5-package canonical string (SHA-256 `022372a2…8b4546`) | R0-09; verified against `packages/terminal/package.json` |
-| `runtimeLimitProfileVersion` | `0` | pending R0-16 (#15) — see Pending fields |
+| `runtimeLimitProfileVersion` | `1` | R0-16 frozen (#15) |
 | `rendererPaths` | `["WebGL2","DOM"]` | spec |
 | `keychainPolicyVersion` | `1` | R0-12 capability-proof scheme (#11); version pinned here |
 | `signingAndNotarizationPolicyVersion` | `0` | pending R5 distribution |
 | `evidenceRefs` | RT-DIST-08/09, PLATFORM-1, RT-T-45 + probe paths | spec |
 
-`PLATFORM_MATRIX_VERSION` (= 1) replaces the former placeholder and is now the
+`PLATFORM_MATRIX_VERSION` (= 4) replaces the former placeholder and is now the
 value carried by the daemon handshake config, the Electron Main `ClientHello`
 (`expectedPlatformMatrixVersion`), the capability-proof transcript, and the R0-06
 benchmark provenance.
@@ -90,7 +90,7 @@ Targeted results (`packages/contracts/src/__tests__/`):
   rejects Intel / Qualcomm / null
 - the sampler parses real captured outputs and yields null macOS fields off darwin
 - the frozen matrix round-trips: a host built from the matrix's own declared floor
-  passes the gate; `matrixVersion === 1`; the terminal identity equals the
+  passes the gate; `matrixVersion === 4`; the terminal identity equals the
   R0-09 5-package set
 
 Machine-readable observations are in `docs/probes/r0-15/evidence.json`.

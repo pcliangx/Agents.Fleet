@@ -15,9 +15,9 @@
     "RT-T-23",
     "RT-T-24"
   ],
-  "capturedAt": "2026-07-26T03:46:17.215Z",
+  "capturedAt": "2026-07-26T16:43:15.155Z",
   "platform": "Darwin PCs-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64",
-  "node": "v22.17.1",
+  "node": "v24.18.0",
   "scenarioCount": 15,
   "allChecksPass": true,
   "journalScenarios": [
@@ -61,8 +61,8 @@
         "adoptedOrphans": [],
         "isolatedOrphans": [
           {
-            "originalPath": "chunks/ses-crash/1/.tmp-5585-058c0f83-4396-481c-9174-8bebcdce769a",
-            "quarantinePath": "quarantine/ses-crash-1-tmp-5585-058c0f83-4396-481c-9174-8bebcdce769a"
+            "originalPath": "chunks/ses-crash/1/.tmp-5231-2299a79c-cde0-470e-8ce0-4dddb1874052",
+            "quarantinePath": "quarantine/ses-crash-1-tmp-5231-2299a79c-cde0-470e-8ce0-4dddb1874052"
           }
         ],
         "dataGaps": [],
@@ -95,8 +95,8 @@
         "adoptedOrphans": [],
         "isolatedOrphans": [
           {
-            "originalPath": "chunks/ses-crash/1/.tmp-5587-6ef2aa6d-4e8e-4fc5-b012-036cc4e2d65b",
-            "quarantinePath": "quarantine/ses-crash-1-tmp-5587-6ef2aa6d-4e8e-4fc5-b012-036cc4e2d65b"
+            "originalPath": "chunks/ses-crash/1/.tmp-5233-8e6b02a5-ea24-4d67-9d48-3ef3f67fc98d",
+            "quarantinePath": "quarantine/ses-crash-1-tmp-5233-8e6b02a5-ea24-4d67-9d48-3ef3f67fc98d"
           }
         ],
         "dataGaps": [],
@@ -294,8 +294,8 @@
         "dataGaps": [],
         "isolatedOrphans": [
           {
-            "originalPath": "input-intents/.tmp-5601-7ef0925c-ecda-4a19-a767-f5d0d1bbf4ae",
-            "quarantinePath": "quarantine/input-intent-tmp-5601-7ef0925c-ecda-4a19-a767-f5d0d1bbf4ae"
+            "originalPath": "input-intents/.tmp-5249-3b838045-d7c0-40f6-a926-62b3a9435c45",
+            "quarantinePath": "quarantine/input-intent-tmp-5249-3b838045-d7c0-40f6-a926-62b3a9435c45"
           }
         ]
       },
@@ -328,8 +328,8 @@
         "dataGaps": [],
         "isolatedOrphans": [
           {
-            "originalPath": "input-intents/.tmp-5603-011a21d6-2bb7-46b1-8260-a2404f560106",
-            "quarantinePath": "quarantine/input-intent-tmp-5603-011a21d6-2bb7-46b1-8260-a2404f560106"
+            "originalPath": "input-intents/.tmp-5251-37c52b9d-9768-4efa-9ee8-a04e7e053d1c",
+            "quarantinePath": "quarantine/input-intent-tmp-5251-37c52b9d-9768-4efa-9ee8-a04e7e053d1c"
           }
         ]
       },

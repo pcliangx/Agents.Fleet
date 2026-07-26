@@ -19,7 +19,11 @@ export interface CapabilityTokenSource {
 // SV1-AUTH-07 — dev token file. Must be 0600 and must not reuse a production
 // Keychain entry.
 export class DevTokenFileTokenSource implements CapabilityTokenSource {
-  constructor(private readonly path: string) {}
+  private readonly path: string;
+
+  constructor(path: string) {
+    this.path = path;
+  }
 
   async read(): Promise<Uint8Array> {
     const st = await stat(this.path);

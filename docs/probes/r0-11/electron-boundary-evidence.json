@@ -20,7 +20,7 @@
       "IPC is serviced only for the expected webContents top frame at the app origin; unexpected webContents, subframe, destroyed sender, navigated frame and foreign origin are denied; arbitrary channel names hit 'No handler registered' (SV1-ELECTRON-02/06)",
       "navigation, window.open, target=_blank, webview attach, download and permission requests are all denied by default in a real Electron run (SV1-ELECTRON-03)",
       "strict CSP blocks eval, Function constructor, external script/fetch and inline script while allowing 'self' assets (SV1-ELECTRON-04)",
-      "the dev Electron Framework binary carries fuse wire '10110001' (RunAsNode / NODE_OPTIONS / CLI-inspect enabled) and is flagged non-compliant by verifyReleaseFuses; behaviorally, the unfused binary honors ELECTRON_RUN_AS_NODE and NODE_OPTIONS --require injection, while an ad-hoc-resigned clone with the three injection fuses flipped off refuses both and still boots (SV1-ELECTRON-05)",
+      "the dev Electron Framework binary carries fuse wire '101100011' (RunAsNode / NODE_OPTIONS / CLI-inspect enabled, 9 fuses incl. index-8 WasmTrapHandlers added in 43.2.0) and is flagged non-compliant by verifyReleaseFuses; behaviorally, the unfused binary honors ELECTRON_RUN_AS_NODE and NODE_OPTIONS --require injection, while an ad-hoc-resigned clone with the three injection fuses flipped off refuses both and still boots (SV1-ELECTRON-05)",
       "a wrong-fuse or unparseable binary fails closed in release verification (SV1-T-16/SV1-T-21, wire level)"
     ],
     "doesNotProve": [
@@ -33,15 +33,15 @@
     ]
   },
   "environment": {
-    "capturedAt": "2026-07-26T14:28:57Z",
+    "capturedAt": "2026-07-26T16:47:14Z",
     "os": "macOS 26.5.2 (25F84)",
     "kernel": "Darwin 25.5.0 arm64",
     "cpu": "Apple M5 Pro",
-    "node": "v26.4.0",
+    "node": "v24.18.0",
     "electron": "43.2.0",
     "electronFrameworkBinarySha256Prefix": "ed19685a25af0788",
-    "platformMatrixVersion": 3,
-    "provenanceStatus": "matrix-frozen-v3"
+    "platformMatrixVersion": 4,
+    "provenanceStatus": "matrix-frozen-v4"
   },
   "fixtures": {
     "electronBoundary": {
@@ -102,7 +102,7 @@
     },
     "fuses": {
       "command": "pnpm vitest run apps/desktop/src/__tests__/fuses.test.ts",
-      "devBinaryWire": "10110001",
+      "devBinaryWire": "101100011",
       "devBinaryVerdict": "non-compliant (RunAsNode, EnableNodeOptionsEnvironmentVariable, EnableNodeCliInspectArguments, GrantFileProtocolExtraPrivileges on; asar integrity off)",
       "controlUnfusedBinary": {
         "electronRunAsNodeEvaluatesPayload": true,

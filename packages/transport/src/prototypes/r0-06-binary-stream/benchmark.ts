@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { cpus, freemem, release, totalmem } from "node:os";
 import { dirname } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { pathToFileURL } from "node:url";
 import {
   type Generation,
   PLATFORM_MATRIX_VERSION,
@@ -568,4 +569,7 @@ const main = async (): Promise<void> => {
   if (result.verdict !== "PASS") process.exitCode = 1;
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) await main();
+// pathToFileURL handles paths with spaces / non-ASCII / Windows drive letters
+// that a naive `file://${process.argv[1]}` template would percent-encode-mismatch.
+const entry = process.argv[1];
+if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) await main();

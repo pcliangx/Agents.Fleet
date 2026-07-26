@@ -104,7 +104,7 @@ Fresh-install remediation verification:
 - Host Node 26.4.0 + Electron-only build permission: Electron's
   `extract-zip@2.0.1` writes only the first archive entry and exits zero; the
   fixture still fails because `path.txt` is absent (RED).
-- Host Node 26.4.0 starting pnpm + managed Node 22.17.1 + exact
+- Host Node 26.4.0 starting pnpm + managed Node 24.18.0 + exact
   `electron@43.2.0` permission: postinstall completes and the real Renderer
   fixture passes (GREEN).
 - The complete 25-file / 133-test suite also passes in that isolated fresh
@@ -127,8 +127,8 @@ Environment:
 
 - macOS 26.5.2 (25F84), Apple Silicon
 - Host Node v26.4.0
-- pnpm-managed project Node v22.17.1
-- pnpm 10.33.2
+- pnpm-managed project Node v24.18.0
+- pnpm 11.17.0
 - Electron 43.2.0
 - `node-pty` 1.1.0
 

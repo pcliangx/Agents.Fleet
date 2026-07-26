@@ -1,18 +1,18 @@
 {
   "probeId": "r0-22-spawn-helper-exec-bit",
-  "capturedAt": "2026-07-26T03:08:16.504Z",
-  "baseCommit": "c786a8c080b2dd6eeefb4407d44302291c4b230f",
+  "capturedAt": "2026-07-26T16:43:19.764Z",
+  "baseCommit": "aade84c0e51ec6b8f2e3a3d7699a169564e78f7d",
   "issue": 22,
   "contracts": ["RT-DIST-01", "SV1-SUPPLY-02", "SV1-SUPPLY-03", "RT-DIST-08"],
   "environment": {
     "platform": "darwin",
     "architecture": "arm64",
     "osRelease": "25.5.0",
-    "hostNode": "v22.17.1",
+    "hostNode": "v24.18.0",
     "nodePty": "node-pty@1.1.0;darwin-arm64"
   },
   "installedHelper": {
-    "path": "/Users/pc2026/Documents/DevWorktrees/Agents.Fleet_glm/.claude/worktrees/node-pty-spawn-helper-22/node_modules/.pnpm/node-pty@1.1.0/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+    "path": "/Users/pc2026/Documents/Agents.Fleet/node_modules/.pnpm/node-pty@1.1.0/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
     "exists": true,
     "mode": "0o644",
     "architecture": "arm64",
