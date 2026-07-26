@@ -7,7 +7,7 @@
 > RT-LAUNCH-07 的 per-Session supervisor 归属、真实 Agent 经 node-pty 启动(R0-09/R1)、
 > SQLite 事务与 chunk store 的交互(R0-14)**未在本次覆盖**, 见「边界与后续」。
 >
-> 实测于 2026-07-25, macOS 26.5.2 (25F84) / Darwin 25.5.0 / Apple Silicon / node v26.4.0 /
+> 实测于 2026-07-25, macOS 26.5.2 (25F84) / Darwin 25.5.0 / Apple Silicon / node v24.18.0 /
 > node:sqlite(WAL + synchronous=FULL)。
 > 方法: `driver.ts` 把 coordinator 作为真实子进程 spawn(真实 SQLite、真实 inert bootstrap
 > 与 fake agent 子进程), 在 RT-LAUNCH-01..08 **每两个步骤之间**(含 RT-LAUNCH-08 的

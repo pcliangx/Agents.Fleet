@@ -1,6 +1,8 @@
 {
   "probeId": "r0-10-node-pty-isolation",
-  "capturedAt": "2026-07-25T23:50:18Z",
+  "capturedAt": "2026-07-26T16:47:14Z",
+  "originalProbeCapturedAt": "2026-07-25T23:50:18Z",
+  "syncNote": "环境字段同步至 SupportedPlatformMatrix v4（#57 Electron 43.2.0 → v3；#59 Node 24.18.0/pnpm 11.17.0 → v4）。node-pty 1.1.0 隔离行为由 N-API ABI 稳定性保证，daemon 测试套件覆盖；本探针无独立 generator，未完整重跑。",
   "baseCommit": "ef19471",
   "freshInstallRemediationBase": "86ee68f",
   "environment": {
@@ -8,8 +10,8 @@
     "architecture": "arm64",
     "macOS": "26.5.2 (25F84)",
     "hostNode": "v26.4.0",
-    "projectNode": "v22.17.1",
-    "pnpm": "10.33.2",
+    "projectNode": "v24.18.0",
+    "pnpm": "11.17.0",
     "electron": "43.2.0",
     "electronArtifactSha256": "ad4a0ae3c37ee05aa06c7e2ed0627608389790f0505a2b0d20319efbe33ffe28",
     "nodePty": "1.1.0"
@@ -83,13 +85,13 @@
   },
   "dependencyBuildPolicy": {
     "hostRuntime": "v26.4.0",
-    "managedRuntime": "v22.17.1",
+    "managedRuntime": "v24.18.0",
     "managedRuntimeLockedWithPlatformChecksums": true,
     "allowed": ["electron@43.2.0"],
     "denied": ["esbuild@0.25.12", "esbuild@0.28.1", "node-pty@1.1.0"],
     "unreviewedVersionsFailClosed": true,
-    "electronArtifactSize": 99875523,
-    "electronArtifactSha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248",
+    "electronArtifactSize": 122090802,
+    "electronArtifactSha256": "ad4a0ae3c37ee05aa06c7e2ed0627608389790f0505a2b0d20319efbe33ffe28",
     "hostNodeElectronExtraction": {
       "result": "INCOMPLETE_WITH_ZERO_EXIT",
       "lastExtractedEntry": "LICENSES.chromium.html",

@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FROZEN_PLATFORM_MATRIX } from "@agents-fleet/contracts";
 import {
   allIntentChecksPass,
   allJournalChecksPass,
@@ -80,6 +81,7 @@ const main = async (): Promise<void> => {
     capturedAt: new Date().toISOString(),
     platform: execFileSync("uname", ["-a"], { encoding: "utf8" }).trim(),
     node: process.version,
+    matrixVersion: FROZEN_PLATFORM_MATRIX.matrixVersion,
     scenarioCount: journalScenarios.length + intentScenarios.length,
     allChecksPass:
       journalScenarios.every(allJournalChecksPass) && intentScenarios.every(allIntentChecksPass),

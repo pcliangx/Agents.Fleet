@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FROZEN_PLATFORM_MATRIX } from "@agents-fleet/contracts";
 import { PROBE_POLICY, runNotificationGatewayProbe } from "./driver.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ const evidence = {
     kernel: execFileSync("uname", ["-s", "-r", "-m"], { encoding: "utf8" }).trim(),
   },
   node: process.version,
+  matrixVersion: FROZEN_PLATFORM_MATRIX.matrixVersion,
   sqlite: "node:sqlite (WAL + synchronous=FULL)",
   policyFixture: {
     normative: false,

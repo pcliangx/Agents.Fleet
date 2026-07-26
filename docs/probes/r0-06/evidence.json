@@ -12,22 +12,22 @@
     "doesNotProve": [
       "chunk durability, fsync ordering, or published-frame crash recovery (R0-14)",
       "xterm.js WebGL2/DOM rendering or Snapshot parser safety (R0-08/R0-09)",
-      "frozen RuntimeLimitProfile or SupportedPlatformMatrix release performance budgets (R0-15/R0-16)"
+      "release performance acceptance on the matrix floor fixture (M1 / 8 GiB) — the RuntimeLimitProfile and SupportedPlatformMatrix are frozen (R0-15/R0-16), but this host is above the floor and results stay non-reusable for acceptance"
     ]
   },
   "environment": {
-    "capturedAt": "2026-07-25T13:33:15.138Z",
-    "node": "v26.4.0",
+    "capturedAt": "2026-07-26T17:49:49.842Z",
+    "node": "v24.18.0",
     "platform": "darwin",
     "architecture": "arm64",
     "osRelease": "25.5.0",
     "cpu": "Apple M5 Pro",
     "logicalCpuCount": 18,
     "totalMemoryBytes": 51539607552,
-    "freeMemoryBytesAtEnd": 3563798528,
-    "platformMatrixVersion": 0,
-    "runtimeLimitProfileVersion": 0,
-    "provenanceStatus": "unfrozen-r0-placeholder",
+    "freeMemoryBytesAtEnd": 3748069376,
+    "platformMatrixVersion": 4,
+    "runtimeLimitProfileVersion": 1,
+    "provenanceStatus": "matrix-and-profile-frozen",
     "resultReusableAfterProfileOrMatrixFreeze": false
   },
   "configuration": {
@@ -144,12 +144,12 @@
     ]
   },
   "measurements": {
-    "actualDurationSeconds": 60.004467833,
-    "productionDurationSeconds": 60.004327792000005,
+    "actualDurationSeconds": 60.004507208999996,
+    "productionDurationSeconds": 60.00409212499999,
     "decodedFrames": 6240,
     "sourcePayloadBytes": 408944640,
     "wireBytes": 409607793,
-    "achievedPayloadBytesPerSecond": 6815252.416751879,
+    "achievedPayloadBytesPerSecond": 6815279.18376117,
     "targetPayloadBytesPerSecond": 6815744,
     "productionCrossSessionFrames": 0,
     "productionUnknownSessionFrames": 0,
@@ -157,13 +157,13 @@
     "sequenceErrors": 0,
     "queueLimitViolations": 0,
     "resyncCount": 2,
-    "startedRssBytes": 82853888,
-    "peakRssBytes": 102318080,
-    "rssGrowthBytes": 19464192,
-    "eventLoopDelayP50Ms": 10.313727,
-    "eventLoopDelayP95Ms": 11.403263,
-    "eventLoopDelayP99Ms": 11.460607,
-    "eventLoopDelayMaxMs": 11.739135
+    "startedRssBytes": 68141056,
+    "peakRssBytes": 84410368,
+    "rssGrowthBytes": 16269312,
+    "eventLoopDelayP50Ms": 10.362879,
+    "eventLoopDelayP95Ms": 11.370495,
+    "eventLoopDelayP99Ms": 11.509759,
+    "eventLoopDelayMaxMs": 23.494655
   },
   "boundaryProbes": {
     "byteCap": {

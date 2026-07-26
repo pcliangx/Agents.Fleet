@@ -1,7 +1,7 @@
 {
   "probeId": "r0-15-supported-platform-matrix",
-  "capturedAt": "2026-07-26T15:37:29.384Z",
-  "baseCommit": "99fbb6f9b163d22b03a1a080f235c19571666e03",
+  "capturedAt": "2026-07-26T16:43:01.966Z",
+  "baseCommit": "aade84c0e51ec6b8f2e3a3d7699a169564e78f7d",
   "frozenMatrix": {
     "matrixVersion": 4,
     "architecture": "arm64",

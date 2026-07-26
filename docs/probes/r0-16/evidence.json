@@ -1,7 +1,7 @@
 {
   "probeId": "r0-16-runtime-limit-profile",
-  "capturedAt": "2026-07-26T03:41:49.373Z",
-  "baseCommit": "3380594283344dceea4687203d3fdbb26b670331",
+  "capturedAt": "2026-07-26T16:43:15.809Z",
+  "baseCommit": "aade84c0e51ec6b8f2e3a3d7699a169564e78f7d",
   "frozenProfile": {
     "profileVersion": 1,
     "controlLineBytes": 2097152,
@@ -46,7 +46,7 @@
   },
   "frozenPerformanceBudget": {
     "budgetVersion": 1,
-    "matrixVersion": 2,
+    "matrixVersion": 4,
     "runtimeLimitProfileVersion": 1,
     "fixedLoad": {
       "aliveSessions": 10,

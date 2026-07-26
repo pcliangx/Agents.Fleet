@@ -9,7 +9,7 @@
 > 的 Git 操作面归 slice 内其他部分 / R1）。
 >
 > 实测于 2026-07-26，macOS 26.5.2 (25F84) / Darwin 25.5.0 / Apple Silicon (arm64) /
-> node v26.4.0。竞态 fixture 用**独立攻击者进程**高频 rename/symlink 替换（OS 级真并发，
+> node v24.18.0。竞态 fixture 用**独立攻击者进程**高频 rename/symlink 替换（OS 级真并发，
 > 不受 Node 单线程交错限制）。证据：[`r0-11/filebroker-evidence.json`](r0-11/filebroker-evidence.json)。
 
 ## 结论（Verdict）
