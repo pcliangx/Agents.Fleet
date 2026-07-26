@@ -1,0 +1,18 @@
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  margin: 0;
+  padding: 2rem;
+  color: #eee;
+  background: #1e1e1e;
+}
+
+h1 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+#status {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}

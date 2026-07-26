@@ -1,0 +1,139 @@
+{
+  "prototype": "R0-11-slice-A",
+  "verdict": "PASS",
+  "question": "Can the Electron Main boundary (private app protocol, strict CSP, sender/frame IPC validation, deny-by-default navigation/window/webview/download/permission, release fuse verification) keep a compromised renderer from escaping, proven with real Electron fixtures?",
+  "contractIds": [
+    "SV1-ELECTRON-01",
+    "SV1-ELECTRON-02",
+    "SV1-ELECTRON-03",
+    "SV1-ELECTRON-04",
+    "SV1-ELECTRON-05",
+    "SV1-ELECTRON-06",
+    "SV1-T-04",
+    "SV1-T-14",
+    "SV1-T-16",
+    "SV1-T-21"
+  ],
+  "scope": {
+    "proves": [
+      "af-app protocol serves only real files inside the renderer asset root; traversal, encoded traversal, backslash, NUL, host spoofing and symlink escape return 403/404 with no secret leak and no network fallback (SV1-ELECTRON-01)",
+      "IPC is serviced only for the expected webContents top frame at the app origin; unexpected webContents, subframe, destroyed sender, navigated frame and foreign origin are denied; arbitrary channel names hit 'No handler registered' (SV1-ELECTRON-02/06)",
+      "navigation, window.open, target=_blank, webview attach, download and permission requests are all denied by default in a real Electron run (SV1-ELECTRON-03)",
+      "strict CSP blocks eval, Function constructor, external script/fetch and inline script while allowing 'self' assets (SV1-ELECTRON-04)",
+      "the dev Electron Framework binary carries fuse wire '10110001' (RunAsNode / NODE_OPTIONS / CLI-inspect enabled) and is flagged non-compliant by verifyReleaseFuses; behaviorally, the unfused binary honors ELECTRON_RUN_AS_NODE and NODE_OPTIONS --require injection, while an ad-hoc-resigned clone with the three injection fuses flipped off refuses both and still boots (SV1-ELECTRON-05)",
+      "a wrong-fuse or unparseable binary fails closed in release verification (SV1-T-16/SV1-T-21, wire level)"
+    ],
+    "doesNotProve": [
+      "OnlyLoadAppFromAsar / EnableEmbeddedAsarIntegrityValidation behavior — needs a packaged, signed, notarized release build (SV1-SUPPLY-03); verified at wire level only",
+      "NODE_EXTRA_CA_CERTS injection — no dedicated Electron fuse exists; mitigation path must be decided at distribution level",
+      "preload MessagePort / Attachment binding (second half of SV1-ELECTRON-06) — no streams exist in R0",
+      "IPC payload schema / size / rate limits and per-route capability (SV1-ELECTRON-02 tail) — Daemon-side, pending RuntimeLimitProfile freeze",
+      "SV1-ELECTRON-07 confirmation surfaces (Trust / destructive / Launch Confirmation) — separate slice",
+      "Daemon-side schema enforcement half of SV1-T-04 — covered by transport/contracts slices, not this one"
+    ]
+  },
+  "environment": {
+    "capturedAt": "2026-07-26T00:53:12Z",
+    "os": "macOS 26.5.2 (25F84)",
+    "kernel": "Darwin 25.5.0 arm64",
+    "cpu": "Apple M5 Pro",
+    "node": "v26.4.0",
+    "electron": "34.5.8",
+    "electronFrameworkBinarySha256Prefix": "cebc1de6c533accc",
+    "platformMatrixVersion": 0,
+    "provenanceStatus": "unfrozen-r0-placeholder"
+  },
+  "fixtures": {
+    "electronBoundary": {
+      "command": "pnpm vitest run apps/desktop/src/__tests__/electron-boundary.test.ts",
+      "spawnedElectron": true,
+      "results": {
+        "protocol": {
+          "asset": { "status": 200, "leakedSecret": false },
+          "traversal": {
+            "status": 404,
+            "leakedSecret": false,
+            "note": "literal '..' normalized by Chromium URL parser before the handler"
+          },
+          "encodedTraversal": { "status": 404, "leakedSecret": false },
+          "encodedBackslash": { "status": 403, "leakedSecret": false },
+          "nulByte": { "status": 403, "leakedSecret": false },
+          "hostSpoof": { "status": 403, "leakedSecret": false },
+          "symlinkEscape": { "status": 403, "leakedSecret": false },
+          "missing": { "status": 404, "leakedSecret": false },
+          "directory": { "status": 403, "leakedSecret": false }
+        },
+        "ipcTrustedWindow": {
+          "declaredChannel": { "ok": true, "value": "AF-SECRET-7f3a9-conn" },
+          "genericChannel": { "ok": false, "error": "No handler registered for 'af:arbitrary'" }
+        },
+        "ipcUnexpectedWebContents": { "ok": false, "error": "IPC denied (unexpected webContents)" },
+        "ipcSubframe": {
+          "subframeVerdict": { "trusted": false, "reason": "subframe sender" },
+          "mainFrameVerdict": { "trusted": true }
+        },
+        "ipcDestroyedSender": { "trusted": false, "reason": "destroyed sender" },
+        "ipcNavigatedFrame": { "ok": false, "error": "IPC denied (unexpected frame origin)" },
+        "navigation": { "before": "af-app://app/index.html", "after": "af-app://app/index.html" },
+        "newWindow": { "windowOpenReturnedNull": true, "windowCount": 2 },
+        "webview": { "guests": 0 },
+        "download": { "denied": true },
+        "permissions": { "getUserMedia": "denied:NotAllowedError", "notification": "denied" },
+        "csp": {
+          "evalBlocked": true,
+          "functionCtorBlocked": true,
+          "externalScriptBlocked": true,
+          "externalFetchBlocked": true,
+          "selfScriptRan": true,
+          "inlineScriptBlocked": true
+        },
+        "devPosture": {
+          "allowed": { "ok": true, "value": "pong" },
+          "wrongOrigin": { "ok": false, "error": "IPC denied (unexpected frame origin)" }
+        }
+      },
+      "guardViolationsObserved": [
+        "navigation -> https://evil.example/",
+        "new-window -> https://evil.example/",
+        "webview-attach",
+        "download",
+        "permission-request / permission-check (media, geolocation)"
+      ]
+    },
+    "fuses": {
+      "command": "pnpm vitest run apps/desktop/src/__tests__/fuses.test.ts",
+      "devBinaryWire": "10110001",
+      "devBinaryVerdict": "non-compliant (RunAsNode, EnableNodeOptionsEnvironmentVariable, EnableNodeCliInspectArguments, GrantFileProtocolExtraPrivileges on; asar integrity off)",
+      "controlUnfusedBinary": {
+        "electronRunAsNodeEvaluatesPayload": true,
+        "nodeOptionsRequireInjectionWritesMarker": true
+      },
+      "flippedFuseClone": {
+        "flipped": [
+          "RunAsNode",
+          "EnableNodeOptionsEnvironmentVariable",
+          "EnableNodeCliInspectArguments"
+        ],
+        "resign": "ad-hoc (codesign --force --sign -) on a throwaway tmp clone",
+        "electronRunAsNodeEvaluatesPayload": false,
+        "nodeOptionsRequireInjectionWritesMarker": false,
+        "appStillBoots": true
+      },
+      "syntheticWireRoundTrip": "parse/flip/verify unit-tested; exactly REQUIRED_RELEASE_FUSES passes, any single deviation fails closed"
+    },
+    "unitSuites": {
+      "assetPath": "20 tests (apps/desktop/src/__tests__/asset-path.test.ts)",
+      "ipcGuard": "8 tests (apps/desktop/src/__tests__/ipc-guard.test.ts)",
+      "externalUrl": "10 tests (apps/desktop/src/__tests__/external-url.test.ts)"
+    }
+  },
+  "reproduction": [
+    "pnpm vitest run apps/desktop",
+    "AF_PROBE_EVIDENCE=1 pnpm vitest run apps/desktop/src/__tests__/electron-boundary.test.ts  # dumps the raw fixture JSON as AF_EVIDENCE=..."
+  ],
+  "notes": [
+    "All fixture Electron apps and flipped binaries are throwaway artifacts under $TMPDIR; node_modules is only read, never modified.",
+    "The macOS fuse wire format (sentinel + version byte 1 + length byte 8 + ASCII flags in FuseKey order) was confirmed empirically against Electron 34.5.8.",
+    "Dev/release difference: dev loads the vite dev server over http://localhost (no af-app, no CSP); the IPC origin allowlist is bound to the actually loaded origin in both forms, tested via the devPosture probe."
+  ]
+}
