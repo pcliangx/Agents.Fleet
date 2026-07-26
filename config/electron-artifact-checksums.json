@@ -1,0 +1,9 @@
+{
+  "$comment": "SV1-SUPPLY-02 — locked download-artifact checksums for dev/test lifecycle-script provisioning (Electron via @electron/get). These artifacts are NOT release inputs (release builds use independently verified offline artifacts). Verify a cached artifact via `pnpm verify:electron`. Entries are keyed os-arch; add platforms when SupportedPlatformMatrix (RT-DIST-08) expands.",
+  "electron@34.5.8": {
+    "darwin-arm64": {
+      "size": 99875523,
+      "sha256": "56c27f79c298bd21f6a0434b70776633ce9971667edf22783b4b3f0051646248"
+    }
+  }
+}

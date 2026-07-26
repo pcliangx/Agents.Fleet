@@ -24,7 +24,8 @@
     "prototype:r0-06": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/tui.ts",
     "prototype:r0-06:benchmark": "pnpm --filter @agents-fleet/daemon exec tsx ../transport/src/prototypes/r0-06-binary-stream/benchmark.ts --duration 60",
     "dev:daemon": "pnpm --filter @agents-fleet/daemon dev",
-    "dev:desktop": "pnpm --filter @agents-fleet/desktop dev"
+    "dev:desktop": "pnpm --filter @agents-fleet/desktop dev",
+    "verify:electron": "node scripts/verify-electron-artifact.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
