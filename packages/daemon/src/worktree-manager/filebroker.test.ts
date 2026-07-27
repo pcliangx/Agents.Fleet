@@ -4,6 +4,7 @@
 // 不受 Node 单线程交错限制），统计落点：一次读到攻击者内容即失败。
 
 import { type ChildProcess, fork } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -86,6 +87,44 @@ describe("happy path", () => {
     const { root } = setupRoot("repo");
     broker.writeFile(root.id, "file.txt", "updated");
     expect(broker.readFile(root.id, "file.txt").toString("utf8")).toBe("updated");
+  });
+
+  it("stream-hashes regular files and fails before crossing the byte budget", () => {
+    const { root } = setupRoot("repo");
+    expect(
+      broker.hashFile(root.id, "file.txt", {
+        maxBytes: 1024,
+        deadlineMs: performance.now() + 1_000,
+      }),
+    ).toEqual({
+      ok: true,
+      entryType: "file",
+      contentHash: createHash("sha256").update("repo-content").digest("hex"),
+      bytes: 12,
+    });
+    expect(
+      broker.hashFile(root.id, "file.txt", {
+        maxBytes: 11,
+        deadlineMs: performance.now() + 1_000,
+      }),
+    ).toMatchObject({ ok: false, reason: "byte-limit" });
+  });
+
+  it("hashes an untracked symlink target as bytes without following it", () => {
+    const { root, dir } = setupRoot("repo");
+    const target = "../outside/secret.txt";
+    symlinkSync(target, join(dir, "untracked-link"));
+    expect(
+      broker.hashFile(root.id, "untracked-link", {
+        maxBytes: 1024,
+        deadlineMs: performance.now() + 1_000,
+      }),
+    ).toEqual({
+      ok: true,
+      entryType: "symlink",
+      contentHash: createHash("sha256").update(target).digest("hex"),
+      bytes: Buffer.byteLength(target),
+    });
   });
 });
 

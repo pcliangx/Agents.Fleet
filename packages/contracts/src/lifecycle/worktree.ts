@@ -26,15 +26,22 @@ export interface PlannedWorktreeTargetBinding {
   };
 }
 
+export interface FilesystemIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+export const sameFilesystemIdentity = (
+  left: FilesystemIdentity,
+  right: FilesystemIdentity,
+): boolean => left.dev === right.dev && left.ino === right.ino;
+
 export interface ExistingWorktreeTargetBinding {
   readonly kind: "Existing";
   readonly worktreeId: WorktreeId;
   readonly canonicalPath: string;
   readonly repositoryIdentity: string;
-  readonly filesystemIdentity: {
-    readonly dev: number;
-    readonly ino: number;
-  };
+  readonly filesystemIdentity: FilesystemIdentity;
 }
 
 export type WorktreeTargetBinding = PlannedWorktreeTargetBinding | ExistingWorktreeTargetBinding;

@@ -30,11 +30,14 @@ import { lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
+import type { FilesystemIdentity } from "@agents-fleet/contracts";
+import {
+  buildRestrictedGitEnvironment,
+  RESTRICTED_GIT_CONFIG_OVERRIDES,
+  RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
+} from "./restricted-git-policy.js";
 
-export interface FilesystemIdentity {
-  readonly dev: number;
-  readonly ino: number;
-}
+export type { FilesystemIdentity };
 
 export interface RepositoryCandidate {
   readonly canonicalRoot: string;
@@ -174,7 +177,6 @@ export interface RestrictedGitRunnerOptions {
   readonly neutralCwd?: string;
 }
 
-const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -194,43 +196,13 @@ const REF_LINE_RE = /^(refs\/\S+) ([0-9a-f]{40}|[0-9a-f]{64})$/;
 // Probed on Apple Git 2.50.1 — see docs/probes/r0-05.
 const CORRUPT_RE = /bad config|missing object|bad object|bad ref|corrupt|loose object/i;
 
-// `-c` overrides carry the highest config precedence — above system, global,
-// Repository and include.path config — so a malicious Repository cannot
-// re-enable any of these entry points. Exactly the SV1-FILE-06 disable list,
-// plus pager/credential neutralization required by SV1-FILE-07.
-const CONFIG_OVERRIDES: readonly string[] = [
-  "core.hooksPath=/dev/null",
-  "core.fsmonitor=false",
-  "core.pager=cat",
-  "diff.external=",
-  "credential.helper=",
-  "submodule.recurse=false",
-];
-
-// Everything git needs and nothing it can be redirected by. In particular no
-// HOME, no GIT_DIR / GIT_WORK_TREE, no GIT_CONFIG_PARAMETERS / GIT_CONFIG_COUNT,
-// no GIT_EXEC_PATH, no SSH_ASKPASS.
-const buildRestrictedGitEnv = (): Record<string, string> => ({
-  PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-  LANG: "en_US.UTF-8",
-  TMPDIR: process.env.TMPDIR ?? tmpdir(),
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_PAGER: "cat",
-  PAGER: "cat",
-  GIT_EDITOR: "/usr/bin/true",
-  EDITOR: "/usr/bin/true",
-});
-
 export const defaultGitExec: GitExec = async ({ argv, cwd, env }) => {
   const file = argv[0];
   if (file === undefined) throw new Error("empty argv");
   return await promisify(execFile)(file, argv.slice(1), {
     cwd,
     env,
-    timeout: GIT_TIMEOUT_MS,
+    timeout: RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
     encoding: "utf8",
   });
@@ -275,7 +247,7 @@ export class RestrictedGitRunner {
     const preDrift = await recheckCandidateIdentity(candidate);
     if (preDrift !== null) return preDrift;
 
-    const env = buildRestrictedGitEnv();
+    const env = buildRestrictedGitEnvironment();
 
     // Step 0 — record the binary version as evidence, from the app-owned
     // neutral cwd. This invocation does not touch the Repository.
@@ -531,7 +503,7 @@ export class RestrictedGitRunner {
     const argv = [
       this.gitPath,
       "--no-pager",
-      ...CONFIG_OVERRIDES.flatMap((c) => ["-c", c]),
+      ...RESTRICTED_GIT_CONFIG_OVERRIDES.flatMap((entry) => ["-c", entry]),
       ...args,
     ];
     try {

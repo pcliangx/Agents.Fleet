@@ -23,6 +23,7 @@
 // 在此攻击面上语义相同。生产实现应以 N-API 包装真实 openat(2) 消除进程全局
 // cwd 依赖（R1 后续）。
 
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -30,16 +31,17 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readlinkSync,
+  readSync,
   realpathSync,
   type Stats,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
-import type { FilesystemIdentity } from "../git/restricted-git.js";
+import { type FilesystemIdentity, sameFilesystemIdentity } from "@agents-fleet/contracts";
 
-// SV1-FILE-01 的 filesystem identity 概念只有单一类型来源（R0-05 的
-// restricted-git.ts），此处 re-export 以保持本模块的对外形状不变。
+// SV1-FILE-01 的 filesystem identity 概念只有 contracts 中的单一类型来源。
 export type { FilesystemIdentity };
 
 // SV1-FILE-10 — common-git-dir 仅供 Worktree Manager 内部的 provision /
@@ -55,6 +57,19 @@ export interface RegisteredRoot {
   readonly identity: FilesystemIdentity;
   readonly registeredAt: string;
 }
+
+export type RelativeFileHashResult =
+  | {
+      readonly ok: true;
+      readonly entryType: "file" | "symlink";
+      readonly contentHash: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "byte-limit" | "duration-limit" | "unsupported-entry" | "read-failed";
+      readonly detail: string;
+    };
 
 export type FileBrokerFailureReason =
   /** 绝对路径、`..`、NUL、空段（SV1-FILE-02）。 */
@@ -103,9 +118,6 @@ const identityOf = (st: { dev: number; ino: number }): FilesystemIdentity => ({
   dev: st.dev,
   ino: st.ino,
 });
-
-const sameIdentity = (a: FilesystemIdentity, b: FilesystemIdentity): boolean =>
-  a.dev === b.dev && a.ino === b.ino;
 
 export class FileBroker {
   private readonly roots = new Map<string, RegisteredRoot>();
@@ -184,7 +196,7 @@ export class FileBroker {
       } catch {
         throw new FileBrokerError("identity-drift", `root path unavailable: ${root.canonicalRoot}`);
       }
-      if (!pre.isDirectory() || !sameIdentity(identityOf(pre), root.identity)) {
+      if (!pre.isDirectory() || !sameFilesystemIdentity(identityOf(pre), root.identity)) {
         fail("identity-drift", `root identity changed: ${root.canonicalRoot}`);
       }
       // 进入 root 并 post-check：把检查绑定到实际进入的 vnode，
@@ -195,7 +207,7 @@ export class FileBroker {
         fail("race-lost", `root vanished between check and enter: ${root.canonicalRoot}`);
       }
       const entered = statSync(".");
-      if (!sameIdentity(identityOf(entered), root.identity)) {
+      if (!sameFilesystemIdentity(identityOf(entered), root.identity)) {
         fail("race-lost", `root swapped between check and enter: ${root.canonicalRoot}`);
       }
 
@@ -221,7 +233,7 @@ export class FileBroker {
           fail("race-lost", `segment vanished between check and enter: ${seg}`);
         }
         const got = statSync(".");
-        if (!sameIdentity(identityOf(got), identityOf(lst))) {
+        if (!sameFilesystemIdentity(identityOf(got), identityOf(lst))) {
           fail("race-lost", `segment swapped between check and enter: ${seg}`);
         }
       }
@@ -272,7 +284,7 @@ export class FileBroker {
         throw e;
       }
       const fst = fstatSync(fd);
-      if (!sameIdentity(identityOf(fst), identityOf(lst))) {
+      if (!sameFilesystemIdentity(identityOf(fst), identityOf(lst))) {
         closeSync(fd);
         fail("race-lost", `target swapped between check and open: ${leaf}`);
       }
@@ -295,6 +307,149 @@ export class FileBroker {
       return readFileSync(fd);
     } finally {
       closeSync(fd);
+    }
+  }
+
+  /**
+   * RT-EVIDENCE-03 — stream-hash one regular file relative to a declared
+   * Worktree root. The fd is opened through the same identity-checked ladder
+   * as readFile; no symlink is followed and bytes never accumulate in memory.
+   */
+  hashFile(
+    rootId: string,
+    relativePath: string,
+    options: { readonly maxBytes: number; readonly deadlineMs: number },
+  ): RelativeFileHashResult {
+    const root = this.declaredRoot(rootId);
+    const segments = parseRelativePath(relativePath);
+    let fd: number;
+    try {
+      fd = this.openRelative(root, segments, constants.O_RDONLY, false);
+    } catch (error) {
+      if (error instanceof FileBrokerError) {
+        if (error.reason === "symlink-rejected") {
+          return this.hashSymlink(root, segments, options);
+        }
+        return {
+          ok: false,
+          reason: error.reason === "capability-unavailable" ? "unsupported-entry" : "read-failed",
+          detail: error.reason,
+        };
+      }
+      return { ok: false, reason: "read-failed", detail: "open failed" };
+    }
+
+    try {
+      const before = fstatSync(fd);
+      if (!before.isFile()) {
+        return { ok: false, reason: "unsupported-entry", detail: "entry is not a regular file" };
+      }
+      if (before.size > options.maxBytes) {
+        return { ok: false, reason: "byte-limit", detail: "file exceeds remaining byte budget" };
+      }
+      const hash = createHash("sha256");
+      const chunk = Buffer.allocUnsafe(1024 * 1024);
+      let bytes = 0;
+      for (;;) {
+        if (performance.now() > options.deadlineMs) {
+          return {
+            ok: false,
+            reason: "duration-limit",
+            detail: "file hashing exceeded duration budget",
+          };
+        }
+        const read = readSync(fd, chunk, 0, chunk.length, null);
+        if (read === 0) break;
+        bytes += read;
+        if (bytes > options.maxBytes) {
+          return { ok: false, reason: "byte-limit", detail: "file exceeded byte budget" };
+        }
+        hash.update(chunk.subarray(0, read));
+      }
+      const after = fstatSync(fd);
+      if (
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeMs !== after.mtimeMs ||
+        before.ctimeMs !== after.ctimeMs
+      ) {
+        return { ok: false, reason: "read-failed", detail: "file changed while hashing" };
+      }
+      return { ok: true, entryType: "file", contentHash: hash.digest("hex"), bytes };
+    } catch {
+      return { ok: false, reason: "read-failed", detail: "file read failed" };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /**
+   * Untracked symlink content is its link-target bytes, never the target file.
+   * The same chdir ladder pins every parent directory; lstat/readlink/lstat
+   * ensures the leaf symlink did not change while observed.
+   */
+  private hashSymlink(
+    root: RegisteredRoot,
+    segments: readonly string[],
+    options: { readonly maxBytes: number; readonly deadlineMs: number },
+  ): RelativeFileHashResult {
+    const savedCwd = process.cwd();
+    try {
+      const pre = lstatSync(root.canonicalRoot);
+      if (!pre.isDirectory() || !sameFilesystemIdentity(identityOf(pre), root.identity)) {
+        return { ok: false, reason: "read-failed", detail: "root identity drifted" };
+      }
+      process.chdir(root.canonicalRoot);
+      if (!sameFilesystemIdentity(identityOf(statSync(".")), root.identity)) {
+        return { ok: false, reason: "read-failed", detail: "root race lost" };
+      }
+      for (let index = 0; index < segments.length - 1; index++) {
+        const segment = segments[index] as string;
+        const before = lstatSync(segment);
+        if (!before.isDirectory() || before.isSymbolicLink()) {
+          return {
+            ok: false,
+            reason: "unsupported-entry",
+            detail: "symlink or non-directory parent",
+          };
+        }
+        process.chdir(segment);
+        if (!sameFilesystemIdentity(identityOf(statSync(".")), identityOf(before))) {
+          return { ok: false, reason: "read-failed", detail: "parent race lost" };
+        }
+      }
+      if (performance.now() > options.deadlineMs) {
+        return { ok: false, reason: "duration-limit", detail: "symlink hashing timed out" };
+      }
+      const leaf = segments[segments.length - 1] as string;
+      const before = lstatSync(leaf);
+      if (!before.isSymbolicLink()) {
+        return { ok: false, reason: "unsupported-entry", detail: "entry is not a symlink" };
+      }
+      const target = readlinkSync(leaf, { encoding: "buffer" });
+      if (target.length > options.maxBytes) {
+        return { ok: false, reason: "byte-limit", detail: "symlink exceeds byte budget" };
+      }
+      const after = lstatSync(leaf);
+      if (
+        !sameFilesystemIdentity(identityOf(before), identityOf(after)) ||
+        before.size !== after.size ||
+        before.mtimeMs !== after.mtimeMs ||
+        before.ctimeMs !== after.ctimeMs
+      ) {
+        return { ok: false, reason: "read-failed", detail: "symlink changed while hashing" };
+      }
+      return {
+        ok: true,
+        entryType: "symlink",
+        contentHash: createHash("sha256").update(target).digest("hex"),
+        bytes: target.length,
+      };
+    } catch {
+      return { ok: false, reason: "read-failed", detail: "symlink read failed" };
+    } finally {
+      process.chdir(savedCwd);
     }
   }
 

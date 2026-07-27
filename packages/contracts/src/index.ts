@@ -29,7 +29,9 @@ export * as TaskViewProjection from "./lifecycle/projection.js";
 export * as RepositoryTrust from "./lifecycle/repository-trust.js";
 export * as Session from "./lifecycle/session.js";
 export * as Task from "./lifecycle/task.js";
+export type { FilesystemIdentity } from "./lifecycle/worktree.js";
 export * as Worktree from "./lifecycle/worktree.js";
+export { sameFilesystemIdentity } from "./lifecycle/worktree.js";
 export type {
   LimitCheckResult,
   LimitViolation,
@@ -50,6 +52,30 @@ export type {
   HostEnvironment,
 } from "./modules/host-environment.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
+export type {
+  DisposeBlocker,
+  DisposeBlockerKind,
+  DisposePreview,
+  DisposePreviewResult,
+  DisposeWorktreeResult,
+  FingerprintBlocker,
+  FingerprintBlockerReason,
+  GitChange,
+  GitChangeStatus,
+  GitObservation,
+  InspectWorktreeResult,
+  IntegrationTarget,
+  ProvisionWorktreeResult,
+  UntrackedEntry,
+  WorktreeAliveSessionObservation,
+  WorktreeDiffView,
+  WorktreeEntryType,
+  WorktreeInspection,
+  WorktreeManager,
+  WorktreeManagerFailure,
+  WorktreeManagerFailureKind,
+  WorktreeProcessDispositionObservation,
+} from "./modules/worktree-manager.js";
 export type {
   MinimumHardware,
   RendererPath,
