@@ -41,11 +41,23 @@ export interface RepositoryCandidate {
   readonly filesystemIdentity: FilesystemIdentity;
 }
 
+/** RT-REPO-04 — one ref resolved to its SHA. */
+export interface ResolvedRef {
+  readonly name: string;
+  readonly sha: string;
+}
+
 export interface ValidatedRepository {
   readonly workingTreeRoot: string;
   readonly gitDir: string;
   /** realpath of the common Git directory — the common Repository identity anchor. */
   readonly commonGitDir: string;
+  /**
+   * dev/ino of the realpath'd commonGitDir. A path string alone is not
+   * identity: a replaced `.git` at the same path is a different Repository
+   * (SV1-FILE-10).
+   */
+  readonly commonGitDirIdentity: FilesystemIdentity;
   readonly headCommitSha: string;
   /** null when HEAD is detached (RT-REPO-04). */
   readonly currentBranch: string | null;
@@ -56,6 +68,10 @@ export interface ValidatedRepository {
   readonly defaultBaseRef: string | null;
   /** Resolved SHA of `defaultBaseRef`; null together with it. */
   readonly defaultBaseRefSha: string | null;
+  /** Every ref resolved to a SHA (RT-REPO-04), bounded by MAX_ENUMERATED_REFS. */
+  readonly refs: readonly ResolvedRef[];
+  /** true when the repository has more refs than MAX_ENUMERATED_REFS — explicit truncation, never silent (RT-LIMIT-02). */
+  readonly refsTruncated: boolean;
   /** Raw `git --version` output, recorded as evidence for R0-15's matrix. */
   readonly gitVersion: string;
   readonly observedAt: string;
@@ -83,6 +99,64 @@ export type RepositoryValidationResult =
   | { ok: true; repository: ValidatedRepository }
   | { ok: false; failure: RepositoryValidationFailure };
 
+// RT-REPO-06 — the validation plan the Trust challenge displays and binds.
+// A bounded, structured list of the exact plumbing steps validateRepository
+// runs (SV1-TRUST-02: the dialog must show what PendingValidation will do);
+// it is data, never shell text. Frozen so the displayed plan, the bound
+// validationPlanHash and the executed plan cannot drift apart.
+export const VALIDATION_PLAN: readonly {
+  readonly step: string;
+  readonly argv: readonly string[];
+}[] = Object.freeze([
+  Object.freeze({ step: "git-version", argv: Object.freeze(["--version"]) }),
+  Object.freeze({ step: "bare-check", argv: Object.freeze(["rev-parse", "--is-bare-repository"]) }),
+  Object.freeze({
+    step: "working-tree-root",
+    argv: Object.freeze(["rev-parse", "--show-toplevel"]),
+  }),
+  Object.freeze({ step: "git-dir", argv: Object.freeze(["rev-parse", "--absolute-git-dir"]) }),
+  Object.freeze({ step: "common-git-dir", argv: Object.freeze(["rev-parse", "--git-common-dir"]) }),
+  Object.freeze({ step: "head-symbolic-ref", argv: Object.freeze(["symbolic-ref", "-q", "HEAD"]) }),
+  Object.freeze({
+    step: "head-commit",
+    argv: Object.freeze(["rev-parse", "--verify", "HEAD^{commit}"]),
+  }),
+  Object.freeze({
+    step: "enumerate-refs",
+    argv: Object.freeze(["for-each-ref", "--format=%(refname) %(objectname)"]),
+  }),
+  Object.freeze({
+    step: "default-base-ref",
+    argv: Object.freeze(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]),
+  }),
+  Object.freeze({
+    step: "default-base-commit",
+    argv: Object.freeze(["rev-parse", "--verify", "<defaultBaseRef>^{commit}"]),
+  }),
+]);
+
+// RT-REPO-04 — the declared post-Active read-only inspection shape
+// (SV1-FILE-06): current commit and branch, default base ref and its SHA,
+// the common Repository identity and the observation time.
+export interface RepositoryInspection {
+  readonly currentCommitSha: string;
+  /** null when HEAD is detached (RT-REPO-04). */
+  readonly currentBranch: string | null;
+  readonly defaultBaseRef: string | null;
+  readonly defaultBaseRefSha: string | null;
+  /** Every ref resolved to a SHA (RT-REPO-04), bounded by MAX_ENUMERATED_REFS. */
+  readonly refs: readonly ResolvedRef[];
+  readonly refsTruncated: boolean;
+  readonly commonGitDir: string;
+  readonly commonGitDirIdentity: FilesystemIdentity;
+  readonly gitVersion: string;
+  readonly observedAt: string;
+}
+
+export type RepositoryInspectionResult =
+  | { ok: true; inspection: RepositoryInspection }
+  | { ok: false; failure: RepositoryValidationFailure };
+
 export interface GitExecRequest {
   readonly argv: readonly string[];
   readonly cwd: string;
@@ -104,6 +178,16 @@ const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+// RT-REPO-04 / RT-LIMIT-02 — bound on the enumerated ref list. The frozen
+// RuntimeLimitProfile has no dedicated field for ref counts, so the bound is
+// this frozen constant; beyond it the list is truncated with an explicit
+// refsTruncated marker, never silently.
+export const MAX_ENUMERATED_REFS = 1024;
+
+// for-each-ref output lines: refnames cannot contain spaces (git-check-ref-format),
+// so "<name> <sha>" splits unambiguously.
+const REF_LINE_RE = /^(refs\/\S+) ([0-9a-f]{40}|[0-9a-f]{64})$/;
 
 // stderr signatures that mean the repository itself is damaged, as opposed to
 // absent (not a git repository) or valid-but-unsupported (bare / unborn).
@@ -188,23 +272,8 @@ export class RestrictedGitRunner {
     // Re-canonicalize + stat immediately before invoking Git (RT-REPO-06
     // drift rule). A replaced path or changed identity fails closed before
     // any Git call.
-    let st: Stats;
-    try {
-      const canonicalAgain = await realpath(root);
-      if (canonicalAgain !== root) {
-        return invalid("identity-drift", `canonical root moved: ${root} -> ${canonicalAgain}`);
-      }
-      st = await lstat(root);
-    } catch (e) {
-      return invalid("identity-drift", `cannot re-stat candidate root: ${message(e)}`);
-    }
-    if (
-      !st.isDirectory() ||
-      st.dev !== candidate.filesystemIdentity.dev ||
-      st.ino !== candidate.filesystemIdentity.ino
-    ) {
-      return invalid("identity-drift", "filesystem identity changed since confirmation");
-    }
+    const preDrift = await recheckCandidateIdentity(candidate);
+    if (preDrift !== null) return preDrift;
 
     const env = buildRestrictedGitEnv();
 
@@ -262,6 +331,16 @@ export class RestrictedGitRunner {
     } catch (e) {
       return invalid("output-unparseable", `cannot resolve git directories: ${message(e)}`);
     }
+    // SV1-FILE-10 — the common Repository identity is path AND dev/ino; a
+    // common Git directory that cannot be statted cannot prove identity and
+    // fails closed with a stable classification (RT-REPO-02).
+    let commonGitDirIdentity: FilesystemIdentity;
+    try {
+      const commonSt = await lstat(commonGitDir);
+      commonGitDirIdentity = { dev: commonSt.dev, ino: commonSt.ino };
+    } catch (e) {
+      return invalid("identity-drift", `cannot stat common Git directory: ${message(e)}`);
+    }
 
     // Step 4 — HEAD shape: detached (importable, branch null) or a
     // refs/heads/* symbolic target. A symbolic HEAD outside refs/heads is not
@@ -293,14 +372,14 @@ export class RestrictedGitRunner {
         return invalid("corrupt", "detached HEAD does not resolve to a commit");
       }
       const refs = await this.runGit(
-        ["-C", root, "for-each-ref", "--format=%(refname)"],
+        ["-C", root, "for-each-ref", "--format=%(refname) %(objectname)"],
         root,
         env,
       );
       if (!refs.ok) {
         return invalid("corrupt", `cannot enumerate refs: ${failureDetail(refs)}`);
       }
-      const refNames = refs.stdout.split("\n").map((l) => l.trim());
+      const refNames = refs.stdout.split("\n").map((l) => l.trim().split(" ")[0] ?? "");
       if (refNames.every((r) => r === "") || !refNames.includes(headRef)) {
         return {
           ok: false,
@@ -317,6 +396,18 @@ export class RestrictedGitRunner {
     if (!SHA_RE.test(headCommitSha)) {
       return invalid("output-unparseable", `unexpected HEAD revision: ${headCommitSha}`);
     }
+
+    // Step 5b — every ref resolved to a SHA (RT-REPO-04). Bounded by
+    // MAX_ENUMERATED_REFS with an explicit truncation marker; a malformed
+    // line means the output cannot be trusted and fails closed.
+    const refsOut = await this.runGit(
+      ["-C", root, "for-each-ref", "--format=%(refname) %(objectname)"],
+      root,
+      env,
+    );
+    if (!refsOut.ok) return refsOut;
+    const parsedRefs = parseRefEnumeration(refsOut.stdout);
+    if ("failure" in parsedRefs) return { ok: false, failure: parsedRefs.failure };
 
     // Step 6 — default base ref: the clone-recorded origin/HEAD target, or
     // null. Never guessed (RT-REPO-04); an origin/HEAD that exists but does
@@ -343,18 +434,90 @@ export class RestrictedGitRunner {
       }
     }
 
+    // SV1-FILE-10 — identity is re-verified after the Git plan too: a swap of
+    // the root or the common Git directory during the run fails closed
+    // instead of binding facts gathered from two different Repositories.
+    const postDrift = await recheckCandidateIdentity(candidate);
+    if (postDrift !== null) return postDrift;
+    try {
+      const commonAfter = await lstat(commonGitDir);
+      if (
+        commonAfter.dev !== commonGitDirIdentity.dev ||
+        commonAfter.ino !== commonGitDirIdentity.ino
+      ) {
+        return invalid("identity-drift", "common Git directory identity changed during validation");
+      }
+    } catch (e) {
+      return invalid("identity-drift", `cannot re-stat common Git directory: ${message(e)}`);
+    }
+
     return {
       ok: true,
       repository: {
         workingTreeRoot,
         gitDir,
         commonGitDir,
+        commonGitDirIdentity,
         headCommitSha,
         currentBranch,
         defaultBaseRef,
         defaultBaseRefSha,
+        refs: parsedRefs.refs,
+        refsTruncated: parsedRefs.truncated,
         gitVersion,
         observedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  // RT-REPO-04 / SV1-FILE-06 — the declared read-only inspection allowed once
+  // the Trust is Active. It runs the same bounded plumbing queries as
+  // validateRepository (still the restricted interface: explicit binary,
+  // structured argv, scrubbed environment) but changes NO state: a drift or a
+  // failure comes back as the same stable classification and it is the
+  // caller's decision what to do with it — inspection never revokes.
+  //
+  // `bound` carries the identity frozen when the Trust went Active; the live
+  // root (re-checked inside validateRepository, before AND after the plan)
+  // and the common Git directory are both compared against it, and any drift
+  // is the stable `identity-drift` classification (SV1-FILE-10).
+  async inspectValidatedRepository(
+    candidate: RepositoryCandidate,
+    bound?: {
+      readonly commonGitDir: string;
+      readonly commonGitDirIdentity: FilesystemIdentity;
+    },
+  ): Promise<RepositoryInspectionResult> {
+    const result = await this.validateRepository(candidate);
+    if (!result.ok) return result;
+    if (
+      bound !== undefined &&
+      (result.repository.commonGitDir !== bound.commonGitDir ||
+        result.repository.commonGitDirIdentity.dev !== bound.commonGitDirIdentity.dev ||
+        result.repository.commonGitDirIdentity.ino !== bound.commonGitDirIdentity.ino)
+    ) {
+      return {
+        ok: false,
+        failure: {
+          kind: "RepositoryInvalid",
+          reason: "identity-drift",
+          detail: "common Repository identity drifted since the Trust went Active",
+        },
+      };
+    }
+    return {
+      ok: true,
+      inspection: {
+        currentCommitSha: result.repository.headCommitSha,
+        currentBranch: result.repository.currentBranch,
+        defaultBaseRef: result.repository.defaultBaseRef,
+        defaultBaseRefSha: result.repository.defaultBaseRefSha,
+        refs: result.repository.refs,
+        refsTruncated: result.repository.refsTruncated,
+        commonGitDir: result.repository.commonGitDir,
+        commonGitDirIdentity: result.repository.commonGitDirIdentity,
+        gitVersion: result.repository.gitVersion,
+        observedAt: result.repository.observedAt,
       },
     };
   }
@@ -423,6 +586,59 @@ const invalid = (
   ok: false,
   failure: { kind: "RepositoryInvalid", reason, detail },
 });
+
+// SV1-FILE-10 — re-canonicalize + stat the candidate root. Runs before the
+// Git plan (RT-REPO-06 drift rule) and again after it, so a swap at any
+// point fails closed with the stable identity-drift classification. Returns
+// null when identity holds.
+const recheckCandidateIdentity = async (
+  candidate: RepositoryCandidate,
+): Promise<RepositoryValidationResult | null> => {
+  const root = candidate.canonicalRoot;
+  let st: Stats;
+  try {
+    const canonicalAgain = await realpath(root);
+    if (canonicalAgain !== root) {
+      return invalid("identity-drift", `canonical root moved: ${root} -> ${canonicalAgain}`);
+    }
+    st = await lstat(root);
+  } catch (e) {
+    return invalid("identity-drift", `cannot re-stat candidate root: ${message(e)}`);
+  }
+  if (
+    !st.isDirectory() ||
+    st.dev !== candidate.filesystemIdentity.dev ||
+    st.ino !== candidate.filesystemIdentity.ino
+  ) {
+    return invalid("identity-drift", "filesystem identity changed since confirmation");
+  }
+  return null;
+};
+
+// RT-REPO-04 — parse `for-each-ref --format=%(refname) %(objectname)` into a
+// bounded ref/SHA list. Any line that is not exactly "<refs/...> <sha>" is
+// output-unparseable; beyond MAX_ENUMERATED_REFS the list truncates with an
+// explicit marker (RT-LIMIT-02).
+const parseRefEnumeration = (
+  stdout: string,
+): { refs: ResolvedRef[]; truncated: boolean } | { failure: RepositoryValidationFailure } => {
+  const lines = stdout.split("\n").filter((l) => l.trim() !== "");
+  const refs: ResolvedRef[] = [];
+  for (const line of lines) {
+    const m = REF_LINE_RE.exec(line.trim());
+    if (m === null || m[1] === undefined || m[2] === undefined) {
+      const failure: RepositoryValidationFailure = {
+        kind: "RepositoryInvalid",
+        reason: "output-unparseable",
+        detail: `unexpected for-each-ref line: ${line.trim().slice(0, 200)}`,
+      };
+      return { failure };
+    }
+    refs.push({ name: m[1], sha: m[2] });
+  }
+  const truncated = refs.length > MAX_ENUMERATED_REFS;
+  return { refs: truncated ? refs.slice(0, MAX_ENUMERATED_REFS) : refs, truncated };
+};
 
 const failureDetail = (
   result: { ok: true; stdout: string } | { ok: false; failure: RepositoryValidationFailure },

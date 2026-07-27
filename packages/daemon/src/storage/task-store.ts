@@ -112,7 +112,14 @@ export interface TaskSpec {
   readonly acceptanceCriteria?: string;
 }
 
-export type StoreErrorCode = "InvalidRequest" | "Conflict" | "NotFound" | "IdempotencyConflict";
+export type StoreErrorCode =
+  | "InvalidRequest"
+  | "Conflict"
+  | "NotFound"
+  | "IdempotencyConflict"
+  // RT-CMD-06/16 — a confirmation receipt was forged, replayed, expired,
+  // cross-kind or drifted; the command fails closed and changes nothing.
+  | "ConfirmationRequired";
 
 export class StoreError extends Error {
   readonly code: StoreErrorCode;

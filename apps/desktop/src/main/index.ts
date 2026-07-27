@@ -17,8 +17,9 @@ import { join } from "node:path";
 import { DevTokenFileTokenSource } from "@agents-fleet/transport";
 import { app, BrowserWindow, dialog, session } from "electron";
 import { APP_ORIGIN, installAppProtocol, registerAppSchemePrivileges } from "./app-protocol.js";
+import { registerTrustIpc } from "./confirmation-ipc.js";
 import { installContentSecurityPolicy, RENDERER_CSP } from "./csp.js";
-import { connectDaemon } from "./daemon-client.js";
+import { DaemonClient } from "./daemon-client.js";
 import { type FuseReport, frameworkBinaryPath, verifyReleaseFuses } from "./fuses.js";
 import { handleTrustedIpc } from "./trusted-ipc.js";
 import { guardSession, guardWebContents } from "./window-guard.js";
@@ -98,7 +99,8 @@ app.whenReady().then(async () => {
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   const win = createWindow(devUrl);
   const allowedOrigin = devUrl !== undefined ? new URL(devUrl).origin : APP_ORIGIN;
-  handleTrustedIpc(channel, { expectedWebContents: win.webContents, allowedOrigin }, () => {
+  const ipcContext = { expectedWebContents: win.webContents, allowedOrigin };
+  handleTrustedIpc(channel, ipcContext, () => {
     return connectionInfo;
   });
 
@@ -122,9 +124,13 @@ app.whenReady().then(async () => {
     connectionInfo = `token error: ${String(err)}`;
     return;
   }
-  connectDaemon({ socketPath, token, clientInstanceId: randomUUID() })
-    .then((hello) => {
-      connectionInfo = `Connected to daemon — protocol v${hello.selectedProtocolVersion}, generation ${hello.daemonGeneration}`;
+  DaemonClient.connect({ socketPath, token, clientInstanceId: randomUUID() })
+    .then((client) => {
+      connectionInfo = `Connected to daemon — protocol v${client.hello.selectedProtocolVersion}, generation ${client.hello.daemonGeneration}`;
+      // R1-02 — the trust-chain + confirmation channels. The capability token
+      // stays in Main: it keys both the handshake proof and the receipt MAC
+      // (SV1-TRUST-09); the Renderer can only name command/channel IDs.
+      registerTrustIpc({ context: ipcContext, sender: client, token });
     })
     .catch((err: unknown) => {
       connectionInfo = `daemon error: ${String(err)}`;
