@@ -56,10 +56,48 @@ describe("testing harness smoke", () => {
 
   it("FakeAdapter.prepare returns a structured spec without executing (RT-ADAPTER-07)", async () => {
     const adapter = new FakeAdapter();
+    const candidate = await adapter.discoverCandidate();
+    const discovery = await adapter.discover({
+      authorization: {
+        trustId: "trust",
+        trustVersion: 1,
+        state: "Active",
+        repositoryRoot: "/repository",
+        repositoryIdentity: "repository-1",
+      },
+      candidate,
+    });
+    const permissionMapping = discovery.permissionMappings[1];
+    if (permissionMapping === undefined) throw new Error("Balanced mapping is missing");
     const spec = await adapter.prepare({
       taskSpecHash: "h",
-      profileVersion: 1,
-      environmentSnapshotHash: "e",
+      discovery,
+      profileSnapshot: {
+        profileId: "profile-1" as never,
+        profileVersion: 1,
+        agentId: "fake",
+        accountRef: null,
+        model: null,
+        mode: null,
+        permissionMode: "Balanced",
+        secretRefs: [],
+        secretReferenceIdentities: [],
+        adapterCapabilities: discovery.capabilities,
+        adapterCapabilitiesHash: "capabilities-hash",
+        permissionMapping,
+        permissionMappingHash: "mapping-hash",
+      },
+      worktreeTarget: {
+        kind: "Planned",
+        worktreeId: "worktree-1" as never,
+        canonicalPath: "/worktrees/task-1",
+        repositoryIdentity: "repository-1",
+        branchStrategy: {
+          kind: "create",
+          branchName: "fleet/task-1",
+          onCollision: "fail",
+        },
+      },
     });
     expect(Array.isArray(spec.argv)).toBe(true);
     expect(spec.argv.length).toBeGreaterThan(0);

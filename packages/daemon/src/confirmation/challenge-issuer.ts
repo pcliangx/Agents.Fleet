@@ -10,7 +10,7 @@
 // the probe doc). The token is the shared capability token (SV1-AUTH-03): the
 // receipt proof scheme lives in transport/confirmation-proof.ts.
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   type ChallengeDisplay,
   type ConfirmationChallenge,
@@ -20,6 +20,7 @@ import {
   checkLimit,
   FROZEN_RUNTIME_LIMIT_PROFILE,
 } from "@agents-fleet/contracts";
+import { canonicalSha256Hex } from "../crypto/canonical-hash.js";
 import { StoreError } from "../storage/task-store.js";
 import { validateConsume } from "./consume-validation.js";
 
@@ -44,26 +45,7 @@ export interface IssuerOptions {
   readonly maxOpen?: number;
 }
 
-// Deterministic canonicalization: sorted object keys, no whitespace. Two
-// previews with equal facts must hash identically; any drift must not.
-const canonicalize = (value: unknown): string => JSON.stringify(sortDeep(value));
-
-const sortDeep = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(sortDeep);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, sortDeep(v)]),
-    );
-  }
-  return value;
-};
-
-const sha256Hex = (canonical: string): string =>
-  createHash("sha256").update(canonical).digest("hex");
-
-export const hashPreviewFact = (fact: unknown): string => sha256Hex(canonicalize(fact));
+export const hashPreviewFact = canonicalSha256Hex;
 
 // RT-LIMIT-02 — the challenge display is bounded by the frozen profile's
 // challengeBytes, measured as UTF-8 bytes of its JSON serialization BEFORE

@@ -14,6 +14,7 @@ export type CommandId = Brand<string, "CommandId">;
 export type EventId = Brand<string, "EventId">;
 export type ArtifactId = Brand<string, "ArtifactId">;
 export type NotificationIntentId = Brand<string, "NotificationIntentId">;
+export type ProfileId = Brand<string, "ProfileId">;
 
 export type FencingToken = Brand<number, "FencingToken">;
 export type Generation = Brand<number, "Generation">;

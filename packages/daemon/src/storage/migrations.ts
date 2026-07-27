@@ -6,7 +6,9 @@
 // prevents two stores from silently colliding on the same version (A4/I2).
 
 import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
+import { AGENT_PROFILE_MIGRATIONS } from "./agent-profile-store.js";
 import type { Migration } from "./database.js";
+import { ENVIRONMENT_SNAPSHOT_MIGRATIONS } from "./environment-snapshot-store.js";
 import { IdempotencyStore } from "./idempotency.js";
 import { REPOSITORY_TRUST_MIGRATIONS } from "./repository-trust-store.js";
 import { TASK_MIGRATIONS } from "./task-store.js";
@@ -17,6 +19,8 @@ export const ALL_MIGRATIONS: readonly Migration[] = (() => {
     ...IdempotencyStore.migrations,
     ...REPOSITORY_TRUST_MIGRATIONS,
     ...PersistentChallengeIssuer.migrations,
+    ...AGENT_PROFILE_MIGRATIONS,
+    ...ENVIRONMENT_SNAPSHOT_MIGRATIONS,
   ].sort((a, b) => a.version - b.version);
   const versions = all.map((m) => m.version);
   if (new Set(versions).size !== versions.length) {

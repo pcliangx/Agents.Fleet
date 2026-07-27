@@ -3,11 +3,41 @@
 // Role: Pending -> Active|Historical; Active -> Historical.
 // Pairing invariants: Planned/Orphaned only Pending; Failed not Active; Disposed only Historical.
 
+import type { WorktreeId } from "../identity.js";
 import {
   allowedNext as allNext,
   canTransition as canTrans,
   type TransitionTable,
 } from "./table.js";
+
+// RT-WORKTREE-02 / RT-ENV-03 — the target confirmed before launch. Planned
+// targets bind only facts that already exist, including the planned canonical
+// path; Ready later adds the actual filesystem identity without pretending it
+// was known at confirmation time.
+export interface PlannedWorktreeTargetBinding {
+  readonly kind: "Planned";
+  readonly worktreeId: WorktreeId;
+  readonly canonicalPath: string;
+  readonly repositoryIdentity: string;
+  readonly branchStrategy: {
+    readonly kind: "create";
+    readonly branchName: string;
+    readonly onCollision: "fail";
+  };
+}
+
+export interface ExistingWorktreeTargetBinding {
+  readonly kind: "Existing";
+  readonly worktreeId: WorktreeId;
+  readonly canonicalPath: string;
+  readonly repositoryIdentity: string;
+  readonly filesystemIdentity: {
+    readonly dev: number;
+    readonly ino: number;
+  };
+}
+
+export type WorktreeTargetBinding = PlannedWorktreeTargetBinding | ExistingWorktreeTargetBinding;
 
 export type WorktreeState = "Planned" | "Ready" | "Failed" | "Orphaned" | "Disposed";
 
