@@ -15,7 +15,7 @@ export interface NativePtyProcess {
   resize(cols: number, rows: number): void;
   kill(): void;
   onData(listener: (data: unknown) => void): { dispose(): void };
-  onExit(listener: () => void): { dispose(): void };
+  onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
 }
 
 export interface NativePtySpawnOptions {
@@ -32,6 +32,8 @@ export interface NativePtyModule {
 
 export interface TempNodePtyCopy {
   readonly nodePty: NativePtyModule;
+  /** Absolute copied package root for a real child-process fixture. */
+  readonly modulePath: string;
   cleanup(): Promise<void>;
 }
 
@@ -57,6 +59,7 @@ export async function copyNodePtyWithHelperMode(helperMode: number): Promise<Tem
   const nodePty = requireFromCopy(copiedRoot) as NativePtyModule;
   return {
     nodePty,
+    modulePath: copiedRoot,
     cleanup: () => rm(tempRoot, { recursive: true, force: true }),
   };
 }

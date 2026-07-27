@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createProcessSupervisor,
   type PtyDriverProcess,
+  type PtyExitEvent,
   type SupervisedPtyProcess,
 } from "../session-runtime/process-supervisor.js";
 
@@ -11,6 +12,7 @@ class FakeDriverProcess implements PtyDriverProcess {
   readonly sizes: Array<{ cols: number; rows: number }> = [];
   killed = false;
   private outputListener: ((data: Uint8Array) => void) | undefined;
+  private exitListener: ((event: PtyExitEvent) => void) | undefined;
 
   write(data: Uint8Array): void {
     this.written.push(data);
@@ -33,6 +35,15 @@ class FakeDriverProcess implements PtyDriverProcess {
     };
   }
 
+  onExit(listener: (event: PtyExitEvent) => void): { dispose(): void } {
+    this.exitListener = listener;
+    return {
+      dispose: () => {
+        this.exitListener = undefined;
+      },
+    };
+  }
+
   emit(data: Uint8Array): void {
     this.outputListener?.(data);
   }
@@ -40,16 +51,25 @@ class FakeDriverProcess implements PtyDriverProcess {
   emitUnsafe(data: unknown): void {
     this.outputListener?.(data as Uint8Array);
   }
+
+  emitExit(event: PtyExitEvent): void {
+    this.exitListener?.(event);
+  }
 }
 
 const spawnFakeProcess = (): {
   readonly driverProcess: FakeDriverProcess;
   readonly process: SupervisedPtyProcess;
+  readonly groupSignals: Array<{ readonly pgid: number; readonly signal: string }>;
 } => {
   const driverProcess = new FakeDriverProcess();
-  const supervisor = createProcessSupervisor({
-    spawn: () => driverProcess,
-  });
+  const groupSignals: Array<{ readonly pgid: number; readonly signal: string }> = [];
+  const supervisor = createProcessSupervisor(
+    {
+      spawn: () => driverProcess,
+    },
+    (pgid, signal) => groupSignals.push({ pgid, signal }),
+  );
   const process = supervisor.spawn({
     executablePath: "/usr/bin/true",
     args: [],
@@ -58,7 +78,7 @@ const spawnFakeProcess = (): {
     cols: 80,
     rows: 24,
   });
-  return { driverProcess, process };
+  return { driverProcess, process, groupSignals };
 };
 
 describe("ProcessSupervisor", () => {
@@ -114,11 +134,41 @@ describe("ProcessSupervisor", () => {
     expect(driverProcess.sizes).toEqual([{ cols: 132, rows: 43 }]);
   });
 
+  it("pauses and resumes the owned PTY process group", async () => {
+    const { groupSignals, process } = spawnFakeProcess();
+
+    await process.pause(4242);
+    await process.resume(4242);
+
+    expect(groupSignals).toEqual([
+      { pgid: 4242, signal: "SIGSTOP" },
+      { pgid: 4242, signal: "SIGCONT" },
+    ]);
+  });
+
+  it("refuses to signal a process group that is not owned by the PTY leader", async () => {
+    const { groupSignals, process } = spawnFakeProcess();
+
+    await expect(process.pause(777)).rejects.toThrow("not the recorded process-group leader");
+
+    expect(groupSignals).toEqual([]);
+  });
+
   it("terminates the owned PTY process", async () => {
     const { driverProcess, process } = spawnFakeProcess();
 
     await process.terminate();
 
     expect(driverProcess.killed).toBe(true);
+  });
+
+  it("reports the owned PTY process exit", () => {
+    const { driverProcess, process } = spawnFakeProcess();
+    const exits: PtyExitEvent[] = [];
+    process.onExit((event) => exits.push(event));
+
+    driverProcess.emitExit({ exitCode: 7, signal: 0 });
+
+    expect(exits).toEqual([{ exitCode: 7, signal: 0 }]);
   });
 });
