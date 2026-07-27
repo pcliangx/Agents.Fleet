@@ -670,7 +670,8 @@ export class SessionRuntime implements SessionRuntimeContract {
       executablePath: processExecPath(),
       args: [this.#bootstrapPath, "--config", configPath],
       cwd: this.#storeDir,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      // Pin LC_ALL so ps lstart output is locale-stable and comparable with probeProcess.
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LC_ALL: "C" },
       cols: 80,
       rows: 24,
     });
@@ -1446,6 +1447,8 @@ const probeProcess = (pid: number): ProcessProbe => {
   const result = spawnSync("/bin/ps", ["-o", "pid=,pgid=,lstart=,command=", "-p", String(pid)], {
     encoding: "utf8",
     timeout: 1_000,
+    // Pin LC_ALL so ps lstart output is locale-stable and comparable with bootstrap receipts.
+    env: { ...process.env, LC_ALL: "C" },
   });
   if (result.error !== undefined || result.status === null) return { kind: "unavailable" };
   if (result.status !== 0)
