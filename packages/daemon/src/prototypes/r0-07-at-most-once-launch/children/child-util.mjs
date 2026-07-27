@@ -9,13 +9,24 @@ export const arg = (args, name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
-/** macOS `ps -o lstart=` for one pid; null when unobservable. */
+/**
+ * macOS `ps -o lstart=` for one pid; null when unobservable.
+ *
+ * Internal whitespace is normalized to single spaces so this matches parsePs's
+ * split/join normalization. `ps -o lstart=` formats the day with `%e`
+ * (blank-padded), emitting a double space before single-digit days
+ * (e.g. "Wed  5 Jul 09:10:43 2026"); bare trim() only strips the ends, leaving
+ * the double space and breaking the RT-LAUNCH-02 identity comparison (#66).
+ */
 export const lstartOf = (pid) => {
   try {
     return execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 3000,
-    }).trim();
+    })
+      .trim()
+      .split(/\s+/)
+      .join(" ");
   } catch {
     return null;
   }
