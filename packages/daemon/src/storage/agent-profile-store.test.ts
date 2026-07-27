@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
 import { CLAUDE_CAPABILITY_PROFILE } from "@agents-fleet/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { AgentProfileStore } from "./agent-profile-store.js";
 import { openDatabase } from "./database.js";
 import { ALL_MIGRATIONS } from "./migrations.js";
@@ -227,6 +228,30 @@ describe("AgentProfileStore (RT-PROFILE-01..03)", () => {
       JSON.stringify(tampered),
       attemptId,
     );
+
+    expect(() => profiles.getAttemptSnapshot(attemptId)).toThrowError(
+      expect.objectContaining({ code: "DataIntegrityFailure" }),
+    );
+  });
+
+  it("rejects a hash-consistent stored snapshot whose fields violate the runtime schema", () => {
+    const { db, profiles, attemptId } = setup();
+    const created = profiles.createProfile(profileInput());
+    profiles.createAttemptSnapshot({
+      attemptId,
+      profileId: created.profileId,
+      adapter: adapterFacts,
+    });
+    const row = db
+      .prepare("SELECT snapshot_json FROM attempt_profile_snapshots WHERE attempt_id = ?")
+      .get(attemptId) as { readonly snapshot_json: string };
+    const invalid = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+    invalid.permissionMode = "Root";
+    db.prepare(
+      `UPDATE attempt_profile_snapshots
+       SET snapshot_json = ?, snapshot_hash = ?
+       WHERE attempt_id = ?`,
+    ).run(JSON.stringify(invalid), canonicalSha256(invalid), attemptId);
 
     expect(() => profiles.getAttemptSnapshot(attemptId)).toThrowError(
       expect.objectContaining({ code: "DataIntegrityFailure" }),

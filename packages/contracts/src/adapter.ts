@@ -54,7 +54,7 @@ export type AdapterObservationDiagnosticCode =
   | "malformed-json";
 
 export interface AdapterObservation {
-  readonly kind: "AgentEvent" | "Diagnostic";
+  readonly kind: "Observation" | "Diagnostic";
   readonly source: AdapterObservationSource;
   readonly confidence: "authoritative" | "inferred";
   readonly observedAt: string;

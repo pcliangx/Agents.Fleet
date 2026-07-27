@@ -98,9 +98,10 @@ describe("ClaudeCodeAdapter discovery (RT-ADAPTER-01..07)", () => {
         "interpreter-filesystem",
         "interpreter-content",
         "package-runtime-closure",
-        "code-signing",
       ]),
     );
+    expect(discovery.executableIdentity.identityCoverage).not.toContain("code-signing");
+    expect(discovery.executableIdentity.codeSigningIdentity).toBeNull();
     expect(Object.isFrozen(discovery)).toBe(true);
     expect(Object.isFrozen(discovery.permissionMappings)).toBe(true);
   });
@@ -233,13 +234,29 @@ describe("ClaudeCodeAdapter discovery (RT-ADAPTER-01..07)", () => {
       }),
     ).toEqual([
       {
-        kind: "AgentEvent",
+        kind: "Observation",
         source: "Hook",
         confidence: "authoritative",
         observedAt,
         payload: { event: "PostToolUse", tool: "Edit" },
         diagnosticCode: null,
       },
+    ]);
+
+    const nestingDepth = 12_000;
+    const deeplyNestedJson = `${'{"value":'.repeat(nestingDepth)}0${"}".repeat(nestingDepth)}`;
+    expect(
+      adapter.ingestObservation({
+        source: "StreamJson",
+        bytes: Buffer.from(deeplyNestedJson, "utf8"),
+        observedAt,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "Observation",
+        source: "StreamJson",
+        confidence: "authoritative",
+      }),
     ]);
 
     for (const bytes of [

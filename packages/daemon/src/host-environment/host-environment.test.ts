@@ -330,4 +330,36 @@ describe("LocalHostEnvironment neutral probe (RT-ENV-02 / SV1-T-22)", () => {
       reason: "executable-identity-drift",
     });
   });
+
+  it("declares code-signing coverage only after inspecting a native executable", async () => {
+    root = mkdtempSync(join(tmpdir(), "af-r103-native-signing-"));
+    const repositoryRoot = join(root, "repository");
+    mkdirSync(repositoryRoot);
+    const environment = new LocalHostEnvironment({
+      appDataRoot: join(root, "app-data"),
+      explicitPathEntries: ["/usr/bin", "/bin"],
+      inheritedEnvironment: {},
+      runner: {
+        async run() {
+          return { stdout: "2.1.218\n", stderr: "" };
+        },
+      },
+    });
+    const candidate = await environment.discoverCandidate("/bin/sh");
+    const probe = await environment.probe({
+      authorization: {
+        trustId: "trust-native",
+        trustVersion: 1,
+        state: "Active",
+        repositoryRoot,
+        repositoryIdentity: "repository-native",
+      },
+      candidate,
+      versionArguments: ["--version"],
+    });
+
+    expect(probe.executableIdentity.packageRuntimeClosureManifest.kind).toBe("native");
+    expect(probe.executableIdentity.identityCoverage).toContain("code-signing");
+    expect(probe.executableIdentity.codeSigningIdentity).not.toBeNull();
+  });
 });

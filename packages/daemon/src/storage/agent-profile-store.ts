@@ -22,6 +22,7 @@ import {
 } from "@agents-fleet/contracts";
 import { secretReferenceIdentity } from "../agent-profile/secret-reference.js";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
+import { deepFreeze } from "../immutable/deep-freeze.js";
 import { type Migration, transact } from "./database.js";
 import { StoreError } from "./task-store.js";
 
@@ -114,13 +115,36 @@ const PROFILE_KEYS = [
 const KEYCHAIN_REFERENCE_KEYS = ["kind", "referenceId", "service", "account"] as const;
 const AGENT_OWNED_REFERENCE_KEYS = ["kind", "referenceId", "agentId", "accountRef"] as const;
 const PERMISSION_MODES: readonly PermissionMode[] = ["Manual", "Balanced", "YOLO"];
-
-const deepFreeze = <T>(value: T): T => {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const child of Object.values(value)) deepFreeze(child);
-  return value;
-};
+const ADAPTER_CAPABILITIES: readonly AdapterCapability[] = [
+  "Discovery",
+  "Hook",
+  "Transcript",
+  "Resume",
+  "PermissionMapping",
+];
+const SNAPSHOT_KEYS = [
+  "profileId",
+  "profileVersion",
+  "agentId",
+  "accountRef",
+  "model",
+  "mode",
+  "permissionMode",
+  "secretRefs",
+  "secretReferenceIdentities",
+  "adapterCapabilities",
+  "adapterCapabilitiesHash",
+  "permissionMapping",
+  "permissionMappingHash",
+] as const;
+const PERMISSION_MAPPING_KEYS = [
+  "requestedMode",
+  "effectiveMode",
+  "launchArgumentsPreview",
+  "enforcedCapabilities",
+  "unsupportedControls",
+  "warnings",
+] as const;
 
 const exactKeys = (
   value: Record<string, unknown>,
@@ -130,6 +154,17 @@ const exactKeys = (
   const keys = Object.keys(value);
   if (keys.some((key) => !allowed.includes(key))) {
     throw new StoreError("InvalidRequest", `${what} contains an unsupported field`);
+  }
+};
+
+const exactRequiredKeys = (
+  value: Record<string, unknown>,
+  required: readonly string[],
+  what: string,
+): void => {
+  exactKeys(value, required, what);
+  if (required.some((key) => !Object.hasOwn(value, key))) {
+    throw new StoreError("InvalidRequest", `${what} is missing a required field`);
   }
 };
 
@@ -143,6 +178,23 @@ const nonEmptyString = (value: unknown, what: string): string => {
 const nullableString = (value: unknown, what: string): string | null => {
   if (value === undefined || value === null) return null;
   return nonEmptyString(value, what);
+};
+
+const permissionMode = (value: unknown, what: string): PermissionMode => {
+  if (typeof value !== "string" || !(PERMISSION_MODES as readonly string[]).includes(value)) {
+    throw new StoreError("InvalidRequest", `${what} is invalid`);
+  }
+  return value as PermissionMode;
+};
+
+const stringArray = (value: unknown, what: string): string[] => {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || item.includes("\0"))
+  ) {
+    throw new StoreError("InvalidRequest", `${what} must be an array of strings`);
+  }
+  return [...value];
 };
 
 const validateSecretReference = (value: unknown): SecretReference => {
@@ -177,13 +229,7 @@ const normalizeProfile = (input: AgentProfileInput): AgentProfileFields => {
   }
   exactKeys(input as unknown as Record<string, unknown>, PROFILE_KEYS, "Agent Profile");
   const raw = input as unknown as Record<string, unknown>;
-  const permissionMode = raw.permissionMode;
-  if (
-    typeof permissionMode !== "string" ||
-    !(PERMISSION_MODES as readonly string[]).includes(permissionMode)
-  ) {
-    throw new StoreError("InvalidRequest", "Agent Profile Permission Mode is invalid");
-  }
+  const savedPermissionMode = permissionMode(raw.permissionMode, "Agent Profile Permission Mode");
   if (!Array.isArray(raw.secretRefs)) {
     throw new StoreError("InvalidRequest", "Agent Profile secretRefs must be an array");
   }
@@ -207,7 +253,7 @@ const normalizeProfile = (input: AgentProfileInput): AgentProfileFields => {
     accountRef: nullableString(raw.accountRef, "Agent Profile accountRef"),
     model: nullableString(raw.model, "Agent Profile model"),
     mode: nullableString(raw.mode, "Agent Profile mode"),
-    permissionMode: permissionMode as PermissionMode,
+    permissionMode: savedPermissionMode,
     secretRefs,
   };
   const bytes = Buffer.byteLength(JSON.stringify(normalized), "utf8");
@@ -221,20 +267,144 @@ const normalizeProfile = (input: AgentProfileInput): AgentProfileFields => {
   return normalized;
 };
 
-const profileRecord = (row: ProfileRow): AgentProfileRecord =>
-  deepFreeze({
-    profileId: row.profile_id as ProfileId,
-    profileVersion: row.profile_version,
-    agentId: row.agent_id,
-    accountRef: row.account_ref,
-    model: row.model,
-    mode: row.mode,
-    permissionMode: row.permission_mode,
-    secretRefs: JSON.parse(row.secret_refs_json) as SecretReference[],
-    deletedAt: row.deleted_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  });
+const validatePermissionMapping = (value: unknown): PermissionMapping => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new StoreError("InvalidRequest", "Permission Mapping must be an object");
+  }
+  const raw = value as Record<string, unknown>;
+  exactRequiredKeys(raw, PERMISSION_MAPPING_KEYS, "Permission Mapping");
+  const mapping: PermissionMapping = {
+    requestedMode: permissionMode(raw.requestedMode, "Permission Mapping requested mode"),
+    effectiveMode: permissionMode(raw.effectiveMode, "Permission Mapping effective mode"),
+    launchArgumentsPreview: stringArray(
+      raw.launchArgumentsPreview,
+      "Permission Mapping launch arguments",
+    ),
+    enforcedCapabilities: stringArray(
+      raw.enforcedCapabilities,
+      "Permission Mapping enforced capabilities",
+    ),
+    unsupportedControls: stringArray(
+      raw.unsupportedControls,
+      "Permission Mapping unsupported controls",
+    ),
+    warnings: stringArray(raw.warnings, "Permission Mapping warnings"),
+  };
+  if (isPermissionExpansion(mapping)) {
+    throw new StoreError("InvalidRequest", "Permission Mapping expands the saved user intent");
+  }
+  return mapping;
+};
+
+const validateAdapterCapabilities = (value: unknown): AdapterCapability[] => {
+  const capabilities = stringArray(value, "Adapter Capabilities");
+  if (
+    new Set(capabilities).size !== capabilities.length ||
+    capabilities.some(
+      (capability) => !(ADAPTER_CAPABILITIES as readonly string[]).includes(capability),
+    )
+  ) {
+    throw new StoreError("InvalidRequest", "Adapter Capabilities are invalid");
+  }
+  return capabilities as AdapterCapability[];
+};
+
+const validateAgentProfileSnapshot = (value: unknown): AgentProfileSnapshot => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new StoreError("InvalidRequest", "Agent Profile snapshot must be an object");
+  }
+  const raw = value as Record<string, unknown>;
+  exactRequiredKeys(raw, SNAPSHOT_KEYS, "Agent Profile snapshot");
+  const profile = normalizeProfile({
+    agentId: raw.agentId,
+    accountRef: raw.accountRef,
+    model: raw.model,
+    mode: raw.mode,
+    permissionMode: raw.permissionMode,
+    secretRefs: raw.secretRefs,
+  } as unknown as AgentProfileInput);
+  const profileVersion = raw.profileVersion;
+  if (!Number.isInteger(profileVersion) || (profileVersion as number) < 1) {
+    throw new StoreError("InvalidRequest", "Agent Profile snapshot version is invalid");
+  }
+  const secretReferenceIdentities = stringArray(
+    raw.secretReferenceIdentities,
+    "Agent Profile snapshot secret reference identities",
+  );
+  if (
+    secretReferenceIdentities.length !== profile.secretRefs.length ||
+    profile.secretRefs.some(
+      (reference, index) => secretReferenceIdentity(reference) !== secretReferenceIdentities[index],
+    )
+  ) {
+    throw new StoreError(
+      "InvalidRequest",
+      "Agent Profile snapshot secret reference identities are invalid",
+    );
+  }
+  const adapterCapabilities = validateAdapterCapabilities(raw.adapterCapabilities);
+  if (!adapterCapabilities.includes("PermissionMapping")) {
+    throw new StoreError(
+      "InvalidRequest",
+      "Agent Profile snapshot is missing Permission Mapping capability",
+    );
+  }
+  const mapping = validatePermissionMapping(raw.permissionMapping);
+  if (mapping.requestedMode !== profile.permissionMode) {
+    throw new StoreError(
+      "InvalidRequest",
+      "Agent Profile snapshot Permission Mapping does not match the saved mode",
+    );
+  }
+  return {
+    profileId: nonEmptyString(raw.profileId, "Agent Profile snapshot profileId") as ProfileId,
+    profileVersion: profileVersion as number,
+    ...profile,
+    secretReferenceIdentities,
+    adapterCapabilities,
+    adapterCapabilitiesHash: nonEmptyString(
+      raw.adapterCapabilitiesHash,
+      "Agent Profile snapshot Adapter Capabilities hash",
+    ),
+    permissionMapping: mapping,
+    permissionMappingHash: nonEmptyString(
+      raw.permissionMappingHash,
+      "Agent Profile snapshot Permission Mapping hash",
+    ),
+  };
+};
+
+const profileRecord = (row: ProfileRow): AgentProfileRecord => {
+  let secretRefs: unknown;
+  try {
+    secretRefs = JSON.parse(row.secret_refs_json);
+  } catch {
+    throw new StoreError("DataIntegrityFailure", "stored Agent Profile is invalid");
+  }
+  try {
+    if (!Number.isInteger(row.profile_version) || row.profile_version < 1) {
+      throw new Error("profile version is invalid");
+    }
+    const profile = normalizeProfile({
+      agentId: row.agent_id,
+      accountRef: row.account_ref,
+      model: row.model,
+      mode: row.mode,
+      permissionMode: row.permission_mode,
+      secretRefs,
+    } as unknown as AgentProfileInput);
+    return deepFreeze({
+      profileId: nonEmptyString(row.profile_id, "stored Agent Profile id") as ProfileId,
+      profileVersion: row.profile_version,
+      ...profile,
+      deletedAt: nullableString(row.deleted_at, "stored Agent Profile deletion time"),
+      createdAt: nonEmptyString(row.created_at, "stored Agent Profile creation time"),
+      updatedAt: nonEmptyString(row.updated_at, "stored Agent Profile update time"),
+    });
+  } catch {
+    throw new StoreError("DataIntegrityFailure", "stored Agent Profile is invalid");
+  }
+};
 
 export class AgentProfileStore {
   readonly #db: DatabaseSync;
@@ -451,11 +621,9 @@ export class AgentProfileStore {
       throw new StoreError("DataIntegrityFailure", "stored Agent Profile snapshot is invalid");
     }
     try {
-      if (typeof snapshot !== "object" || snapshot === null || Array.isArray(snapshot)) {
-        throw new Error("snapshot is not an object");
-      }
-      const parsed = snapshot as AgentProfileSnapshot;
+      const parsed = validateAgentProfileSnapshot(snapshot);
       if (
+        canonicalSha256(snapshot) !== row.snapshot_hash ||
         canonicalSha256(parsed) !== row.snapshot_hash ||
         parsed.profileId !== row.profile_id ||
         parsed.profileVersion !== row.profile_version ||
@@ -468,7 +636,7 @@ export class AgentProfileStore {
       }
       return deepFreeze(parsed);
     } catch {
-      throw new StoreError("DataIntegrityFailure", "stored Agent Profile snapshot hash is invalid");
+      throw new StoreError("DataIntegrityFailure", "stored Agent Profile snapshot is invalid");
     }
   }
 }

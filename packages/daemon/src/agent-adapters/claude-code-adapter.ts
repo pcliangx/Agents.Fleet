@@ -22,6 +22,7 @@ import {
   type VerifiedDiscoveryInput,
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
+import { deepFreeze } from "../immutable/deep-freeze.js";
 
 const CLAUDE_VERSION = "2.1.218";
 const CLAUDE_CAPABILITIES = [
@@ -87,28 +88,6 @@ const parseVersion = (stdout: string): string => {
     );
   }
   return match[1];
-};
-
-const targetPath = (input: PrepareInput): string => input.worktreeTarget.canonicalPath;
-
-const deepFreeze = <T>(value: T): T => {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const child of Object.values(value)) deepFreeze(child);
-  return value;
-};
-
-const freezeJsonTree = <T extends object>(value: T): T => {
-  const pending: object[] = [value];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (current === undefined || Object.isFrozen(current)) continue;
-    Object.freeze(current);
-    for (const child of Object.values(current)) {
-      if (typeof child === "object" && child !== null) pending.push(child);
-    }
-  }
-  return value;
 };
 
 export class ClaudeCodeAdapter implements AgentAdapter {
@@ -217,7 +196,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     return deepFreeze({
       executablePath: input.discovery.executableIdentity.canonicalEntryPath,
       argv,
-      cwd: targetPath(input),
+      cwd: input.worktreeTarget.canonicalPath,
       env: {
         PATH: input.discovery.probeEnvironment.explicitPath,
         ...input.discovery.probeEnvironment.inheritedEnvironment,
@@ -259,13 +238,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
         return diagnostic("malformed-json");
       }
-      freezeJsonTree(payload);
+      deepFreeze(payload);
     } catch {
       return diagnostic("malformed-json");
     }
     return deepFreeze([
       {
-        kind: "AgentEvent",
+        kind: "Observation",
         source: input.source,
         confidence: "authoritative",
         observedAt: input.observedAt,

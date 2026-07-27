@@ -37,6 +37,7 @@ import {
   PLATFORM_MATRIX_VERSION,
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
+import { deepFreeze } from "../immutable/deep-freeze.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -138,13 +139,6 @@ const isWithin = (parent: string, child: string): boolean => {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 };
 
-const deepFreeze = <T>(value: T): T => {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const child of Object.values(value)) deepFreeze(child);
-  return value;
-};
-
 const hashFile = async (path: string): Promise<string> =>
   await new Promise<string>((resolveHash, reject) => {
     const hash = createHash("sha256");
@@ -188,7 +182,9 @@ const executableFileIdentity = async (path: string): Promise<ExecutableFileIdent
   };
 };
 
-const identityFacts = (identity: ExecutableIdentity): Omit<ExecutableIdentity, "observedAt"> => {
+const withoutObservedAt = (
+  identity: ExecutableIdentity,
+): Omit<ExecutableIdentity, "observedAt"> => {
   const { observedAt: _observedAt, ...facts } = identity;
   return facts;
 };
@@ -431,10 +427,14 @@ export class LocalHostEnvironment implements HostEnvironment {
         : await inspectNativeDependencies(
             dependencyTarget,
             this.#neutralCwd,
-            this.#probeEnvironment(),
+            this.#probeProcessEnvironment(),
           );
     const codeSigningIdentity = native
-      ? await inspectCodeSigning(entry.canonicalPath, this.#neutralCwd, this.#probeEnvironment())
+      ? await inspectCodeSigning(
+          entry.canonicalPath,
+          this.#neutralCwd,
+          this.#probeProcessEnvironment(),
+        )
       : null;
     const entries = interpreter === null ? [entry] : [entry, interpreter];
     const manifestWithoutHash = {
@@ -449,8 +449,8 @@ export class LocalHostEnvironment implements HostEnvironment {
       "entry-filesystem",
       "entry-content",
       "package-runtime-closure",
-      "code-signing",
     ];
+    if (native) coverage.push("code-signing");
     if (current.symlinkFilesystemIdentity !== null) coverage.push("entry-symlink");
     if (interpreter !== null) {
       coverage.push("interpreter-filesystem", "interpreter-content");
@@ -472,7 +472,7 @@ export class LocalHostEnvironment implements HostEnvironment {
     });
   }
 
-  #probeEnvironment(): Readonly<Record<string, string>> {
+  #probeProcessEnvironment(): Readonly<Record<string, string>> {
     return { PATH: this.#explicitPath, ...this.#inheritedEnvironment };
   }
 
@@ -515,12 +515,12 @@ export class LocalHostEnvironment implements HostEnvironment {
       executablePath: before.canonicalEntryPath,
       arguments: input.versionArguments,
       cwd: this.#neutralCwd,
-      environment: this.#probeEnvironment(),
+      environment: this.#probeProcessEnvironment(),
       timeoutMs: PROBE_TIMEOUT_MS,
       maxOutputBytes: FROZEN_RUNTIME_LIMIT_PROFILE.adapterObservationBytes,
     });
     const after = await this.#sampleIdentity(input.candidate);
-    if (canonicalSha256(identityFacts(before)) !== canonicalSha256(identityFacts(after))) {
+    if (canonicalSha256(withoutObservedAt(before)) !== canonicalSha256(withoutObservedAt(after))) {
       throw new HostEnvironmentError(
         "ConfirmationRequired",
         "executable identity drifted during probe",
@@ -606,7 +606,9 @@ export class LocalHostEnvironment implements HostEnvironment {
     };
     try {
       const current = await this.#sampleIdentity(candidate);
-      if (canonicalSha256(identityFacts(current)) !== canonicalSha256(identityFacts(identity))) {
+      if (
+        canonicalSha256(withoutObservedAt(current)) !== canonicalSha256(withoutObservedAt(identity))
+      ) {
         return { ok: false, reason: "executable-identity-drift" };
       }
       return { ok: true, observedAt: current.observedAt };

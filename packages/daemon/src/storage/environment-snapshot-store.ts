@@ -7,6 +7,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { EnvironmentSnapshot, EnvironmentSnapshotRecord } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
+import { deepFreeze } from "../immutable/deep-freeze.js";
 import { type Migration, transact } from "./database.js";
 import { StoreError } from "./task-store.js";
 
@@ -32,15 +33,6 @@ interface SnapshotRow {
   readonly snapshot_hash: string;
 }
 
-const deepFreeze = <T>(value: T): T => {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const child of Object.values(value)) deepFreeze(child);
-  return value;
-};
-
-const snapshotHash = canonicalSha256;
-
 const hasValidSnapshotHash = (snapshot: unknown, expectedHash: string): boolean => {
   if (
     typeof snapshot !== "object" ||
@@ -51,7 +43,7 @@ const hasValidSnapshotHash = (snapshot: unknown, expectedHash: string): boolean 
     return false;
   }
   try {
-    return snapshotHash(snapshot) === expectedHash;
+    return canonicalSha256(snapshot) === expectedHash;
   } catch {
     return false;
   }
