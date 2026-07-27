@@ -36,7 +36,17 @@ export interface ConnectOptions {
 export interface OutgoingCommand {
   readonly commandId: string;
   readonly schemaVersion: number;
+  readonly workspaceId?: string;
+  readonly taskId?: string;
+  readonly attemptId?: string;
+  readonly sessionId?: string;
+  readonly expectedStateVersion?: number;
+  readonly expectedGeneration?: number;
+  readonly attachmentId?: string;
+  readonly fencingToken?: number;
+  readonly confirmationReceipt?: unknown;
   readonly repositoryTrustReceipt?: unknown;
+  readonly launchConfirmationReceipt?: unknown;
   readonly payload: { readonly kind: string; readonly [k: string]: unknown };
 }
 

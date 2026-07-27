@@ -26,6 +26,7 @@ import { ClaudeCodeAdapter } from "./agent-adapters/claude-code-adapter.js";
 import { KeychainCapabilityProofVerifier } from "./auth/keychain-capability-proof-verifier.js";
 import { PersistentChallengeIssuer } from "./confirmation/persistent-challenge-issuer.js";
 import type { CommandRouter } from "./control-dispatcher.js";
+import { FleetProjection } from "./fleet-projection/fleet-projection.js";
 import { RestrictedGitRunner } from "./git/restricted-git.js";
 import { LocalHostEnvironment } from "./host-environment/host-environment.js";
 import { TrustCommandRouter } from "./repository-trust/trust-command-router.js";
@@ -40,7 +41,7 @@ import { EnvironmentSnapshotStore } from "./storage/environment-snapshot-store.j
 import { IdempotencyStore } from "./storage/idempotency.js";
 import { ALL_MIGRATIONS } from "./storage/migrations.js";
 import { RepositoryTrustStore } from "./storage/repository-trust-store.js";
-import { StoreError } from "./storage/task-store.js";
+import { StoreError, TaskStore } from "./storage/task-store.js";
 import { WorktreeStore } from "./storage/worktree-store.js";
 import { LaunchCommandCoordinator } from "./task-orchestrator/launch-command-coordinator.js";
 import { TaskOrchestrator } from "./task-orchestrator/task-orchestrator.js";
@@ -78,6 +79,7 @@ mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 const opened = openDatabase({ path: dbPath, migrations: ALL_MIGRATIONS });
 
 let router: CommandRouter;
+let sessionStreams: SessionRuntime | undefined;
 if (opened.kind === "ready") {
   if (opened.backupsCreated.length > 0) {
     process.stderr.write(
@@ -104,6 +106,7 @@ if (opened.kind === "ready") {
     processSupervisor: createNodePtyProcessSupervisor(),
     confirmations: challenges,
   });
+  sessionStreams = sessions;
   let launches: LaunchCommandCoordinator;
   const taskOrchestrator = new TaskOrchestrator({
     db,
@@ -142,6 +145,8 @@ if (opened.kind === "ready") {
     idempotency: idem,
     challenges,
     taskOrchestrator,
+    taskStore: new TaskStore(db),
+    fleetProjection: new FleetProjection(db),
     launches,
     autoLaunch: true,
     sessions,
@@ -186,6 +191,7 @@ const server = await startServer({
   verifier: new KeychainCapabilityProofVerifier(token),
   token,
   router,
+  ...(sessionStreams === undefined ? {} : { streams: sessionStreams }),
 });
 
 process.stdout.write(

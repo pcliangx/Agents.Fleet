@@ -13,13 +13,15 @@
 
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DevTokenFileTokenSource } from "@agents-fleet/transport";
 import { app, BrowserWindow, dialog, session } from "electron";
 import { APP_ORIGIN, installAppProtocol, registerAppSchemePrivileges } from "./app-protocol.js";
 import { registerTrustIpc } from "./confirmation-ipc.js";
 import { installContentSecurityPolicy, RENDERER_CSP } from "./csp.js";
 import { DaemonClient } from "./daemon-client.js";
+import { DesktopBridgeCore } from "./desktop-bridge.js";
+import { registerDesktopBridgeIpc } from "./desktop-bridge-ipc.js";
 import { type FuseReport, frameworkBinaryPath, verifyReleaseFuses } from "./fuses.js";
 import { handleTrustedIpc } from "./trusted-ipc.js";
 import { guardSession, guardWebContents } from "./window-guard.js";
@@ -62,10 +64,10 @@ let connectionInfo = "connecting…";
 
 const createWindow = (devUrl: string | undefined): BrowserWindow => {
   const win = new BrowserWindow({
-    width: 520,
-    height: 220,
+    width: 1180,
+    height: 760,
     webPreferences: {
-      preload: join(__dirname, "..", "preload", "index.js"),
+      preload: join(__dirname, "..", "preload", "index.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -124,13 +126,25 @@ app.whenReady().then(async () => {
     connectionInfo = `token error: ${String(err)}`;
     return;
   }
-  DaemonClient.connect({ socketPath, token, clientInstanceId: randomUUID() })
+  const clientInstanceId = randomUUID();
+  DaemonClient.connect({ socketPath, token, clientInstanceId })
     .then((client) => {
       connectionInfo = `Connected to daemon — protocol v${client.hello.selectedProtocolVersion}, generation ${client.hello.daemonGeneration}`;
       // R1-02 — the trust-chain + confirmation channels. The capability token
       // stays in Main: it keys both the handshake proof and the receipt MAC
       // (SV1-TRUST-09); the Renderer can only name command/channel IDs.
       registerTrustIpc({ context: ipcContext, sender: client, token });
+      const desktopBridge = registerDesktopBridgeIpc({
+        context: ipcContext,
+        bridge: new DesktopBridgeCore({ sender: client }),
+        streamSocketPath: join(dirname(socketPath), "stream.sock"),
+        token,
+        clientInstanceId,
+      });
+      win.once("closed", () => {
+        desktopBridge.closeAll();
+        client.close();
+      });
     })
     .catch((err: unknown) => {
       connectionInfo = `daemon error: ${String(err)}`;

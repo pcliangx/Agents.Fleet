@@ -38,9 +38,15 @@ importers:
       '@agents-fleet/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@agents-fleet/terminal':
+        specifier: workspace:*
+        version: link:../../packages/terminal
       '@agents-fleet/transport':
         specifier: workspace:*
         version: link:../../packages/transport
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
     devDependencies:
       electron:
         specifier: ^43.0.0

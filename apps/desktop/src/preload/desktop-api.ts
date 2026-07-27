@@ -5,7 +5,18 @@
 // capability token and can only NAME an existing challenge ID for the native
 // confirmation (SV1-AUTH-10) — receipt signing happens in Main.
 
+import type {
+  AttachResult,
+  ControlLease,
+  FleetProjectionView,
+  InputIntent,
+} from "@agents-fleet/contracts";
 import type { ConfirmationIpcResult, TrustCommandIpcResult } from "../main/confirmation-ipc.js";
+import type {
+  CreatedTask,
+  DesktopBridgeError,
+  DesktopBridgeResult,
+} from "../main/desktop-bridge.js";
 
 /** Display-only fields of the RT-REPO-06 trust challenge request. The daemon
  *  binds candidate identity + user identity + the frozen validation plan; the
@@ -23,6 +34,32 @@ export interface TrustChallengeRequestInput {
 
 export interface DesktopApi {
   getConnectionInfo(): Promise<string>;
+  createTask(input: {
+    readonly workspaceId: string;
+    readonly spec: {
+      readonly goal: string;
+      readonly context?: string;
+      readonly constraints?: string;
+      readonly acceptanceCriteria?: string;
+    };
+  }): Promise<DesktopBridgeResult<CreatedTask>>;
+  getFleetProjection(workspaceId: string): Promise<DesktopBridgeResult<FleetProjectionView>>;
+  attachTerminal(input: {
+    readonly sessionId: string;
+    readonly fromSeq?: number;
+  }): Promise<TerminalAttachmentResult>;
+  acquireTerminalControl(attachmentId: string): Promise<DesktopBridgeResult<ControlLease>>;
+  writeTerminalInput(input: {
+    readonly lease: ControlLease;
+    readonly source: "Keyboard" | "IME" | "Paste" | "Mouse" | "Automation";
+    readonly bytes: Uint8Array;
+  }): Promise<DesktopBridgeResult<InputIntent>>;
+  resizeTerminal(input: {
+    readonly lease: ControlLease;
+    readonly cols: number;
+    readonly rows: number;
+  }): Promise<DesktopBridgeResult<{ readonly resized: true }>>;
+  closeTerminal(attachmentId: string): Promise<DesktopBridgeResult<{ readonly closed: true }>>;
   /** RT-REPO-01 — canonicalize a candidate path (no Git, no Trust row). */
   prepareTrustCandidate(path: string): Promise<TrustCommandIpcResult>;
   /** RT-REPO-06 — issue the one-time Repository Trust challenge. */
@@ -43,10 +80,56 @@ export interface DesktopApi {
   inspectRepository(workspaceId: string): Promise<TrustCommandIpcResult>;
 }
 
-type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
+export interface RendererMessagePort {
+  postMessage(message: unknown, transfer?: readonly ArrayBuffer[]): void;
+  start(): void;
+  close(): void;
+  onmessage: ((event: { readonly data: unknown }) => void) | null;
+}
 
-export const createDesktopApi = (invoke: Invoke): DesktopApi => ({
+export type TerminalAttachmentResult =
+  | { readonly ok: true; readonly result: AttachResult; readonly port: RendererMessagePort }
+  | { readonly ok: false; readonly error: DesktopBridgeError };
+
+type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
+type ReceiveTerminalPort = (attachmentId: string) => Promise<RendererMessagePort>;
+
+export const createDesktopApi = (
+  invoke: Invoke,
+  receiveTerminalPort: ReceiveTerminalPort = async () => {
+    throw new Error("terminal MessagePort receiver is unavailable");
+  },
+): DesktopApi => ({
   getConnectionInfo: () => invoke("af:get-connection-info") as Promise<string>,
+  createTask: (input) =>
+    invoke("af:create-task", input) as Promise<DesktopBridgeResult<CreatedTask>>,
+  getFleetProjection: (workspaceId) =>
+    invoke("af:get-fleet-projection", workspaceId) as Promise<
+      DesktopBridgeResult<FleetProjectionView>
+    >,
+  attachTerminal: async (input) => {
+    const attached = (await invoke(
+      "af:attach-terminal",
+      input,
+    )) as DesktopBridgeResult<AttachResult>;
+    if (!attached.ok) return attached;
+    return {
+      ...attached,
+      port: await receiveTerminalPort(attached.result.attachmentId),
+    };
+  },
+  acquireTerminalControl: (attachmentId) =>
+    invoke("af:acquire-terminal-control", attachmentId) as Promise<
+      DesktopBridgeResult<ControlLease>
+    >,
+  writeTerminalInput: (input) =>
+    invoke("af:write-terminal-input", input) as Promise<DesktopBridgeResult<InputIntent>>,
+  resizeTerminal: (input) =>
+    invoke("af:resize-terminal", input) as Promise<DesktopBridgeResult<{ readonly resized: true }>>,
+  closeTerminal: (attachmentId) =>
+    invoke("af:close-terminal", attachmentId) as Promise<
+      DesktopBridgeResult<{ readonly closed: true }>
+    >,
   prepareTrustCandidate: (path) =>
     invoke("af:prepare-trust-candidate", path) as Promise<TrustCommandIpcResult>,
   issueTrustChallenge: (request) =>

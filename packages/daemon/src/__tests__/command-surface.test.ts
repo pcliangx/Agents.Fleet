@@ -38,6 +38,7 @@ import { ClaudeCodeAdapter } from "../agent-adapters/claude-code-adapter.js";
 import { DevProofVerifier } from "../auth/dev-proof-verifier.js";
 import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import { type ConnectionSink, ControlDispatcher } from "../control-dispatcher.js";
+import { FleetProjection } from "../fleet-projection/fleet-projection.js";
 import { defaultGitExec, RestrictedGitRunner } from "../git/restricted-git.js";
 import {
   type ExecutableRunner,
@@ -354,6 +355,8 @@ const wire = async (
     idempotency: new IdempotencyStore(opened.db),
     challenges,
     taskOrchestrator,
+    taskStore: tasks,
+    fleetProjection: new FleetProjection(opened.db),
     ...(launchCoordinator === undefined ? {} : { launches: launchCoordinator }),
     ...(options.autoLaunch === undefined ? {} : { autoLaunch: options.autoLaunch }),
     sessions,
@@ -556,6 +559,44 @@ describe("R1-07 Control Dispatcher command routing", () => {
     expect(errorCode(last(sink))).toBe("InvalidRequest");
   });
 
+  it("creates a Task and reads it back through the authenticated Fleet Projection", async () => {
+    const { dispatcher, sink } = await wire();
+
+    await dispatcher.onMessage(
+      envelope(
+        "CreateTask",
+        {
+          spec: {
+            goal: "Build the minimal Desktop UI",
+            acceptanceCriteria: "Task is visible in the Fleet projection",
+          },
+        },
+        { workspaceId: "workspace-ui" },
+      ),
+    );
+    const created = last(sink) as {
+      readonly result?: { readonly taskId?: string; readonly lifecycle?: string };
+    };
+    expect(created.result).toMatchObject({ lifecycle: "Draft" });
+    expect(created.result?.taskId).toMatch(/^tk_/);
+
+    await dispatcher.onMessage(envelope("GetFleetProjection", {}, { workspaceId: "workspace-ui" }));
+
+    expect(last(sink)).toMatchObject({
+      result: {
+        workspaceId: "workspace-ui",
+        freshness: "Fresh",
+        dataGap: false,
+        tasks: [
+          {
+            taskId: created.result?.taskId,
+            taskView: { status: { value: "Draft" } },
+          },
+        ],
+      },
+    });
+  });
+
   it("routes Attach through the production SessionRuntime seam", async () => {
     const { dispatcher, sink } = await wire();
 
@@ -571,6 +612,39 @@ describe("R1-07 Control Dispatcher command routing", () => {
         commandId: "cmd-Attach",
       },
     });
+  });
+
+  it("closes connection-owned Attachments and revokes their Lease on control disconnect", async () => {
+    const fixture = await wire();
+    seedRunningAttempt(fixture.db, fixture.root);
+
+    await fixture.dispatcher.onMessage(
+      envelope("Attach", { sessionId: "session-1", fromSeq: undefined }),
+    );
+    const attached = resultOf(last(fixture.sink)) as { readonly attachmentId: string };
+    await fixture.dispatcher.onMessage(
+      envelope("AcquireControl", {}, { attachmentId: attached.attachmentId }),
+    );
+    const firstLease = resultOf(last(fixture.sink)) as { readonly fencingToken: number };
+
+    fixture.dispatcher.onControlConnectionClosed();
+
+    expect(
+      fixture.db
+        .prepare("SELECT status FROM attachments WHERE attachment_id = ?")
+        .get(attached.attachmentId),
+    ).toEqual({ status: "Closed" });
+    expect(
+      fixture.db
+        .prepare("SELECT attachment_id FROM control_leases WHERE attachment_id = ?")
+        .get(attached.attachmentId),
+    ).toBeUndefined();
+
+    const replacement = fixture.sessions.attach("session-1");
+    expect(replacement.attachmentId).not.toBe(attached.attachmentId);
+    expect(fixture.sessions.acquireControl(replacement.attachmentId).fencingToken).toBe(
+      firstLease.fencingToken + 1,
+    );
   });
 
   it.each([
@@ -605,6 +679,25 @@ describe("R1-07 Control Dispatcher command routing", () => {
           fencingToken: 1,
         },
       ),
+      "NotFound",
+    ],
+    [
+      "RenewControl",
+      envelope(
+        "RenewControl",
+        {},
+        {
+          sessionId: "session-missing",
+          expectedGeneration: 1,
+          attachmentId: "attachment-missing",
+          fencingToken: 1,
+        },
+      ),
+      "StaleControlLease",
+    ],
+    [
+      "CloseAttachment",
+      envelope("CloseAttachment", {}, { attachmentId: "attachment-missing" }),
       "NotFound",
     ],
   ] as const)("routes %s through SessionRuntime", async (_kind, command, expectedCode) => {

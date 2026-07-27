@@ -7,8 +7,45 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <h1>Agents.Fleet</h1>
-    <div id="status">connecting…</div>
+    <header class="app-header">
+      <div>
+        <h1>Agents.Fleet</h1>
+        <p>Local Agent fleet</p>
+      </div>
+      <div id="status" role="status">connecting…</div>
+    </header>
+    <main>
+      <aside>
+        <label for="workspace-id">Workspace ID</label>
+        <div class="row">
+          <input id="workspace-id" value="workspace-default" autocomplete="off" />
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+        <form id="new-task">
+          <label for="task-goal">New Task</label>
+          <textarea id="task-goal" rows="4" placeholder="What should the Agent accomplish?"></textarea>
+          <button type="submit">Create Task</button>
+        </form>
+        <div id="projection-warning" role="status"></div>
+      </aside>
+      <section class="fleet">
+        <div class="section-heading">
+          <h2>Fleet</h2>
+          <span id="fleet-meta"></span>
+        </div>
+        <div id="tasks" class="task-list"></div>
+      </section>
+      <section class="terminal-panel">
+        <div class="section-heading">
+          <h2>Terminal</h2>
+          <div class="row">
+            <span id="terminal-meta">No Session attached</span>
+            <button id="acquire-control" type="button" disabled>Acquire Control</button>
+          </div>
+        </div>
+        <section id="terminal" aria-label="Attached Agent terminal"></section>
+      </section>
+    </main>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

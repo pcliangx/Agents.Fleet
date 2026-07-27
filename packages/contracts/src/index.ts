@@ -52,6 +52,16 @@ export type {
   VerifiedDiscoveryInput,
 } from "./modules/agent-adapter.js";
 export type {
+  AttemptProjectionSummary,
+  FleetProjection,
+  FleetProjectionView,
+  ProjectedAgentProfileSnapshot,
+  ProjectedField,
+  ProjectionSource,
+  RecentObservation,
+  TaskProjection,
+} from "./modules/fleet-projection.js";
+export type {
   CreateEnvironmentSnapshotInput,
   ExecutableProbeInput,
   HostEnvironment,
@@ -82,7 +92,7 @@ export type {
   StopSessionImpact,
   TaskOrchestrator,
 } from "./modules/task-orchestrator.js";
-export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
+export type { CellCursor, TerminalInput, TerminalSurface } from "./modules/terminal-surface.js";
 export type {
   DisposeBlocker,
   DisposeBlockerKind,

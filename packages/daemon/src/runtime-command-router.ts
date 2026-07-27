@@ -25,15 +25,20 @@ import type {
 import { type ChallengePreview, hashPreviewFact } from "./confirmation/challenge-issuer.js";
 import type { PersistentChallengeIssuer } from "./confirmation/persistent-challenge-issuer.js";
 import type { CommandRouter } from "./control-dispatcher.js";
+import type { FleetProjection } from "./fleet-projection/fleet-projection.js";
 import { CommandError } from "./repository-trust/trust-command-router.js";
 import { transact } from "./storage/database.js";
 import { hashCommandPayload, type IdempotencyStore } from "./storage/idempotency.js";
-import { StoreError } from "./storage/task-store.js";
+import { StoreError, type TaskSpec, type TaskStore } from "./storage/task-store.js";
 import type { LaunchCommandCoordinator } from "./task-orchestrator/launch-command-coordinator.js";
 
 const RUNTIME_COMMAND_KINDS = [
+  "CreateTask",
+  "GetFleetProjection",
   "Attach",
   "AcquireControl",
+  "RenewControl",
+  "CloseAttachment",
   "WriteSessionInput",
   "ResizeSession",
   "DisposeWorktree",
@@ -66,13 +71,41 @@ const worktreeIdFromWire = (value: string): WorktreeId => value as WorktreeId;
 
 const requiredEnvelopeString = (
   envelope: CommandEnvelope,
-  key: "taskId" | "attemptId" | "sessionId" | "attachmentId",
+  key: "workspaceId" | "taskId" | "attemptId" | "sessionId" | "attachmentId",
 ): string => {
   const value = envelope[key];
   if (typeof value !== "string" || value.length === 0) {
     throw new CommandError("InvalidRequest", `envelope.${key} must be a non-empty string`);
   }
   return value;
+};
+
+const requiredTaskSpec = (value: unknown): TaskSpec => {
+  const spec = asRecord(value, "payload.spec");
+  const allowed = new Set(["goal", "context", "constraints", "acceptanceCriteria"]);
+  for (const key of Object.keys(spec)) {
+    if (!allowed.has(key)) {
+      throw new CommandError("InvalidRequest", `payload.spec has unknown field: ${key}`);
+    }
+  }
+  const goal = requiredString(spec, "goal");
+  const optionalString = (key: "context" | "constraints" | "acceptanceCriteria") => {
+    const field = spec[key];
+    if (field === undefined) return undefined;
+    if (typeof field !== "string") {
+      throw new CommandError("InvalidRequest", `payload.spec.${key} must be a string`);
+    }
+    return field;
+  };
+  const context = optionalString("context");
+  const constraints = optionalString("constraints");
+  const acceptanceCriteria = optionalString("acceptanceCriteria");
+  return {
+    goal,
+    ...(context === undefined ? {} : { context }),
+    ...(constraints === undefined ? {} : { constraints }),
+    ...(acceptanceCriteria === undefined ? {} : { acceptanceCriteria }),
+  };
 };
 
 const requiredEnvelopeInteger = (
@@ -241,6 +274,8 @@ export interface RuntimeCommandRouterOptions {
   readonly idempotency: IdempotencyStore;
   readonly challenges: PersistentChallengeIssuer;
   readonly taskOrchestrator: TaskOrchestrator;
+  readonly taskStore: TaskStore;
+  readonly fleetProjection: FleetProjection;
   readonly launches?: LaunchCommandCoordinator;
   readonly autoLaunch?: boolean;
   readonly fallback?: CommandRouter;
@@ -253,6 +288,8 @@ export class RuntimeCommandRouter implements CommandRouter {
   readonly #idempotency: IdempotencyStore;
   readonly #challenges: PersistentChallengeIssuer;
   readonly #tasks: TaskOrchestrator;
+  readonly #taskStore: TaskStore;
+  readonly #fleetProjection: FleetProjection;
   readonly #launches: LaunchCommandCoordinator | undefined;
   readonly #autoLaunch: boolean;
   readonly #fallback: CommandRouter | undefined;
@@ -264,6 +301,8 @@ export class RuntimeCommandRouter implements CommandRouter {
     this.#idempotency = options.idempotency;
     this.#challenges = options.challenges;
     this.#tasks = options.taskOrchestrator;
+    this.#taskStore = options.taskStore;
+    this.#fleetProjection = options.fleetProjection;
     this.#launches = options.launches;
     this.#autoLaunch = options.autoLaunch ?? false;
     this.#fallback = options.fallback;
@@ -278,6 +317,12 @@ export class RuntimeCommandRouter implements CommandRouter {
     );
   }
 
+  onControlConnectionClosed(attachmentIds: readonly string[]): void {
+    for (const attachmentId of attachmentIds) {
+      this.#sessions.closeAttachment(attachmentId);
+    }
+  }
+
   async execute(kind: CommandKind, envelope: CommandEnvelope): Promise<unknown> {
     if (
       !(RUNTIME_COMMAND_KINDS as readonly string[]).includes(kind) &&
@@ -286,12 +331,37 @@ export class RuntimeCommandRouter implements CommandRouter {
       return await this.#fallback.execute(kind, envelope);
     }
     switch (kind) {
+      case "CreateTask": {
+        const workspaceId = requiredEnvelopeString(envelope, "workspaceId");
+        const payload = asRecord(envelope.payload, "payload");
+        const spec = requiredTaskSpec(payload.spec);
+        const payloadHash = hashCommandPayload({ kind, workspaceId, spec });
+        const replay = this.#idempotency.lookup(envelope.commandId, payloadHash);
+        if (replay !== null) return replay;
+        return transact(this.#db, () => {
+          const concurrentReplay = this.#idempotency.lookup(envelope.commandId, payloadHash);
+          if (concurrentReplay !== null) return concurrentReplay;
+          const created = this.#taskStore.createTask({ workspaceId, spec });
+          this.#idempotency.record(envelope.commandId, payloadHash, created, {
+            type: "Task",
+            id: created.taskId,
+          });
+          return created;
+        });
+      }
+      case "GetFleetProjection":
+        return this.#fleetProjection.projectFleet(requiredEnvelopeString(envelope, "workspaceId"));
       case "Attach": {
         const payload = asRecord(envelope.payload, "payload");
         return this.#sessions.attach(requiredString(payload, "sessionId"));
       }
       case "AcquireControl":
         return this.#sessions.acquireControl(requiredEnvelopeString(envelope, "attachmentId"));
+      case "RenewControl":
+        return this.#sessions.renewControl(leaseFrom(envelope));
+      case "CloseAttachment":
+        this.#sessions.closeAttachment(requiredEnvelopeString(envelope, "attachmentId"));
+        return { closed: true };
       case "WriteSessionInput": {
         const payload = asRecord(envelope.payload, "payload");
         return await this.#sessions.writeSessionInput({
