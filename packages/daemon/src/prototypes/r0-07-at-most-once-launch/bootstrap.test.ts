@@ -84,7 +84,13 @@ const spawnBootstrap = (opts: SpawnBootstrapOpts): number => {
 describe("R0-07 inert bootstrap", () => {
   it("RT-LAUNCH-02: writes the durable receipt with full identity before any authorization", async () => {
     const dir = mkDir();
-    const pid = spawnBootstrap({ dir, timeoutMs: 1200 });
+    // Large timeout so the bootstrap stays alive across any vitest worker
+    // scheduling jitter while we verify the live identity (#63: a 1200ms
+    // timeout raced the parsePs identity check when a busy worker delayed the
+    // receipt poll past the bootstrap's self-exit). We abort explicitly
+    // afterwards instead of waiting for the timeout — the never-authorized
+    // timeout behavior itself is covered by the RT-LAUNCH-06 case below.
+    const pid = spawnBootstrap({ dir, timeoutMs: 30_000 });
     expect(await waitFor(() => existsSync(receiptPath(dir, "ln-test")))).toBe(true);
     const receipt = readJson(receiptPath(dir, "ln-test"));
     expect(receipt?.pid).toBe(pid);
@@ -93,7 +99,9 @@ describe("R0-07 inert bootstrap", () => {
     // receipt identity matches the live process (RT-REC-12 full identity)
     const observed = parsePs(pid);
     expect(observed?.lstart).toBe(receipt?.lstart);
-    // never authorized → times out without exec
+    // never authorized → abort explicitly (does not exec); avoids racing the
+    // bootstrap timeout exit against the identity check above.
+    atomicPublish(abortPath(dir, "ln-test"), JSON.stringify({ nonce: "ln-test" }));
     expect(await waitFor(() => existsSync(bootstrapExitPath(dir, "ln-test")))).toBe(true);
     expect(readJson(bootstrapExitPath(dir, "ln-test"))?.exec).toBe(false);
     expect(existsSync(agentIdentityPath(dir, "ln-test"))).toBe(false);
