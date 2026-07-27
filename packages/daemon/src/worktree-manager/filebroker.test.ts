@@ -236,7 +236,12 @@ describe("SV1-T-17 race fixtures", () => {
     }
     console.log("symlink-swap race stats:", { ITERATIONS, ...stats });
     expect(stats.escapes).toBe(0);
-    expect(stats.ok + stats.notFound + stats.symlinkRejected + stats.raceLost).toBe(ITERATIONS);
+    // identity-drift 计入分类总和：负载下 root identity 检查偶发漂移是合法的
+    // fail-closed 路径——SV1-T-17 的安全本质是 escapes=0，不是限制 fail 的分类。
+    // 此前 sum 漏了 identityDrift，并发下偶发漂移即 sum<ITERATIONS 误红（#54）。
+    expect(
+      stats.ok + stats.notFound + stats.symlinkRejected + stats.raceLost + stats.identityDrift,
+    ).toBe(ITERATIONS);
   });
 
   it("root replacement race: operate on the original identity or fail closed", {
