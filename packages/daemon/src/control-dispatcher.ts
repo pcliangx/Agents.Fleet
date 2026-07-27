@@ -40,6 +40,7 @@ export interface ConnectionSink {
 export type DispatcherState = "awaiting-hello" | "awaiting-auth" | "ready" | "closed";
 
 export interface CommandRouter {
+  /** Route ownership, not a promise that the current daemon mode permits execution. */
   handles(kind: string): boolean;
   execute(kind: CommandKind, env: CommandEnvelope): Promise<unknown>;
 }

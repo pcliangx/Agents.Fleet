@@ -17,6 +17,7 @@ import type {
   AgentProfileSnapshot,
   ChallengeDisplay,
   CommandEnvelope,
+  CommandId,
   ConfirmationChallenge,
   EnvironmentSnapshotRecord,
   HostEnvironment,
@@ -33,6 +34,7 @@ import { ProcessDisposition } from "@agents-fleet/contracts";
 import { type ChallengePreview, hashPreviewFact } from "../confirmation/challenge-issuer.js";
 import type { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
+import type { RestrictedGitRunner } from "../git/restricted-git.js";
 import type { AdapterSnapshotFacts, AgentProfileStore } from "../storage/agent-profile-store.js";
 import { transact } from "../storage/database.js";
 import { appendDomainEvent } from "../storage/domain-event-store.js";
@@ -47,6 +49,9 @@ import { type AttemptStatus, StoreError } from "../storage/task-store.js";
 import type { WorktreeRecord, WorktreeStore } from "../storage/worktree-store.js";
 
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+const provisionCommandId = (commandId: CommandId): CommandId =>
+  `${commandId}:provision` as CommandId;
 
 interface TaskFacts {
   readonly taskId: string;
@@ -76,6 +81,7 @@ interface LaunchPlan {
   readonly repositoryIdentity: string;
   readonly normalizedCommand: LaunchCommandPayload;
   readonly worktreeTarget: WorktreeTargetBinding;
+  readonly worktreeObservedState: WorktreeObservedState;
   readonly expectedStateFingerprint: string | null;
   readonly expectedClean: boolean;
   readonly profileSnapshot: AgentProfileSnapshot;
@@ -83,6 +89,25 @@ interface LaunchPlan {
   readonly environmentSnapshot: EnvironmentSnapshotRecord;
   readonly launchSpec: LaunchSpec;
 }
+
+type WorktreeObservedState =
+  | {
+      readonly kind: "Planned";
+      readonly pathState: "not-materialized";
+      readonly expectedClean: true;
+    }
+  | {
+      readonly kind: "Existing";
+      readonly observedAt: string;
+      readonly branchName: string;
+      readonly detached: false;
+      readonly headSha: string;
+      readonly baseSha: string;
+      readonly stagedCount: number;
+      readonly unstagedCount: number;
+      readonly untrackedCount: number;
+      readonly externallyOccupied: false;
+    };
 
 interface PlanRow {
   readonly challenge_id: string;
@@ -118,6 +143,7 @@ export interface LaunchCommandCoordinatorOptions {
   readonly trustStore: RepositoryTrustStore;
   readonly worktreeStore: WorktreeStore;
   readonly worktrees: WorktreeManager;
+  readonly git: Pick<RestrictedGitRunner, "verifyCommitObject">;
   readonly hostEnvironment: HostEnvironment;
   readonly adapterFor: (agentId: string) => AgentAdapter;
   readonly managedWorktreeRoot: string;
@@ -133,6 +159,7 @@ export class LaunchCommandCoordinator {
   readonly #trustStore: RepositoryTrustStore;
   readonly #worktreeStore: WorktreeStore;
   readonly #worktrees: WorktreeManager;
+  readonly #git: Pick<RestrictedGitRunner, "verifyCommitObject">;
   readonly #hostEnvironment: HostEnvironment;
   readonly #adapterFor: (agentId: string) => AgentAdapter;
   readonly #managedWorktreeRoot: string;
@@ -150,6 +177,7 @@ export class LaunchCommandCoordinator {
     this.#trustStore = options.trustStore;
     this.#worktreeStore = options.worktreeStore;
     this.#worktrees = options.worktrees;
+    this.#git = options.git;
     this.#hostEnvironment = options.hostEnvironment;
     this.#adapterFor = options.adapterFor;
     this.#managedWorktreeRoot = options.managedWorktreeRoot;
@@ -299,7 +327,7 @@ export class LaunchCommandCoordinator {
 
     if (plan.worktreeTarget.kind === "Planned") {
       await this.#worktrees.provision({
-        commandId: `${envelope.commandId}:provision` as never,
+        commandId: provisionCommandId(envelope.commandId),
         worktreeId: plan.worktreeTarget.worktreeId,
       });
     }
@@ -406,6 +434,8 @@ export class LaunchCommandCoordinator {
       if (
         plan.worktreeTarget.kind === "Planned" &&
         (inspected.inspection.headSha !== plan.normalizedCommand.baseCommitSha ||
+          inspected.inspection.detached ||
+          inspected.inspection.branchName !== plan.worktreeTarget.branchStrategy.branchName ||
           inspected.inspection.gitObservation.staged.length !== 0 ||
           inspected.inspection.gitObservation.unstaged.length !== 0 ||
           inspected.inspection.gitObservation.untracked.length !== 0)
@@ -434,6 +464,7 @@ export class LaunchCommandCoordinator {
     if (requested.userIdentity !== trust.userIdentity) {
       throw new StoreError("Forbidden", "current user does not match Repository Trust");
     }
+    await this.#verifyBaseCommit(workspace, trust, requested.baseCommitSha);
     const normalizedCommand = this.#normalizeWorktreeCommand(
       commandType,
       requested,
@@ -498,6 +529,7 @@ export class LaunchCommandCoordinator {
       repositoryIdentity: this.#repositoryIdentity(workspace),
       normalizedCommand,
       worktreeTarget: worktree.binding,
+      worktreeObservedState: worktree.observedState,
       expectedStateFingerprint: worktree.stateFingerprint,
       expectedClean: worktree.expectedClean,
       profileSnapshot,
@@ -544,6 +576,37 @@ export class LaunchCommandCoordinator {
     ) {
       throw new StoreError("InvalidRequest", "unknown Worktree mode");
     }
+  }
+
+  async #verifyBaseCommit(
+    workspace: WorkspaceRecord,
+    trust: RepositoryTrustRecord,
+    baseCommitSha: string,
+  ): Promise<void> {
+    const verified = await this.#git.verifyCommitObject(
+      {
+        canonicalRoot: workspace.canonicalRoot,
+        filesystemIdentity: trust.filesystemIdentity,
+      },
+      {
+        commonGitDir: workspace.commonGitDir,
+        commonGitDirIdentity: workspace.commonGitDirIdentity,
+      },
+      baseCommitSha,
+    );
+    if (verified.ok) return;
+    if (verified.reason === "invalid-sha" || verified.reason === "not-a-commit") {
+      throw new StoreError(
+        "InvalidRequest",
+        "baseCommitSha must name a commit object in the Active Repository",
+      );
+    }
+    throw new StoreError(
+      "Conflict",
+      verified.reason === "repository-identity-drift"
+        ? "Repository identity changed while verifying baseCommitSha"
+        : "Active Repository could not be validated while verifying baseCommitSha",
+    );
   }
 
   #assertCommandAllowed(
@@ -637,6 +700,7 @@ export class LaunchCommandCoordinator {
     command: LaunchCommandPayload,
   ): Promise<{
     readonly binding: WorktreeTargetBinding;
+    readonly observedState: WorktreeObservedState;
     readonly stateFingerprint: string | null;
     readonly expectedClean: boolean;
   }> {
@@ -657,6 +721,11 @@ export class LaunchCommandCoordinator {
             onCollision: "fail",
           },
         },
+        observedState: {
+          kind: "Planned",
+          pathState: "not-materialized",
+          expectedClean: true,
+        },
         stateFingerprint: null,
         expectedClean: true,
       };
@@ -672,6 +741,11 @@ export class LaunchCommandCoordinator {
     if (
       inspected.inspection.gitObservation === null ||
       inspected.inspection.aliveSessions.length > 0 ||
+      inspected.inspection.detached ||
+      inspected.inspection.branchName !== active.branchName ||
+      inspected.inspection.disposeBlockers.some(
+        (blocker) => blocker.kind === "externally-occupied",
+      ) ||
       inspected.inspection.processDispositions.some((fact) =>
         ProcessDisposition.dispositionHoldsSlot(fact.disposition),
       )
@@ -685,6 +759,18 @@ export class LaunchCommandCoordinator {
         canonicalPath: active.canonicalPath,
         repositoryIdentity: active.repositoryIdentity,
         filesystemIdentity: inspected.inspection.filesystemIdentity,
+      },
+      observedState: {
+        kind: "Existing",
+        observedAt: inspected.inspection.observedAt,
+        branchName: active.branchName,
+        detached: false,
+        headSha: inspected.inspection.headSha,
+        baseSha: inspected.inspection.baseSha,
+        stagedCount: inspected.inspection.gitObservation.staged.length,
+        unstagedCount: inspected.inspection.gitObservation.unstaged.length,
+        untrackedCount: inspected.inspection.gitObservation.untracked.length,
+        externallyOccupied: false,
       },
       stateFingerprint: inspected.inspection.gitObservation.stateFingerprint,
       expectedClean: false,
@@ -706,13 +792,51 @@ export class LaunchCommandCoordinator {
           label: "Permission Mapping",
           value: plan.profileSnapshot.permissionMapping.effectiveMode,
         },
-        { label: "Arguments", value: plan.launchSpec.argv.join(" ") || "(none)" },
+        { label: "Arguments (redacted)", value: this.#redactedArguments(plan) },
+        {
+          label: "Environment Snapshot",
+          value: JSON.stringify({
+            hash: plan.environmentSnapshot.hash,
+            capturedAt: plan.environmentSnapshot.snapshot.capturedAt,
+            explicitPath: plan.environmentSnapshot.snapshot.explicitPath,
+            inheritedVariables: plan.environmentSnapshot.snapshot.inheritedVariableAllowlist,
+            secretReferenceCount:
+              plan.environmentSnapshot.snapshot.secretReferenceIdentities.length,
+          }),
+        },
+        {
+          label: "Executable coverage",
+          value: plan.environmentSnapshot.snapshot.executableIdentity.identityCoverage.join(", "),
+        },
+        {
+          label: "Package closure",
+          value:
+            plan.environmentSnapshot.snapshot.executableIdentity.packageRuntimeClosureManifest
+              .manifestHash,
+        },
+        {
+          label: "Executable observed at",
+          value: plan.environmentSnapshot.snapshot.executableIdentity.observedAt,
+        },
         { label: "Repository", value: plan.repositoryIdentity },
         { label: "Worktree mode", value: plan.normalizedCommand.worktreeMode },
         { label: "Worktree", value: plan.worktreeTarget.canonicalPath },
+        { label: "Worktree target", value: JSON.stringify(plan.worktreeTarget) },
+        {
+          label: "Worktree observed state",
+          value: JSON.stringify(plan.worktreeObservedState),
+        },
+        {
+          label: "Dirty/untracked handling",
+          value:
+            plan.worktreeObservedState.kind === "Existing"
+              ? "Current staged, unstaged, and untracked changes are preserved in place"
+              : "A clean Worktree is created; staged, unstaged, and untracked changes are not copied",
+        },
         { label: "Base commit", value: plan.normalizedCommand.baseCommitSha },
         { label: "Task spec version", value: String(plan.task.taskSpecVersion) },
         { label: "Profile version", value: String(plan.profileSnapshot.profileVersion) },
+        { label: "Impact", value: JSON.stringify(this.#impactSummary(plan)) },
       ],
     };
     return {
@@ -745,6 +869,7 @@ export class LaunchCommandCoordinator {
         },
         {
           worktreeTarget: plan.worktreeTarget,
+          worktreeObservedState: plan.worktreeObservedState,
           stateFingerprint: plan.expectedStateFingerprint,
           expectedClean: plan.expectedClean,
           baseCommitSha: plan.normalizedCommand.baseCommitSha,
@@ -760,18 +885,41 @@ export class LaunchCommandCoordinator {
           argvHash: plan.environmentSnapshot.snapshot.argvHash,
         },
       ],
-      impactSummary: {
-        sideEffectClass: "reversible",
-        worktreeMode: plan.normalizedCommand.worktreeMode,
-        createsAttempt: true,
-        createsWorktree: plan.worktreeTarget.kind === "Planned",
-        copiesUncommittedChanges: false,
-      },
+      impactSummary: this.#impactSummary(plan),
+    };
+  }
+
+  #redactedArguments(plan: LaunchPlan): string {
+    const adapterPreview = [...plan.launchSpec.permissionMapping.launchArgumentsPreview];
+    const additionalCount = Math.max(0, plan.launchSpec.argv.length - adapterPreview.length);
+    if (additionalCount > 0) {
+      adapterPreview.push(`<${additionalCount} additional arguments redacted>`);
+    }
+    return JSON.stringify(adapterPreview);
+  }
+
+  #impactSummary(plan: LaunchPlan): {
+    readonly sideEffectClass: "reversible";
+    readonly worktreeMode: WorktreeMode;
+    readonly createsAttempt: true;
+    readonly createsWorktree: boolean;
+    readonly copiesUncommittedChanges: false;
+    readonly mayRepeatPriorSideEffects: boolean;
+  } {
+    return {
+      sideEffectClass: "reversible",
+      worktreeMode: plan.normalizedCommand.worktreeMode,
+      createsAttempt: true,
+      createsWorktree: plan.worktreeTarget.kind === "Planned",
+      copiesUncommittedChanges: false,
+      mayRepeatPriorSideEffects: plan.commandType !== "Start",
     };
   }
 
   async #revalidate(plan: LaunchPlan): Promise<void> {
     this.#revalidateDatabaseFacts(plan);
+    const { workspace, trust } = this.#workspace(plan.task.workspaceId);
+    await this.#verifyBaseCommit(workspace, trust, plan.normalizedCommand.baseCommitSha);
     const verified = await this.#hostEnvironment.verifySnapshot(plan.environmentSnapshot);
     if (!verified.ok) {
       throw new StoreError(
@@ -785,6 +933,12 @@ export class LaunchCommandCoordinator {
       }
       return;
     }
+    if (plan.worktreeObservedState.kind !== "Existing") {
+      throw new StoreError(
+        "DataIntegrityFailure",
+        "existing Worktree target has no observed state",
+      );
+    }
     const inspected = await this.#worktrees.inspect({
       worktreeId: plan.worktreeTarget.worktreeId,
     });
@@ -792,6 +946,11 @@ export class LaunchCommandCoordinator {
       !inspected.ok ||
       inspected.inspection.gitObservation === null ||
       inspected.inspection.gitObservation.stateFingerprint !== plan.expectedStateFingerprint ||
+      inspected.inspection.detached ||
+      inspected.inspection.branchName !== plan.worktreeObservedState.branchName ||
+      inspected.inspection.disposeBlockers.some(
+        (blocker) => blocker.kind === "externally-occupied",
+      ) ||
       inspected.inspection.filesystemIdentity.dev !== plan.worktreeTarget.filesystemIdentity.dev ||
       inspected.inspection.filesystemIdentity.ino !== plan.worktreeTarget.filesystemIdentity.ino
     ) {

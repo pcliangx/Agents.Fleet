@@ -23,6 +23,7 @@ import type {
   ClientHello,
   CommandEnvelope,
   LaunchCommandPayload,
+  WorktreeManager,
 } from "@agents-fleet/contracts";
 import {
   COMMAND_KINDS,
@@ -118,6 +119,7 @@ const wire = async (
     readonly resumeCapability?: boolean;
     readonly autoLaunch?: boolean;
     readonly launchProbeFailure?: boolean;
+    readonly launchModel?: string;
   } = {},
 ): Promise<{
   readonly dispatcher: ControlDispatcher;
@@ -126,6 +128,7 @@ const wire = async (
   readonly root: string;
   readonly tasks: TaskStore;
   readonly worktreeStore: WorktreeStore;
+  readonly observedWorktreeIds: readonly string[];
   readonly launch: LaunchFixture | null;
   readonly sessions: SessionRuntime;
 }> => {
@@ -170,6 +173,7 @@ const wire = async (
     };
   }
   const challenges = new PersistentChallengeIssuer({ db: opened.db, token: TOKEN });
+  const restrictedGit = new RestrictedGitRunner();
   const sessions = new SessionRuntime({
     db: opened.db,
     storeDir: join(root, "runtime"),
@@ -178,11 +182,21 @@ const wire = async (
   });
   runtimes.push({ db: opened.db, runtime: sessions });
   const worktreeStore = new WorktreeStore(opened.db);
-  const worktrees = new WorktreeManagerImpl({
+  const worktreeManager = new WorktreeManagerImpl({
     db: opened.db,
     store: worktreeStore,
     idempotency: new IdempotencyStore(opened.db),
   });
+  const observedWorktreeIds: string[] = [];
+  const worktrees: WorktreeManager = {
+    provision: async (input) => await worktreeManager.provision(input),
+    inspect: async (input) => {
+      observedWorktreeIds.push(input.worktreeId);
+      return await worktreeManager.inspect(input);
+    },
+    previewDispose: async (input) => await worktreeManager.previewDispose(input),
+    dispose: async (input) => await worktreeManager.dispose(input),
+  };
   const tasks = new TaskStore(opened.db);
   let launchCoordinator: LaunchCommandCoordinator | undefined;
   const taskOrchestrator = new TaskOrchestrator({
@@ -283,6 +297,7 @@ const wire = async (
           });
     const profile = profiles.createProfile({
       agentId: adapter.agentId,
+      ...(options.launchModel === undefined ? {} : { model: options.launchModel }),
       permissionMode: "Balanced",
       secretRefs: [],
     });
@@ -296,6 +311,7 @@ const wire = async (
       trustStore: new RepositoryTrustStore(opened.db),
       worktreeStore,
       worktrees,
+      git: restrictedGit,
       hostEnvironment,
       adapterFor: () => adapter,
       managedWorktreeRoot,
@@ -323,7 +339,7 @@ const wire = async (
         db: opened.db,
         challenges,
         idem: new IdempotencyStore(opened.db),
-        runner: new RestrictedGitRunner(),
+        runner: restrictedGit,
       }),
       challenges,
     }),
@@ -347,6 +363,7 @@ const wire = async (
     root,
     tasks,
     worktreeStore,
+    observedWorktreeIds,
     launch,
     sessions,
   };
@@ -385,7 +402,10 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 3_000): Promise<voi
 const sign = (challenge: {
   readonly challengeId: string;
   readonly kind: "repository-trust" | "launch" | "side-effect";
-  readonly display: { readonly title: string; readonly fields: readonly unknown[] };
+  readonly display: {
+    readonly title: string;
+    readonly fields: readonly { readonly label: string; readonly value: string }[];
+  };
   readonly payloadHash: string;
   readonly bindingHashes: readonly string[];
   readonly impactSummaryHash: string;
@@ -399,6 +419,9 @@ const sign = (challenge: {
     proof: signConfirmation(challenge as never, confirmedAt, TOKEN),
   };
 };
+
+const displayFields = (challenge: Parameters<typeof sign>[0]): ReadonlyMap<string, string> =>
+  new Map(challenge.display.fields.map((field) => [field.label, field.value]));
 
 const seedRunningAttempt = (db: DatabaseSync, root: string): void => {
   const now = new Date().toISOString();
@@ -773,7 +796,10 @@ describe("R1-07 Control Dispatcher command routing", () => {
   });
 
   it("start and retry preserve all three explicit Worktree modes", async () => {
-    const fixture = await wire({ launch: true });
+    const fixture = await wire({
+      launch: true,
+      launchModel: "sensitive-looking-model-value",
+    });
     const launch = required(fixture.launch, "launch fixture");
     const baseCommand: LaunchCommandPayload = {
       userIdentity: "uid:501",
@@ -785,6 +811,15 @@ describe("R1-07 Control Dispatcher command routing", () => {
     const start = await issueLaunch(fixture, "Start", "cmd-start", baseCommand, {
       taskId: launch.taskId,
     });
+    const startDisplay = displayFields(start.challenge);
+    expect(startDisplay.get("Arguments (redacted)")).not.toContain("sensitive-looking-model-value");
+    expect(startDisplay.get("Environment Snapshot")).toContain('"hash":"sha256:');
+    expect(startDisplay.get("Executable coverage")).toContain("entry-content");
+    expect(startDisplay.get("Package closure")).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(startDisplay.get("Worktree target")).toContain('"kind":"Planned"');
+    expect(startDisplay.get("Worktree observed state")).toContain("not-materialized");
+    expect(startDisplay.get("Dirty/untracked handling")).toContain("not copied");
+    expect(startDisplay.get("Impact")).toContain('"mayRepeatPriorSideEffects":false');
     await fixture.dispatcher.onMessage({
       ...envelope("Start", start.command as unknown as Record<string, unknown>, {
         taskId: launch.taskId,
@@ -850,6 +885,12 @@ describe("R1-07 Control Dispatcher command routing", () => {
       { ...baseCommand, worktreeMode: "ContinueCurrentWorktree" },
       { attemptId: firstAttempt.attemptId },
     );
+    const continuedDisplay = displayFields(continuedIssue.challenge);
+    expect(continuedDisplay.get("Worktree target")).toContain('"kind":"Existing"');
+    expect(continuedDisplay.get("Worktree observed state")).toContain('"branchName":"fleet/');
+    expect(continuedDisplay.get("Worktree observed state")).toContain('"untrackedCount":0');
+    expect(continuedDisplay.get("Dirty/untracked handling")).toContain("preserved in place");
+    expect(continuedDisplay.get("Impact")).toContain('"mayRepeatPriorSideEffects":true');
     const continued = await executeLaunch(fixture, "Retry", "cmd-retry-continue", continuedIssue, {
       attemptId: firstAttempt.attemptId,
     });
@@ -921,6 +962,52 @@ describe("R1-07 Control Dispatcher command routing", () => {
       baseCommitSha: launch.headSha,
     });
     expect(fixture.tasks.listAttempts(launch.taskId)).toHaveLength(4);
+  });
+
+  it("rejects missing and non-commit FromCommit objects before issuing a challenge", async () => {
+    const fixture = await wire({ launch: true });
+    const launch = required(fixture.launch, "launch fixture");
+    const sourceAttemptId = seedResumableAttempt(fixture, "Interrupted");
+    fixture.db
+      .prepare("UPDATE attempts SET status = 'Failed' WHERE attempt_id = ?")
+      .run(sourceAttemptId);
+    const blobSha = execFileSync("/usr/bin/git", ["hash-object", "README.md"], {
+      cwd: launch.repositoryRoot,
+      encoding: "utf8",
+    }).trim();
+
+    for (const [label, baseCommitSha] of [
+      ["missing", "f".repeat(40)],
+      ["blob", blobSha],
+    ] as const) {
+      await fixture.dispatcher.onMessage(
+        envelope(
+          "IssueLaunchConfirmationChallenge",
+          {
+            commandType: "Retry",
+            targetCommandId: `cmd-retry-${label}`,
+            command: {
+              userIdentity: "uid:501",
+              profileId: launch.profileId,
+              worktreeMode: "FromCommit",
+              baseCommitSha,
+            },
+          },
+          { attemptId: sourceAttemptId },
+        ),
+      );
+      expect(errorCode(last(fixture.sink)), label).toBe("InvalidRequest");
+    }
+
+    expect(
+      (
+        fixture.db.prepare("SELECT COUNT(*) AS count FROM confirmation_challenges").get() as {
+          readonly count: number;
+        }
+      ).count,
+    ).toBe(0);
+    expect(fixture.tasks.listAttempts(launch.taskId)).toHaveLength(1);
+    expect(fixture.worktreeStore.listForTask(launch.taskId)).toHaveLength(0);
   });
 
   it("can replace an expired Launch Confirmation for the same target command", async () => {
@@ -1171,6 +1258,7 @@ describe("R1-07 Control Dispatcher command routing", () => {
       fixture.worktreeStore.worktreeForAttempt(attempt.attemptId),
       "launched Worktree",
     );
+    const observationCountBeforeTerminate = fixture.observedWorktreeIds.length;
     const dirtyPath = join(worktree.canonicalPath, "terminate-must-not-clean.txt");
     writeFileSync(dirtyPath, "preserve\n");
 
@@ -1239,6 +1327,9 @@ describe("R1-07 Control Dispatcher command routing", () => {
     expect(fixture.sessions.inspectSession("session-untouched")?.availability).toBe("Alive");
     expect(fixture.tasks.listTasks(launch.workspaceId)[0]?.lifecycle).toBe("Runnable");
     expect(existsSync(dirtyPath)).toBe(true);
+    expect(fixture.observedWorktreeIds.slice(observationCountBeforeTerminate)).toContain(
+      worktree.worktreeId,
+    );
 
     await fixture.dispatcher.onMessage({
       ...terminateCommand,

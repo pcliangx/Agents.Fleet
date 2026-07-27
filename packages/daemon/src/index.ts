@@ -127,6 +127,7 @@ if (opened.kind === "ready") {
     trustStore: new RepositoryTrustStore(db),
     worktreeStore,
     worktrees,
+    git: runner,
     hostEnvironment,
     adapterFor: (agentId) => {
       if (agentId !== claude.agentId) {

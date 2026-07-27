@@ -32,6 +32,7 @@ export type SideEffectClass = "read" | "reversible" | "destructive" | "external"
 
 /** Public, inert identity facts shown/fetched with an RT-CMD-18 challenge. */
 export interface ConfirmationTargetIdentity {
+  /** Open for forward-compatible Daemon-owned target kinds across protocol versions. */
   readonly targetType: string;
   readonly targetId: string;
   readonly generation?: number;
@@ -40,6 +41,7 @@ export interface ConfirmationTargetIdentity {
 
 /** Optimistic state bindings that must still match when a command executes. */
 export interface ConfirmationExpectedStateVersion {
+  /** Open for forward-compatible Daemon-owned target kinds across protocol versions. */
   readonly targetType: string;
   readonly targetId: string;
   readonly stateVersion: number;
@@ -48,7 +50,11 @@ export interface ConfirmationExpectedStateVersion {
 export interface ConfirmationChallenge {
   readonly challengeId: string;
   readonly kind: ConfirmationKind;
-  /** RT-CMD-17/18 command discriminator, when the challenge authorizes a command. */
+  /**
+   * RT-CMD-17/18 command discriminator, when the challenge authorizes a
+   * command. Open because internal confirmation actions such as
+   * TakeoverControl are not renderer-routable CommandKinds.
+   */
   readonly commandType?: string;
   /** RT-CMD-18 — always Daemon-derived for a side-effect challenge. */
   readonly sideEffectClass?: SideEffectClass;

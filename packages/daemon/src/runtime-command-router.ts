@@ -19,6 +19,7 @@ import type {
   StopCommandImpact,
   StopCommandResult,
   TaskOrchestrator,
+  WorktreeId,
   WorktreeManager,
 } from "@agents-fleet/contracts";
 import { type ChallengePreview, hashPreviewFact } from "./confirmation/challenge-issuer.js";
@@ -60,6 +61,8 @@ const requiredString = (record: Record<string, unknown>, key: string): string =>
   }
   return value;
 };
+
+const worktreeIdFromWire = (value: string): WorktreeId => value as WorktreeId;
 
 const requiredEnvelopeString = (
   envelope: CommandEnvelope,
@@ -214,7 +217,7 @@ const requiredLaunchCommand = (value: unknown): LaunchCommandPayload => {
           plannedWorktree: (() => {
             const planned = asRecord(record.plannedWorktree, "payload.command.plannedWorktree");
             return {
-              worktreeId: requiredString(planned, "worktreeId") as never,
+              worktreeId: worktreeIdFromWire(requiredString(planned, "worktreeId")),
               canonicalPath: requiredString(planned, "canonicalPath"),
               branchName: requiredString(planned, "branchName"),
             };
@@ -314,7 +317,7 @@ export class RuntimeCommandRouter implements CommandRouter {
         }
         return await this.#worktrees.dispose({
           commandId: envelope.commandId,
-          worktreeId: requiredString(payload, "worktreeId") as never,
+          worktreeId: worktreeIdFromWire(requiredString(payload, "worktreeId")),
           expectedStateVersion: requiredExpectedStateVersion(envelope),
           expectedFilesystemIdentity: requiredFilesystemIdentity(payload),
           expectedStateFingerprint: requiredString(payload, "expectedStateFingerprint"),
@@ -332,13 +335,11 @@ export class RuntimeCommandRouter implements CommandRouter {
           );
         }
         if (payload.commandType === "RequestAttemptStop") {
-          const impact = this.#tasks.previewRequestAttemptStop(
-            requiredEnvelopeString(envelope, "attemptId"),
-          );
+          const impact = this.#stopDescriptor(envelope, "RequestAttemptStop").preview();
           return this.#challenges.issue(this.#stopPreview(impact, targetCommandId));
         }
         if (payload.commandType === "CancelTask") {
-          const impact = this.#tasks.previewCancelTask(requiredEnvelopeString(envelope, "taskId"));
+          const impact = this.#stopDescriptor(envelope, "CancelTask").preview();
           if (impact.sideEffectClass !== "destructive") {
             return { confirmationRequired: false, impact };
           }
@@ -358,7 +359,7 @@ export class RuntimeCommandRouter implements CommandRouter {
         const payloadHash = hashCommandPayload(logicalPayload);
         const replay = this.#idempotency.lookup(envelope.commandId, payloadHash);
         if (replay !== null) {
-          await this.#sessions.terminate(lease.sessionId);
+          await this.#terminateSessionAndReobserve(lease.sessionId);
           return replay;
         }
         const result = { terminationRequested: true, sessionId: lease.sessionId };
@@ -375,13 +376,12 @@ export class RuntimeCommandRouter implements CommandRouter {
             id: lease.sessionId,
           });
         });
-        await this.#sessions.terminate(lease.sessionId);
+        await this.#terminateSessionAndReobserve(lease.sessionId);
         return result;
       }
       case "RequestAttemptStop":
-        return await this.#executeStop(envelope);
       case "CancelTask":
-        return await this.#executeCancel(envelope);
+        return await this.#executeStopCommand(envelope, kind);
       case "IssueLaunchConfirmationChallenge": {
         const payload = asRecord(envelope.payload, "payload");
         return await this.#requireLaunches().issueChallenge(
@@ -419,96 +419,133 @@ export class RuntimeCommandRouter implements CommandRouter {
     return this.#launches;
   }
 
-  async #executeStop(envelope: CommandEnvelope): Promise<StopCommandResult> {
-    const attemptId = requiredEnvelopeString(envelope, "attemptId");
+  async #executeStopCommand(
+    envelope: CommandEnvelope,
+    commandType: StopCommandImpact["commandType"],
+  ): Promise<StopCommandResult> {
+    const descriptor = this.#stopDescriptor(envelope, commandType);
     const expectedStateVersion = requiredExpectedStateVersion(envelope);
-    const logicalPayload = {
-      kind: "RequestAttemptStop",
-      attemptId,
-      expectedStateVersion,
-    };
+    const logicalPayload =
+      commandType === "RequestAttemptStop"
+        ? { kind: commandType, attemptId: descriptor.targetId, expectedStateVersion }
+        : { kind: commandType, taskId: descriptor.targetId, expectedStateVersion };
     const payloadHash = hashCommandPayload(logicalPayload);
     const replay = this.#idempotency.lookup(envelope.commandId, payloadHash);
     if (replay !== null) {
       const result = replay as StopCommandResult;
       await this.#tasks.stopSessions(result.stopRequestedSessionIds);
+      await this.#reobserveGitAfterStop(result.attemptId);
       return result;
     }
 
     const result = transact(this.#db, () => {
       const concurrentReplay = this.#idempotency.lookup(envelope.commandId, payloadHash);
       if (concurrentReplay !== null) return concurrentReplay as StopCommandResult;
-      const impact = this.#tasks.previewRequestAttemptStop(attemptId);
-      if (impact.attemptStateVersion !== expectedStateVersion) {
-        throw new StoreError("ConfirmationRequired", "Attempt state changed after preview");
+      const impact = descriptor.preview();
+      if (descriptor.stateVersion(impact) !== expectedStateVersion) {
+        throw new StoreError(
+          "ConfirmationRequired",
+          `${descriptor.targetType} state changed after preview`,
+        );
       }
-      this.#consumeStopReceipt(
-        requiredConfirmationReceipt(envelope.confirmationReceipt),
-        this.#stopPreview(impact, envelope.commandId),
-      );
-      const applied = this.#tasks.requestAttemptStop(attemptId);
-      this.#idempotency.record(envelope.commandId, payloadHash, applied, {
-        type: "Attempt",
-        id: attemptId,
-      });
-      return applied;
-    });
-    await this.#tasks.stopSessions(result.stopRequestedSessionIds);
-    return result;
-  }
-
-  async #executeCancel(envelope: CommandEnvelope): Promise<StopCommandResult> {
-    const taskId = requiredEnvelopeString(envelope, "taskId");
-    const expectedStateVersion = requiredExpectedStateVersion(envelope);
-    const logicalPayload = { kind: "CancelTask", taskId, expectedStateVersion };
-    const payloadHash = hashCommandPayload(logicalPayload);
-    const replay = this.#idempotency.lookup(envelope.commandId, payloadHash);
-    if (replay !== null) {
-      const result = replay as StopCommandResult;
-      await this.#tasks.stopSessions(result.stopRequestedSessionIds);
-      return result;
-    }
-
-    const result = transact(this.#db, () => {
-      const concurrentReplay = this.#idempotency.lookup(envelope.commandId, payloadHash);
-      if (concurrentReplay !== null) return concurrentReplay as StopCommandResult;
-      const impact = this.#tasks.previewCancelTask(taskId);
-      if (impact.taskStateVersion !== expectedStateVersion) {
-        throw new StoreError("ConfirmationRequired", "Task state changed after preview");
-      }
-      if (impact.sideEffectClass === "destructive") {
+      if (descriptor.requiresConfirmation(impact)) {
         this.#consumeStopReceipt(
           requiredConfirmationReceipt(envelope.confirmationReceipt),
           this.#stopPreview(impact, envelope.commandId),
         );
       }
-      const applied = this.#tasks.cancelTask(taskId);
+      const applied = descriptor.apply();
       this.#idempotency.record(envelope.commandId, payloadHash, applied, {
-        type: "Task",
-        id: taskId,
+        type: descriptor.targetType,
+        id: descriptor.targetId,
       });
       return applied;
     });
     await this.#tasks.stopSessions(result.stopRequestedSessionIds);
+    await this.#reobserveGitAfterStop(result.attemptId);
     return result;
   }
 
+  async #terminateSessionAndReobserve(sessionId: string): Promise<void> {
+    const row = this.#db
+      .prepare("SELECT attempt_id FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { readonly attempt_id: string } | undefined;
+    await this.#sessions.terminate(sessionId);
+    await this.#reobserveGitAfterStop(row?.attempt_id ?? null);
+  }
+
+  async #reobserveGitAfterStop(attemptId: string | null): Promise<void> {
+    if (attemptId === null) return;
+    const binding = this.#db
+      .prepare("SELECT worktree_id FROM attempt_worktree_bindings WHERE attempt_id = ?")
+      .get(attemptId) as { readonly worktree_id: string } | undefined;
+    if (binding === undefined) return;
+    try {
+      const observed = await this.#worktrees.inspect({
+        worktreeId: worktreeIdFromWire(binding.worktree_id),
+      });
+      if (!observed.ok) {
+        throw new Error(observed.failure.detail);
+      }
+    } catch {
+      throw new StoreError(
+        "Conflict",
+        "process stop was applied but Worktree Git state could not be re-observed",
+      );
+    }
+  }
+
+  #stopDescriptor(
+    envelope: CommandEnvelope,
+    commandType: StopCommandImpact["commandType"],
+  ): {
+    readonly targetType: "Attempt" | "Task";
+    readonly targetId: string;
+    readonly preview: () => StopCommandImpact;
+    readonly stateVersion: (impact: StopCommandImpact) => number | null;
+    readonly requiresConfirmation: (impact: StopCommandImpact) => boolean;
+    readonly apply: () => StopCommandResult;
+  } {
+    if (commandType === "RequestAttemptStop") {
+      const attemptId = requiredEnvelopeString(envelope, "attemptId");
+      return {
+        targetType: "Attempt",
+        targetId: attemptId,
+        preview: () => this.#tasks.previewRequestAttemptStop(attemptId),
+        stateVersion: (impact) => impact.attemptStateVersion,
+        requiresConfirmation: () => true,
+        apply: () => this.#tasks.requestAttemptStop(attemptId),
+      };
+    }
+    const taskId = requiredEnvelopeString(envelope, "taskId");
+    return {
+      targetType: "Task",
+      targetId: taskId,
+      preview: () => this.#tasks.previewCancelTask(taskId),
+      stateVersion: (impact) => impact.taskStateVersion,
+      requiresConfirmation: (impact) => impact.sideEffectClass === "destructive",
+      apply: () => this.#tasks.cancelTask(taskId),
+    };
+  }
+
   #stopPreview(impact: StopCommandImpact, targetCommandId: string): ChallengePreview {
-    const target =
-      impact.commandType === "RequestAttemptStop"
-        ? { attemptId: impact.attemptId }
-        : { taskId: impact.taskId };
-    const title = impact.commandType === "RequestAttemptStop" ? "Stop Attempt" : "Cancel Task";
+    const targetsAttempt = impact.commandType === "RequestAttemptStop";
+    const targetType = targetsAttempt ? "Attempt" : "Task";
+    if (targetsAttempt && impact.attemptId === null) {
+      throw new StoreError("DataIntegrityFailure", "Attempt stop preview has no Attempt identity");
+    }
+    const targetId: string =
+      targetsAttempt && impact.attemptId !== null ? impact.attemptId : impact.taskId;
+    const target = targetsAttempt ? { attemptId: targetId } : { taskId: targetId };
+    const title = targetsAttempt ? "Stop Attempt" : "Cancel Task";
     const display: ChallengeDisplay = {
       title,
       fields: [
         { label: "Command", value: impact.commandType },
         { label: "Side-effect Class", value: impact.sideEffectClass },
         {
-          label: impact.commandType === "RequestAttemptStop" ? "Attempt" : "Task",
-          value: (impact.commandType === "RequestAttemptStop"
-            ? impact.attemptId
-            : impact.taskId) as string,
+          label: targetType,
+          value: targetId,
         },
         {
           label: "Sessions",
@@ -529,10 +566,8 @@ export class RuntimeCommandRouter implements CommandRouter {
       sideEffectClass: impact.sideEffectClass,
       targetIdentities: [
         {
-          targetType: impact.commandType === "RequestAttemptStop" ? "Attempt" : "Task",
-          targetId: (impact.commandType === "RequestAttemptStop"
-            ? impact.attemptId
-            : impact.taskId) as string,
+          targetType,
+          targetId,
         },
         ...impact.aliveSessions.map((session) => ({
           targetType: "Session",
@@ -611,6 +646,8 @@ export class ReadOnlyRecoveryCommandRouter implements CommandRouter {
     this.#reason = reason;
   }
 
+  // Recovery owns every otherwise-known route so writes fail with the stable
+  // RecoveryRequired code instead of falling through to InternalFailure.
   handles(_kind: string): boolean {
     return true;
   }
