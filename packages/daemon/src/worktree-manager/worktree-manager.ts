@@ -8,11 +8,13 @@ import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type {
+  AttemptId,
   CommandId,
   DisposeBlocker,
   DisposePreview,
   DisposePreviewResult,
   DisposeWorktreeResult,
+  FilesystemIdentity,
   InspectWorktreeResult,
   IntegrationTarget,
   ProvisionWorktreeResult,
@@ -22,14 +24,19 @@ import type {
   WorktreeManager,
   WorktreeManagerFailure,
 } from "@agents-fleet/contracts";
-import { FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
-import { type ProvisionFailure, WorktreeProvisioner } from "../git/provision-worktree.js";
+import { FROZEN_RUNTIME_LIMIT_PROFILE, sameFilesystemIdentity } from "@agents-fleet/contracts";
+import {
+  type ProvisionFailure,
+  type ProvisionResult,
+  WorktreeProvisioner,
+} from "../git/provision-worktree.js";
 import { transact } from "../storage/database.js";
 import { hashCommandPayload, type IdempotencyStore } from "../storage/idempotency.js";
 import { StoreError } from "../storage/task-store.js";
 import type { ManagedWorktreeContext, WorktreeStore } from "../storage/worktree-store.js";
 import { WorktreeDisposer } from "./worktree-disposer.js";
 import { WorktreeInspector } from "./worktree-inspector.js";
+import { WorktreeReadyVerifier } from "./worktree-ready-verifier.js";
 
 export interface WorktreeManagerOptions {
   readonly db: DatabaseSync;
@@ -81,6 +88,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
   readonly #provisioner: WorktreeProvisioner;
   readonly #inspector: WorktreeInspector;
   readonly #disposer: WorktreeDisposer;
+  readonly #readyVerifier: WorktreeReadyVerifier;
   readonly #now: () => number;
   readonly #inflightProvision = new Map<string, InflightProvision>();
 
@@ -95,6 +103,9 @@ export class WorktreeManagerImpl implements WorktreeManager {
     this.#disposer =
       options.disposer ??
       new WorktreeDisposer(options.now === undefined ? {} : { now: options.now });
+    this.#readyVerifier = new WorktreeReadyVerifier(
+      options.now === undefined ? {} : { now: options.now },
+    );
     this.#now = options.now ?? (() => Date.now());
   }
 
@@ -161,16 +172,32 @@ export class WorktreeManagerImpl implements WorktreeManager {
     return transact(
       this.#db,
       () => {
-        let result: ProvisionWorktreeResult;
+        const readyContext = this.#store.context(input.worktreeId);
+        let verifiedProvision: ProvisionResult = provisioned;
         if (provisioned.ok) {
+          const verification = this.#readyVerifier.verify(readyContext, provisioned.worktree);
+          verifiedProvision = verification.ok
+            ? {
+                ok: true,
+                worktree: {
+                  ...provisioned.worktree,
+                  filesystemIdentity: verification.filesystemIdentity,
+                  observedAt: verification.observedAt,
+                },
+              }
+            : { ok: false, failure: verification.failure };
+        }
+
+        let result: ProvisionWorktreeResult;
+        if (verifiedProvision.ok) {
           const ready = this.#store.commitProvisioned(input.worktreeId, {
-            canonicalPath: provisioned.worktree.worktreePath,
-            repositoryIdentity: context.record.repositoryIdentity,
-            branchName: provisioned.worktree.branchName ?? "",
-            baseCommitSha: context.record.baseCommitSha,
-            headCommitSha: provisioned.worktree.headCommitSha,
-            filesystemIdentity: provisioned.worktree.filesystemIdentity,
-            observedAt: provisioned.worktree.observedAt,
+            canonicalPath: verifiedProvision.worktree.worktreePath,
+            repositoryIdentity: readyContext.record.repositoryIdentity,
+            branchName: verifiedProvision.worktree.branchName ?? "",
+            baseCommitSha: readyContext.record.baseCommitSha,
+            headCommitSha: verifiedProvision.worktree.headCommitSha,
+            filesystemIdentity: verifiedProvision.worktree.filesystemIdentity,
+            observedAt: verifiedProvision.worktree.observedAt,
           });
           if (ready.state !== "Ready" || ready.filesystemIdentity === null) {
             throw new StoreError(
@@ -187,13 +214,13 @@ export class WorktreeManagerImpl implements WorktreeManager {
             observedAt: ready.observedAt ?? new Date(this.#now()).toISOString(),
           };
         } else {
-          const failure = provisioned.failure;
+          const failure = verifiedProvision.failure;
           const collision =
             targetExists ||
             (failure.kind === "ProvisionFailed" &&
               (failure.reason === "target-exists" || failure.reason === "branch-collision"));
           const failed = this.#store.commitProvisionFailure(input.worktreeId, {
-            reason: failure.kind === "CapabilityUnavailable" ? failure.reason : failure.reason,
+            reason: failure.reason,
             detail: failure.detail,
             leftover:
               failure.kind === "CapabilityUnavailable"
@@ -230,7 +257,32 @@ export class WorktreeManagerImpl implements WorktreeManager {
     readonly comparison?: IntegrationTarget;
   }): Promise<InspectWorktreeResult> {
     const context = this.#store.context(input.worktreeId);
-    return await this.#inspector.inspect(context, input.comparison);
+    const inspected = await this.#inspector.inspect(context, input.comparison);
+    if (!inspected.ok) return inspected;
+    const lifecycle = this.#store.disposeLifecycleFacts(input.worktreeId);
+    const blockers = [
+      ...lifecycleBlockers(lifecycle),
+      ...inspected.inspection.disposeBlockers,
+      ...unmergedCommitBlockers(inspected.inspection.ahead, lifecycle),
+    ];
+    return {
+      ok: true,
+      inspection: {
+        ...inspected.inspection,
+        taskId: context.record.taskId as TaskId,
+        aliveSessions: lifecycle.aliveSessions.map((session) => ({
+          sessionId: session.sessionId as SessionId,
+          attemptId: session.attemptId as AttemptId,
+          observedAt: session.observedAt,
+        })),
+        processDispositions: lifecycle.processDispositions.map((fact) => ({
+          attemptId: fact.attemptId as AttemptId,
+          disposition: fact.disposition,
+          observedAt: fact.observedAt,
+        })),
+        disposeBlockers: dedupeBlockers(blockers),
+      },
+    };
   }
 
   async previewDispose(input: {
@@ -261,31 +313,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     }
 
     const lifecycle = this.#store.disposeLifecycleFacts(input.worktreeId);
-    const blockers: DisposeBlocker[] = [];
-    if (lifecycle.nonterminalAttemptIds.length > 0) {
-      blockers.push({
-        kind: "nonterminal-attempt",
-        detail: "Worktree has a nonterminal Attempt",
-        relatedAttemptIds: lifecycle.nonterminalAttemptIds,
-        relatedSessionIds: [],
-      });
-    }
-    if (lifecycle.aliveSessionIds.length > 0) {
-      blockers.push({
-        kind: "alive-session",
-        detail: "Worktree has an Alive Session",
-        relatedAttemptIds: lifecycle.attemptIds,
-        relatedSessionIds: lifecycle.aliveSessionIds as readonly SessionId[],
-      });
-    }
-    if (lifecycle.pendingProcessAttemptIds.length > 0) {
-      blockers.push({
-        kind: "pending-process-disposition",
-        detail: "Worktree has a pending Process Disposition",
-        relatedAttemptIds: lifecycle.pendingProcessAttemptIds,
-        relatedSessionIds: [],
-      });
-    }
+    const blockers: DisposeBlocker[] = [...lifecycleBlockers(lifecycle)];
 
     const inspected = await this.#inspector.inspect(context, input.integrationTarget);
     let stateFingerprint: string | null = null;
@@ -294,14 +322,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
       observedAt = inspected.inspection.observedAt;
       stateFingerprint = inspected.inspection.gitObservation?.stateFingerprint ?? null;
       blockers.push(...inspected.inspection.disposeBlockers);
-      if (inspected.inspection.ahead !== null && inspected.inspection.ahead > 0) {
-        blockers.push({
-          kind: "unmerged-commit",
-          detail: "HEAD is not contained in the selected integration target",
-          relatedAttemptIds: lifecycle.attemptIds,
-          relatedSessionIds: [],
-        });
-      }
+      blockers.push(...unmergedCommitBlockers(inspected.inspection.ahead, lifecycle));
       if (inspected.inspection.detached || inspected.inspection.branchName !== record.branchName) {
         blockers.push({
           kind: "externally-occupied",
@@ -368,7 +389,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     readonly commandId: CommandId;
     readonly worktreeId: WorktreeId;
     readonly expectedStateVersion: number;
-    readonly expectedFilesystemIdentity: { readonly dev: number; readonly ino: number };
+    readonly expectedFilesystemIdentity: FilesystemIdentity;
     readonly expectedStateFingerprint: string;
     readonly integrationTarget: IntegrationTarget;
     readonly branchDisposition: "preserve";
@@ -416,8 +437,10 @@ export class WorktreeManagerImpl implements WorktreeManager {
       });
     }
     if (
-      previewed.preview.filesystemIdentity.dev !== input.expectedFilesystemIdentity.dev ||
-      previewed.preview.filesystemIdentity.ino !== input.expectedFilesystemIdentity.ino
+      !sameFilesystemIdentity(
+        previewed.preview.filesystemIdentity,
+        input.expectedFilesystemIdentity,
+      )
     ) {
       blockers.push({
         kind: "identity-drift",
@@ -528,11 +551,6 @@ export class WorktreeManagerImpl implements WorktreeManager {
   }
 }
 
-const sameFilesystemIdentity = (
-  left: { readonly dev: number; readonly ino: number },
-  right: { readonly dev: number; readonly ino: number },
-): boolean => left.dev === right.dev && left.ino === right.ino;
-
 const lifecycleBlockers = (
   lifecycle: ReturnType<WorktreeStore["disposeLifecycleFacts"]>,
 ): DisposeBlocker[] => [
@@ -568,6 +586,21 @@ const lifecycleBlockers = (
       ]),
 ];
 
+const unmergedCommitBlockers = (
+  ahead: number | null,
+  lifecycle: ReturnType<WorktreeStore["disposeLifecycleFacts"]>,
+): DisposeBlocker[] =>
+  ahead !== null && ahead > 0
+    ? [
+        {
+          kind: "unmerged-commit",
+          detail: "HEAD is not contained in the selected integration target",
+          relatedAttemptIds: lifecycle.attemptIds,
+          relatedSessionIds: [],
+        },
+      ]
+    : [];
+
 const dedupeBlockers = (blockers: readonly DisposeBlocker[]): readonly DisposeBlocker[] => {
   const seen = new Set<string>();
   return blockers.filter((blocker) => {
@@ -578,10 +611,7 @@ const dedupeBlockers = (blockers: readonly DisposeBlocker[]): readonly DisposeBl
   });
 };
 
-const estimateTreeBytes = (
-  root: string,
-  expectedIdentity: { readonly dev: number; readonly ino: number },
-): number | null => {
+const estimateTreeBytes = (root: string, expectedIdentity: FilesystemIdentity): number | null => {
   const deadline = performance.now() + FROZEN_RUNTIME_LIMIT_PROFILE.fingerprintDurationMs;
   let entries = 0;
   let bytes = 0;

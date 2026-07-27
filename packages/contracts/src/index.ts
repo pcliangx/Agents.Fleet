@@ -29,7 +29,9 @@ export * as TaskViewProjection from "./lifecycle/projection.js";
 export * as RepositoryTrust from "./lifecycle/repository-trust.js";
 export * as Session from "./lifecycle/session.js";
 export * as Task from "./lifecycle/task.js";
+export type { FilesystemIdentity } from "./lifecycle/worktree.js";
 export * as Worktree from "./lifecycle/worktree.js";
+export { sameFilesystemIdentity } from "./lifecycle/worktree.js";
 export type {
   LimitCheckResult,
   LimitViolation,
@@ -65,12 +67,14 @@ export type {
   IntegrationTarget,
   ProvisionWorktreeResult,
   UntrackedEntry,
+  WorktreeAliveSessionObservation,
   WorktreeDiffView,
   WorktreeEntryType,
   WorktreeInspection,
   WorktreeManager,
   WorktreeManagerFailure,
   WorktreeManagerFailureKind,
+  WorktreeProcessDispositionObservation,
 } from "./modules/worktree-manager.js";
 export type {
   MinimumHardware,

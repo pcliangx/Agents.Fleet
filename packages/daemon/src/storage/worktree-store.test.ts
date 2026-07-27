@@ -237,3 +237,30 @@ describe("WorktreeStore Ready transaction (RT-WORKTREE-05/06/10)", () => {
     expect(tasks.listAttempts(uncertain.taskId)[0]?.status).toBe("Failed");
   });
 });
+
+describe("WorktreeStore lifecycle observations (RT-WORKTREE-07 / RT-STATE-23)", () => {
+  it.each([
+    ["Probing", true],
+    ["OrphanFound", true],
+    ["KeepRequested", true],
+    ["StopRequested", true],
+    ["ConfirmedAbsent", false],
+    ["ConfirmedStopped", false],
+  ] as const)(
+    "returns %s and only blocks disposal while a process may remain",
+    (disposition, blocks) => {
+      const { taskId, attemptId } = createQueuedAttempt();
+      const planned = worktrees.createPlanned(plannedInput(taskId, attemptId, disposition));
+      const observedAt = new Date(T0 + 2_000).toISOString();
+      db.prepare(
+        `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
+       VALUES (?, ?, ?)`,
+      ).run(attemptId, disposition, observedAt);
+
+      const facts = worktrees.disposeLifecycleFacts(planned.worktreeId);
+
+      expect(facts.processDispositions).toEqual([{ attemptId, disposition, observedAt }]);
+      expect(facts.pendingProcessAttemptIds).toEqual(blocks ? [attemptId] : []);
+    },
+  );
+});

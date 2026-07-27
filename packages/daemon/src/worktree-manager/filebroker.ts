@@ -39,10 +39,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
-import type { FilesystemIdentity } from "../git/restricted-git.js";
+import { type FilesystemIdentity, sameFilesystemIdentity } from "@agents-fleet/contracts";
 
-// SV1-FILE-01 的 filesystem identity 概念只有单一类型来源（R0-05 的
-// restricted-git.ts），此处 re-export 以保持本模块的对外形状不变。
+// SV1-FILE-01 的 filesystem identity 概念只有 contracts 中的单一类型来源。
 export type { FilesystemIdentity };
 
 // SV1-FILE-10 — common-git-dir 仅供 Worktree Manager 内部的 provision /
@@ -119,9 +118,6 @@ const identityOf = (st: { dev: number; ino: number }): FilesystemIdentity => ({
   dev: st.dev,
   ino: st.ino,
 });
-
-const sameIdentity = (a: FilesystemIdentity, b: FilesystemIdentity): boolean =>
-  a.dev === b.dev && a.ino === b.ino;
 
 export class FileBroker {
   private readonly roots = new Map<string, RegisteredRoot>();
@@ -200,7 +196,7 @@ export class FileBroker {
       } catch {
         throw new FileBrokerError("identity-drift", `root path unavailable: ${root.canonicalRoot}`);
       }
-      if (!pre.isDirectory() || !sameIdentity(identityOf(pre), root.identity)) {
+      if (!pre.isDirectory() || !sameFilesystemIdentity(identityOf(pre), root.identity)) {
         fail("identity-drift", `root identity changed: ${root.canonicalRoot}`);
       }
       // 进入 root 并 post-check：把检查绑定到实际进入的 vnode，
@@ -211,7 +207,7 @@ export class FileBroker {
         fail("race-lost", `root vanished between check and enter: ${root.canonicalRoot}`);
       }
       const entered = statSync(".");
-      if (!sameIdentity(identityOf(entered), root.identity)) {
+      if (!sameFilesystemIdentity(identityOf(entered), root.identity)) {
         fail("race-lost", `root swapped between check and enter: ${root.canonicalRoot}`);
       }
 
@@ -237,7 +233,7 @@ export class FileBroker {
           fail("race-lost", `segment vanished between check and enter: ${seg}`);
         }
         const got = statSync(".");
-        if (!sameIdentity(identityOf(got), identityOf(lst))) {
+        if (!sameFilesystemIdentity(identityOf(got), identityOf(lst))) {
           fail("race-lost", `segment swapped between check and enter: ${seg}`);
         }
       }
@@ -288,7 +284,7 @@ export class FileBroker {
         throw e;
       }
       const fst = fstatSync(fd);
-      if (!sameIdentity(identityOf(fst), identityOf(lst))) {
+      if (!sameFilesystemIdentity(identityOf(fst), identityOf(lst))) {
         closeSync(fd);
         fail("race-lost", `target swapped between check and open: ${leaf}`);
       }
@@ -401,11 +397,11 @@ export class FileBroker {
     const savedCwd = process.cwd();
     try {
       const pre = lstatSync(root.canonicalRoot);
-      if (!pre.isDirectory() || !sameIdentity(identityOf(pre), root.identity)) {
+      if (!pre.isDirectory() || !sameFilesystemIdentity(identityOf(pre), root.identity)) {
         return { ok: false, reason: "read-failed", detail: "root identity drifted" };
       }
       process.chdir(root.canonicalRoot);
-      if (!sameIdentity(identityOf(statSync(".")), root.identity)) {
+      if (!sameFilesystemIdentity(identityOf(statSync(".")), root.identity)) {
         return { ok: false, reason: "read-failed", detail: "root race lost" };
       }
       for (let index = 0; index < segments.length - 1; index++) {
@@ -419,7 +415,7 @@ export class FileBroker {
           };
         }
         process.chdir(segment);
-        if (!sameIdentity(identityOf(statSync(".")), identityOf(before))) {
+        if (!sameFilesystemIdentity(identityOf(statSync(".")), identityOf(before))) {
           return { ok: false, reason: "read-failed", detail: "parent race lost" };
         }
       }
@@ -437,7 +433,7 @@ export class FileBroker {
       }
       const after = lstatSync(leaf);
       if (
-        !sameIdentity(identityOf(before), identityOf(after)) ||
+        !sameFilesystemIdentity(identityOf(before), identityOf(after)) ||
         before.size !== after.size ||
         before.mtimeMs !== after.mtimeMs ||
         before.ctimeMs !== after.ctimeMs

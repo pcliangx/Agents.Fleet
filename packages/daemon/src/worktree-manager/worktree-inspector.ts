@@ -4,7 +4,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -12,44 +11,24 @@ import {
   FROZEN_RUNTIME_LIMIT_PROFILE,
   type GitChange,
   type GitChangeStatus,
-  type InspectWorktreeResult,
   type IntegrationTarget,
+  sameFilesystemIdentity,
   type UntrackedEntry,
   type WorktreeInspection,
+  type WorktreeManagerFailure,
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import type { FilesystemIdentity, GitExec, GitExecRequest } from "../git/restricted-git.js";
+import {
+  buildRestrictedGitEnvironment,
+  RESTRICTED_GIT_CONFIG_OVERRIDES,
+  RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
+} from "../git/restricted-git-policy.js";
 import type { ManagedWorktreeContext } from "../storage/worktree-store.js";
 import { FileBroker } from "./filebroker.js";
 
-const GIT_TIMEOUT_MS = 10_000;
-const CONFIG_BUFFER_BYTES = 1024 * 1024;
 const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const SAFE_REF_RE = /^refs\/(?!.*(?:\.\.|[~^:?*[\]\\]))[^\0\s]+$/;
-
-const BASE_OVERRIDES: readonly string[] = [
-  "core.hooksPath=/dev/null",
-  "core.fsmonitor=false",
-  "core.pager=cat",
-  "diff.external=",
-  "credential.helper=",
-  "submodule.recurse=false",
-];
-
-const buildGitEnv = (): Record<string, string> => ({
-  PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-  LANG: "en_US.UTF-8",
-  TMPDIR: process.env.TMPDIR ?? tmpdir(),
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_ATTR_NOSYSTEM: "1",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_PAGER: "cat",
-  PAGER: "cat",
-  GIT_EDITOR: "/usr/bin/true",
-  EDITOR: "/usr/bin/true",
-});
 
 const defaultExec: GitExec = async ({ argv, cwd, env }) => {
   const executable = argv[0];
@@ -57,7 +36,7 @@ const defaultExec: GitExec = async ({ argv, cwd, env }) => {
   return await promisify(execFile)(executable, argv.slice(1), {
     cwd,
     env,
-    timeout: GIT_TIMEOUT_MS,
+    timeout: RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
     maxBuffer: FROZEN_RUNTIME_LIMIT_PROFILE.fingerprintBytes + 1,
     encoding: "utf8",
   });
@@ -83,9 +62,6 @@ class InspectionFailure extends Error {
   }
 }
 
-const sameIdentity = (left: FilesystemIdentity, right: FilesystemIdentity): boolean =>
-  left.dev === right.dev && left.ino === right.ino;
-
 const recheckIdentity = async (
   path: string,
   expected: FilesystemIdentity,
@@ -94,7 +70,7 @@ const recheckIdentity = async (
   try {
     const canonical = await realpath(path);
     const st = await lstat(path);
-    if (canonical !== path || !st.isDirectory() || !sameIdentity(st, expected)) {
+    if (canonical !== path || !st.isDirectory() || !sameFilesystemIdentity(st, expected)) {
       throw new InspectionFailure("IdentityDrift", `${label} identity drifted`);
     }
   } catch (error) {
@@ -165,11 +141,20 @@ export interface WorktreeInspectorOptions {
   readonly now?: () => number;
 }
 
+type GitWorktreeInspection = Omit<
+  WorktreeInspection,
+  "taskId" | "aliveSessions" | "processDispositions"
+>;
+
+type WorktreeInspectorResult =
+  | { readonly ok: true; readonly inspection: GitWorktreeInspection }
+  | { readonly ok: false; readonly failure: WorktreeManagerFailure };
+
 export class WorktreeInspector {
   readonly #gitPath: string;
   readonly #exec: GitExec;
   readonly #now: () => number;
-  readonly #env = buildGitEnv();
+  readonly #env = buildRestrictedGitEnvironment({ neutralizeSystemAttributes: true });
 
   constructor(options: WorktreeInspectorOptions = {}) {
     this.#gitPath = options.gitPath ?? "/usr/bin/git";
@@ -180,7 +165,7 @@ export class WorktreeInspector {
   async inspect(
     context: ManagedWorktreeContext,
     comparison?: IntegrationTarget,
-  ): Promise<InspectWorktreeResult> {
+  ): Promise<WorktreeInspectorResult> {
     try {
       return { ok: true, inspection: await this.#inspect(context, comparison) };
     } catch (error) {
@@ -241,8 +226,8 @@ export class WorktreeInspector {
     const config = await this.#runGit(
       worktreePath,
       ["-C", worktreePath, "config", "--local", "--get-regexp", "^filter\\."],
-      BASE_OVERRIDES,
-      { allowExitCodes: [1], maxBytes: CONFIG_BUFFER_BYTES },
+      RESTRICTED_GIT_CONFIG_OVERRIDES,
+      { allowExitCodes: [1] },
     );
     const drivers = new Set<string>();
     for (const line of config.stdout.split("\n")) {
@@ -261,7 +246,7 @@ export class WorktreeInspector {
       }
     }
     return [
-      ...BASE_OVERRIDES,
+      ...RESTRICTED_GIT_CONFIG_OVERRIDES,
       ...[...drivers].flatMap((driver) => [
         `filter.${driver}.clean=`,
         `filter.${driver}.smudge=`,
@@ -274,7 +259,7 @@ export class WorktreeInspector {
   async #inspect(
     context: ManagedWorktreeContext,
     comparison?: IntegrationTarget,
-  ): Promise<WorktreeInspection> {
+  ): Promise<GitWorktreeInspection> {
     const { record, repository } = context;
     if (record.state !== "Ready" || record.filesystemIdentity === null) {
       throw new InspectionFailure("Conflict", "Worktree is not Ready");
@@ -471,7 +456,7 @@ export class WorktreeInspector {
 
     const broker = new FileBroker();
     const root = broker.registerRoot("worktree", record.canonicalPath);
-    if (!sameIdentity(root.identity, record.filesystemIdentity)) {
+    if (!sameFilesystemIdentity(root.identity, record.filesystemIdentity)) {
       throw new InspectionFailure("IdentityDrift", "Worktree identity drifted");
     }
     const remaining = (): number =>

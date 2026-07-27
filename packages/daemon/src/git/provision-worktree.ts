@@ -10,7 +10,7 @@
 // Selected materialization path (probed on Apple Git 2.50.1, /usr/bin/git):
 //
 //   preflight filter-attribute scan + `git worktree add --detach <path> <sha>`
-//   under the CONFIG_OVERRIDES below and a scrubbed 12-key environment.
+//   under the shared restricted-Git overrides and scrubbed environment.
 //
 // Why this path (probe IDs refer to the probe doc):
 // - `git worktree add` runs the post-checkout hook (P1); `-c
@@ -46,6 +46,10 @@ import { lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type { FilesystemIdentity, GitExec, GitExecRequest } from "./restricted-git.js";
+import {
+  buildRestrictedGitEnvironment,
+  RESTRICTED_GIT_CONFIG_OVERRIDES,
+} from "./restricted-git-policy.js";
 
 export interface ProvisionRepository {
   /** canonical working-tree root of the validated Repository (SV1-FILE-10). */
@@ -146,37 +150,12 @@ const LFS_POINTER_MAX_BYTES = 4096;
 // stdin channel (GitExec is argv-only by design).
 const CHECK_ATTR_CHUNK = 256;
 
-// `-c` overrides carry the highest config precedence (above system, global,
-// Repository and include.path config). Exactly the SV1-FILE-11 disable list.
+// Shared `-c` overrides carry the highest config precedence (above system,
+// global, Repository and include.path config). They are exactly the
+// SV1-FILE-11 disable list.
 // Filters are absent here on purpose: they cannot be wildcard-disabled by
 // name, so they are excluded by the preflight scan instead — a repository
 // whose tree carries any `filter` attribute gets CapabilityUnavailable.
-const CONFIG_OVERRIDES: readonly string[] = [
-  "core.hooksPath=/dev/null",
-  "core.fsmonitor=false",
-  "core.pager=cat",
-  "diff.external=",
-  "credential.helper=",
-  "submodule.recurse=false",
-];
-
-// Everything git needs and nothing it can be redirected by. Same shape as the
-// R0-05 allowlist, plus GIT_ATTR_NOSYSTEM so the attribute stack seen by the
-// preflight scan and by checkout is identical and free of system-level input.
-const buildProvisionGitEnv = (): Record<string, string> => ({
-  PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-  LANG: "en_US.UTF-8",
-  TMPDIR: process.env.TMPDIR ?? tmpdir(),
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_ATTR_NOSYSTEM: "1",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_PAGER: "cat",
-  PAGER: "cat",
-  GIT_EDITOR: "/usr/bin/true",
-  EDITOR: "/usr/bin/true",
-});
 
 export const defaultProvisionGitExec: GitExec = async ({ argv, cwd, env }) => {
   const file = argv[0];
@@ -201,7 +180,7 @@ export class WorktreeProvisioner {
     this.gitPath = options.gitPath ?? "/usr/bin/git";
     this.exec = options.exec ?? defaultProvisionGitExec;
     this.neutralCwd = options.neutralCwd ?? process.env.TMPDIR ?? tmpdir();
-    this.env = buildProvisionGitEnv();
+    this.env = buildRestrictedGitEnvironment({ neutralizeSystemAttributes: true });
   }
 
   /**
@@ -557,7 +536,7 @@ export class WorktreeProvisioner {
     const argv = [
       this.gitPath,
       "--no-pager",
-      ...CONFIG_OVERRIDES.flatMap((c) => ["-c", c]),
+      ...RESTRICTED_GIT_CONFIG_OVERRIDES.flatMap((entry) => ["-c", entry]),
       ...args,
     ];
     try {

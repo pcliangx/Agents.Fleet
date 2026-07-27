@@ -6,43 +6,20 @@
 
 import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
+import { FROZEN_RUNTIME_LIMIT_PROFILE, sameFilesystemIdentity } from "@agents-fleet/contracts";
 import type { FilesystemIdentity } from "../git/restricted-git.js";
+import {
+  buildRestrictedGitEnvironment,
+  RESTRICTED_GIT_CONFIG_OVERRIDES,
+  RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
+} from "../git/restricted-git-policy.js";
 import type { ManagedWorktreeContext } from "../storage/worktree-store.js";
-
-const BASE_OVERRIDES: readonly string[] = [
-  "core.hooksPath=/dev/null",
-  "core.fsmonitor=false",
-  "core.pager=cat",
-  "diff.external=",
-  "credential.helper=",
-  "submodule.recurse=false",
-];
-
-const buildGitEnv = (): Record<string, string> => ({
-  PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-  LANG: "en_US.UTF-8",
-  TMPDIR: process.env.TMPDIR ?? tmpdir(),
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_ATTR_NOSYSTEM: "1",
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_PAGER: "cat",
-  PAGER: "cat",
-  GIT_EDITOR: "/usr/bin/true",
-  EDITOR: "/usr/bin/true",
-});
-
-const sameIdentity = (left: FilesystemIdentity, right: FilesystemIdentity): boolean =>
-  left.dev === right.dev && left.ino === right.ino;
 
 const recheckDirectory = (path: string, expected: FilesystemIdentity, label: string): void => {
   try {
     const st = lstatSync(path);
-    if (realpathSync(path) !== path || !st.isDirectory() || !sameIdentity(st, expected)) {
+    if (realpathSync(path) !== path || !st.isDirectory() || !sameFilesystemIdentity(st, expected)) {
       throw new Error(`${label} identity drifted`);
     }
   } catch {
@@ -62,7 +39,7 @@ export interface WorktreeDisposerOptions {
 export class WorktreeDisposer {
   readonly #gitPath: string;
   readonly #now: () => number;
-  readonly #env = buildGitEnv();
+  readonly #env = buildRestrictedGitEnvironment({ neutralizeSystemAttributes: true });
 
   constructor(options: WorktreeDisposerOptions = {}) {
     this.#gitPath = options.gitPath ?? "/usr/bin/git";
@@ -77,7 +54,7 @@ export class WorktreeDisposer {
         cwd,
         env: this.#env,
         encoding: "utf8",
-        timeout: 10_000,
+        timeout: RESTRICTED_GIT_OPERATION_TIMEOUT_MS,
         maxBuffer: FROZEN_RUNTIME_LIMIT_PROFILE.diffBytes,
       },
     );
@@ -86,7 +63,7 @@ export class WorktreeDisposer {
   #filterOverrides(worktreePath: string): readonly string[] {
     let output = "";
     try {
-      output = this.#exec(worktreePath, BASE_OVERRIDES, [
+      output = this.#exec(worktreePath, RESTRICTED_GIT_CONFIG_OVERRIDES, [
         "-C",
         worktreePath,
         "config",
@@ -111,7 +88,7 @@ export class WorktreeDisposer {
       }
     }
     return [
-      ...BASE_OVERRIDES,
+      ...RESTRICTED_GIT_CONFIG_OVERRIDES,
       ...[...drivers].flatMap((driver) => [
         `filter.${driver}.clean=`,
         `filter.${driver}.smudge=`,

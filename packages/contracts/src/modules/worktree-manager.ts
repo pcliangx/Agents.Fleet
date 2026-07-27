@@ -4,7 +4,8 @@
 // commands, common Git directory access, FileBroker handles and filesystem
 // traversal stay private to the Daemon Implementation.
 
-import type { CommandId, SessionId, TaskId, WorktreeId } from "../identity.js";
+import type { AttemptId, CommandId, SessionId, TaskId, WorktreeId } from "../identity.js";
+import type { ProcessDisposition } from "../lifecycle/process-disposition.js";
 import type { FilesystemIdentity, WorktreeRole, WorktreeState } from "../lifecycle/worktree.js";
 
 export type GitChangeStatus =
@@ -21,7 +22,7 @@ export interface GitChange {
   readonly status: GitChangeStatus;
 }
 
-export type WorktreeEntryType = "file" | "symlink" | "gitlink" | "other";
+export type WorktreeEntryType = "file" | "symlink";
 
 export interface UntrackedEntry {
   readonly path: string;
@@ -69,6 +70,18 @@ export interface WorktreeDiffView {
   readonly totalBytesAtLeast: number;
 }
 
+export interface WorktreeAliveSessionObservation {
+  readonly sessionId: SessionId;
+  readonly attemptId: AttemptId;
+  readonly observedAt: string;
+}
+
+export interface WorktreeProcessDispositionObservation {
+  readonly attemptId: AttemptId;
+  readonly disposition: ProcessDisposition;
+  readonly observedAt: string;
+}
+
 export type DisposeBlockerKind =
   | "not-ready"
   | "nonterminal-attempt"
@@ -94,6 +107,7 @@ export interface DisposeBlocker {
 
 export interface WorktreeInspection {
   readonly worktreeId: WorktreeId;
+  readonly taskId: TaskId;
   readonly state: WorktreeState;
   readonly role: WorktreeRole;
   readonly canonicalPath: string;
@@ -112,6 +126,8 @@ export interface WorktreeInspection {
   /** Null means fingerprintBlocker is present; never a partial fingerprint. */
   readonly gitObservation: GitObservation | null;
   readonly fingerprintBlocker: FingerprintBlocker | null;
+  readonly aliveSessions: readonly WorktreeAliveSessionObservation[];
+  readonly processDispositions: readonly WorktreeProcessDispositionObservation[];
   readonly disposeBlockers: readonly DisposeBlocker[];
 }
 

@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -288,6 +289,133 @@ describe("WorktreeManager.provision (RT-WORKTREE-05/06/10/11)", () => {
     ).toEqual([]);
   });
 
+  it("revalidates the materialized filesystem identity inside the Ready transaction", async () => {
+    class IdentitySwappingProvisioner extends WorktreeProvisioner {
+      override async provisionWorktree(
+        input: Parameters<WorktreeProvisioner["provisionWorktree"]>[0],
+      ) {
+        const result = await super.provisionWorktree(input);
+        if (result.ok) {
+          const original = `${input.targetPath}-original`;
+          const replacement = `${input.targetPath}-replacement`;
+          mkdirSync(replacement);
+          renameSync(input.targetPath, original);
+          renameSync(replacement, input.targetPath);
+        }
+        return result;
+      }
+    }
+    const planned = plan("ready-identity-drift");
+    const guardedManager = new WorktreeManagerImpl({
+      db,
+      store: worktrees,
+      idempotency: new IdempotencyStore(db, () => T0),
+      provisioner: new IdentitySwappingProvisioner(),
+      now: () => T0,
+    });
+
+    const result = await guardedManager.provision({
+      commandId: "cmd-provision-ready-identity-drift" as CommandId,
+      worktreeId: planned.worktreeId,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "Orphaned",
+      failure: { kind: "IdentityDrift" },
+    });
+    expect(worktrees.get(planned.worktreeId)).toMatchObject({
+      state: "Orphaned",
+      role: "Pending",
+      filesystemIdentity: null,
+    });
+  });
+
+  it("revalidates HEAD inside the Ready transaction", async () => {
+    class HeadMutatingProvisioner extends WorktreeProvisioner {
+      override async provisionWorktree(
+        input: Parameters<WorktreeProvisioner["provisionWorktree"]>[0],
+      ) {
+        const result = await super.provisionWorktree(input);
+        if (result.ok) {
+          git(input.targetPath, [
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=f@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "drift after provision",
+          ]);
+        }
+        return result;
+      }
+    }
+    const planned = plan("ready-head-drift");
+    const guardedManager = new WorktreeManagerImpl({
+      db,
+      store: worktrees,
+      idempotency: new IdempotencyStore(db, () => T0),
+      provisioner: new HeadMutatingProvisioner(),
+      now: () => T0,
+    });
+
+    const result = await guardedManager.provision({
+      commandId: "cmd-provision-ready-head-drift" as CommandId,
+      worktreeId: planned.worktreeId,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "Orphaned",
+      failure: { kind: "GitFailure" },
+    });
+    expect(worktrees.get(planned.worktreeId)).toMatchObject({
+      state: "Orphaned",
+      role: "Pending",
+      filesystemIdentity: null,
+    });
+  });
+
+  it("revalidates the managed branch inside the Ready transaction", async () => {
+    class BranchDetachingProvisioner extends WorktreeProvisioner {
+      override async provisionWorktree(
+        input: Parameters<WorktreeProvisioner["provisionWorktree"]>[0],
+      ) {
+        const result = await super.provisionWorktree(input);
+        if (result.ok) {
+          git(input.targetPath, ["checkout", "--detach", result.worktree.headCommitSha]);
+        }
+        return result;
+      }
+    }
+    const planned = plan("ready-branch-drift");
+    const guardedManager = new WorktreeManagerImpl({
+      db,
+      store: worktrees,
+      idempotency: new IdempotencyStore(db, () => T0),
+      provisioner: new BranchDetachingProvisioner(),
+      now: () => T0,
+    });
+
+    const result = await guardedManager.provision({
+      commandId: "cmd-provision-ready-branch-drift" as CommandId,
+      worktreeId: planned.worktreeId,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "Orphaned",
+      failure: { kind: "GitFailure" },
+    });
+    expect(worktrees.get(planned.worktreeId)).toMatchObject({
+      state: "Orphaned",
+      role: "Pending",
+      filesystemIdentity: null,
+    });
+  });
+
   it("creates a clean rebaseline target without copying old staged, unstaged, or untracked data", async () => {
     const old = plan("old-dirty");
     await manager.provision({
@@ -437,6 +565,72 @@ describe("WorktreeManager.inspect (RT-WORKTREE-07 / RT-EVIDENCE-03)", () => {
 
     expect(result.ok).toBe(true);
     expect(existsSync(sentinel)).toBe(false);
+  });
+
+  it("returns Task, Alive Session, Process Disposition, and complete dispose blockers", async () => {
+    const planned = plan("inspect-lifecycle");
+    await manager.provision({
+      commandId: "cmd-provision-inspect-lifecycle" as CommandId,
+      worktreeId: planned.worktreeId,
+    });
+    const attemptId = (
+      db
+        .prepare("SELECT attempt_id FROM attempt_worktree_bindings WHERE worktree_id = ?")
+        .get(planned.worktreeId) as { attempt_id: string }
+    ).attempt_id;
+    const observedAt = new Date(T0).toISOString();
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, created_at, updated_at)
+       VALUES ('ses-inspect-alive', ?, 'Alive', 'Shell', 'DoesNotBlockAttemptCompletion', ?, ?)`,
+    ).run(attemptId, observedAt, observedAt);
+    db.prepare(
+      `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
+       VALUES (?, 'OrphanFound', ?)`,
+    ).run(attemptId, observedAt);
+    writeFileSync(join(planned.canonicalPath, "ahead.txt"), "ahead\n");
+    git(planned.canonicalPath, ["add", "ahead.txt"]);
+    git(planned.canonicalPath, [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=f@example.invalid",
+      "commit",
+      "-m",
+      "ahead",
+    ]);
+    const integrationSha = git(repo, ["rev-parse", "refs/heads/main"]);
+
+    const result = await manager.inspect({
+      worktreeId: planned.worktreeId,
+      comparison: { ref: "refs/heads/main", sha: integrationSha },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.inspection.taskId).toBe(planned.taskId);
+    expect(result.inspection.aliveSessions).toEqual([
+      {
+        sessionId: "ses-inspect-alive",
+        attemptId,
+        observedAt,
+      },
+    ]);
+    expect(result.inspection.processDispositions).toEqual([
+      {
+        attemptId,
+        disposition: "OrphanFound",
+        observedAt,
+      },
+    ]);
+    expect(result.inspection.disposeBlockers.map((blocker) => blocker.kind)).toEqual(
+      expect.arrayContaining([
+        "nonterminal-attempt",
+        "alive-session",
+        "pending-process-disposition",
+        "unmerged-commit",
+      ]),
+    );
   });
 
   it("fails closed when a named comparison ref no longer resolves to the previewed SHA", async () => {

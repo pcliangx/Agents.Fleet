@@ -12,6 +12,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   checkLimit,
   FROZEN_RUNTIME_LIMIT_PROFILE,
+  ProcessDisposition,
   Worktree,
   type WorktreeId,
 } from "@agents-fleet/contracts";
@@ -164,7 +165,17 @@ export interface WorktreeDisposeLifecycleFacts {
   readonly taskIds: readonly string[];
   readonly attemptIds: readonly string[];
   readonly nonterminalAttemptIds: readonly string[];
+  readonly aliveSessions: readonly {
+    readonly sessionId: string;
+    readonly attemptId: string;
+    readonly observedAt: string;
+  }[];
   readonly aliveSessionIds: readonly string[];
+  readonly processDispositions: readonly {
+    readonly attemptId: string;
+    readonly disposition: ProcessDisposition.ProcessDisposition;
+    readonly observedAt: string;
+  }[];
   readonly pendingProcessAttemptIds: readonly string[];
 }
 
@@ -419,9 +430,9 @@ export class WorktreeStore {
     const nonterminalAttemptIds = attempts
       .filter((attempt) => !isTerminalAttemptStatus(attempt.status))
       .map((attempt) => attempt.attempt_id);
-    const aliveSessionIds = this.#db
+    const aliveSessions = this.#db
       .prepare(
-        `SELECT sessions.session_id
+        `SELECT sessions.session_id, sessions.attempt_id, sessions.updated_at
          FROM sessions
          JOIN attempt_worktree_bindings
            ON attempt_worktree_bindings.attempt_id = sessions.attempt_id
@@ -430,26 +441,52 @@ export class WorktreeStore {
          ORDER BY sessions.created_at, sessions.session_id`,
       )
       .all(worktreeId)
-      .map((row) => (row as { session_id: string }).session_id);
-    const pendingProcessAttemptIds = this.#db
+      .map((row) => {
+        const session = row as {
+          session_id: string;
+          attempt_id: string;
+          updated_at: string;
+        };
+        return {
+          sessionId: session.session_id,
+          attemptId: session.attempt_id,
+          observedAt: session.updated_at,
+        };
+      });
+    const processDispositions = this.#db
       .prepare(
-        `SELECT process_dispositions.attempt_id
+        `SELECT process_dispositions.attempt_id, process_dispositions.disposition,
+                process_dispositions.updated_at
          FROM process_dispositions
          JOIN attempt_worktree_bindings
            ON attempt_worktree_bindings.attempt_id = process_dispositions.attempt_id
          WHERE attempt_worktree_bindings.worktree_id = ?
-           AND process_dispositions.disposition IN (
-             'Probing','OrphanFound','KeepRequested','StopRequested'
-           )
          ORDER BY process_dispositions.attempt_id`,
       )
       .all(worktreeId)
-      .map((row) => (row as { attempt_id: string }).attempt_id);
+      .map((row) => {
+        const fact = row as {
+          attempt_id: string;
+          disposition: ProcessDisposition.ProcessDisposition;
+          updated_at: string;
+        };
+        return {
+          attemptId: fact.attempt_id,
+          disposition: fact.disposition,
+          observedAt: fact.updated_at,
+        };
+      });
+    const aliveSessionIds = aliveSessions.map((session) => session.sessionId);
+    const pendingProcessAttemptIds = processDispositions
+      .filter((fact) => ProcessDisposition.dispositionHoldsSlot(fact.disposition))
+      .map((fact) => fact.attemptId);
     return {
       taskIds,
       attemptIds,
       nonterminalAttemptIds,
+      aliveSessions,
       aliveSessionIds,
+      processDispositions,
       pendingProcessAttemptIds,
     };
   }

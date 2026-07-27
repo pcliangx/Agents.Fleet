@@ -31,6 +31,11 @@ export interface FilesystemIdentity {
   readonly ino: number;
 }
 
+export const sameFilesystemIdentity = (
+  left: FilesystemIdentity,
+  right: FilesystemIdentity,
+): boolean => left.dev === right.dev && left.ino === right.ino;
+
 export interface ExistingWorktreeTargetBinding {
   readonly kind: "Existing";
   readonly worktreeId: WorktreeId;
