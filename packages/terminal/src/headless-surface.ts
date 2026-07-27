@@ -5,7 +5,6 @@
 // class's public methods (RT-MOD-09); feed/appliedCursor/cursorPosition/
 // renderText live on the shared base.
 
-import { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal as HeadlessTerminal } from "@xterm/headless";
 import * as HeadlessModule from "@xterm/headless";
 import {
@@ -55,8 +54,6 @@ const internals = (term: unknown): XtermCheckpointInternals["_core"]["_inputHand
   (term as unknown as XtermCheckpointInternals)._core._inputHandler;
 
 export class HeadlessTerminalSurface extends BaseTerminalSurface {
-  private readonly headlessTerm: HeadlessTerminal;
-
   constructor(opts: TerminalSurfaceOptions) {
     // xterm 6 gates the `buffer` namespace behind allowProposedApi. Reading the
     // grid/cursor (base) and the Snapshot Worker's addon-serialize both need
@@ -64,7 +61,6 @@ export class HeadlessTerminalSurface extends BaseTerminalSurface {
     const term = new Terminal({ cols: opts.cols, rows: opts.rows, allowProposedApi: true });
     configureUnicode11(term);
     super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
-    this.headlessTerm = term;
   }
 
   /** RT-TERM-12 / RT-ORDER-08 — parserGround && utf8DecoderEmpty at the last write. */
@@ -81,16 +77,5 @@ export class HeadlessTerminalSurface extends BaseTerminalSurface {
   /** RT-T-22 — the OSC 0/2 window title, for Snapshot+delta title consistency. */
   getTitle(): string {
     return internals(this.term)._windowTitle;
-  }
-
-  /** RT-TERM-07/11 — ANSI serialization wrapped by Agents.Fleet's Snapshot schema. */
-  serializeText(): string {
-    const addon = new SerializeAddon();
-    this.headlessTerm.loadAddon(addon);
-    try {
-      return addon.serialize();
-    } finally {
-      addon.dispose();
-    }
   }
 }

@@ -19,6 +19,8 @@ import {
   type AttachResult,
   Attempt,
   type CommandId,
+  type ConfirmationChallenge,
+  type ConfirmationReceipt,
   type ControlLease,
   checkLimit,
   type DurableFrameRef,
@@ -42,8 +44,12 @@ import {
   type SessionRuntimeRecord,
   type Snapshot,
   type StoragePressureWait,
+  type TakeoverControlRequest,
+  type TerminateSessionRequest,
   type WriteSessionInputRequest,
 } from "@agents-fleet/contracts";
+import { type ChallengePreview, hashPreviewFact } from "../confirmation/challenge-issuer.js";
+import type { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
 import { appendDomainEvent } from "../storage/domain-event-store.js";
@@ -64,6 +70,7 @@ import { SnapshotCoordinator } from "./snapshot-coordinator.js";
 import { reconcileStore } from "./store-reconciliation.js";
 
 const DEFAULT_BOOTSTRAP = join(dirname(fileURLToPath(import.meta.url)), "bootstrap.mjs");
+const CONTROL_LEASE_TTL_MS = 15_000;
 
 type LaunchStep =
   | "afterBootstrapReceipt"
@@ -83,6 +90,7 @@ interface SessionRuntimeOptions {
   readonly processProbe?: (pid: number) => ProcessProbe;
   readonly waitForExecBarrier?: (barrier: ExecBarrier, timeoutMs: number) => Promise<boolean>;
   readonly now?: () => number;
+  readonly confirmations?: PersistentChallengeIssuer;
   /** RT-T-11 crash injection at protocol boundaries. */
   readonly onLaunchStep?: (step: LaunchStep) => void;
   /** RT-T-24 failure injection at Input Intent durability boundaries. */
@@ -191,6 +199,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #processProbe: (pid: number) => ProcessProbe;
   readonly #waitForExecBarrier: (barrier: ExecBarrier, timeoutMs: number) => Promise<boolean>;
   readonly #now: () => number;
+  readonly #confirmations: PersistentChallengeIssuer | undefined;
   readonly #onLaunchStep: ((step: LaunchStep) => void) | undefined;
   readonly #onInputStep: ((step: InputIntentStep, commandId: string) => void) | undefined;
   readonly #journal: ByteJournal;
@@ -219,6 +228,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       options.waitForExecBarrier ??
       (async (barrier, timeoutMs) => await barrier.waitForClose(timeoutMs));
     this.#now = options.now ?? Date.now;
+    this.#confirmations = options.confirmations;
     this.#onLaunchStep = options.onLaunchStep;
     this.#onInputStep = options.onInputStep;
     this.#journal = new ByteJournal({ storeDir: options.storeDir, db: options.db });
@@ -339,7 +349,7 @@ export class SessionRuntime implements SessionRuntimeContract {
         const counter = this.#db
           .prepare("SELECT fencing_counter FROM sessions WHERE session_id = ?")
           .get(attachment.session_id) as { readonly fencing_counter: number };
-        const expiresAt = now + 15_000;
+        const expiresAt = now + CONTROL_LEASE_TTL_MS;
         const timestamp = new Date(now).toISOString();
         this.#db
           .prepare(
@@ -373,7 +383,7 @@ export class SessionRuntime implements SessionRuntimeContract {
 
   renewControl(lease: ControlLease): ControlLease {
     const now = this.#now();
-    const expiresAt = now + 15_000;
+    const expiresAt = now + CONTROL_LEASE_TTL_MS;
     const renewed = transact(
       this.#db,
       () =>
@@ -414,7 +424,100 @@ export class SessionRuntime implements SessionRuntimeContract {
     return { ...lease, expiresAt };
   }
 
-  takeoverControl(attachmentId: string, confirmedHolder: ControlLease): ControlLease {
+  issueTakeoverControlChallenge(
+    attachmentId: string,
+    confirmedHolder: ControlLease,
+  ): ConfirmationChallenge {
+    const { target, holder } = this.#takeoverControlFacts(attachmentId, confirmedHolder);
+    return this.#requireConfirmations().issue(
+      this.#takeoverControlPreview(attachmentId, confirmedHolder, target, holder),
+    );
+  }
+
+  takeoverControl(request: TakeoverControlRequest): ControlLease {
+    const now = this.#now();
+    const replacement = transact(
+      this.#db,
+      () => {
+        const { target, holder } = this.#takeoverControlFacts(
+          request.attachmentId,
+          request.confirmedHolder,
+        );
+        this.#consumeSideEffectConfirmation(
+          request.confirmationReceipt,
+          this.#takeoverControlPreview(
+            request.attachmentId,
+            request.confirmedHolder,
+            target,
+            holder,
+          ),
+        );
+
+        this.#db
+          .prepare("UPDATE sessions SET fencing_counter = fencing_counter + 1 WHERE session_id = ?")
+          .run(target.session_id);
+        const counter = this.#db
+          .prepare("SELECT fencing_counter FROM sessions WHERE session_id = ?")
+          .get(target.session_id) as { readonly fencing_counter: number };
+        const expiresAt = now + CONTROL_LEASE_TTL_MS;
+        const timestamp = new Date(now).toISOString();
+        this.#db
+          .prepare(
+            `UPDATE control_leases
+             SET attachment_id = ?, fencing_token = ?, expires_at = ?, granted_at = ?, renewed_at = ?
+             WHERE session_id = ?`,
+          )
+          .run(
+            request.attachmentId,
+            counter.fencing_counter,
+            expiresAt,
+            timestamp,
+            timestamp,
+            target.session_id,
+          );
+        this.#appendLifecycleEvent({
+          taskId: target.task_id,
+          attemptId: target.attempt_id,
+          sessionId: target.session_id,
+          type: "control-lease-taken-over",
+          payload: {
+            previousAttachmentId: holder.attachment_id,
+            attachmentId: request.attachmentId,
+            fencingToken: counter.fencing_counter,
+          },
+        });
+        return { target, fencingToken: counter.fencing_counter, expiresAt };
+      },
+      this.#now,
+    );
+
+    return {
+      sessionId: replacement.target.session_id as SessionId,
+      generation: replacement.target.generation as Generation,
+      attachmentId: request.attachmentId as AttachmentId,
+      fencingToken: replacement.fencingToken as ControlLease["fencingToken"],
+      expiresAt: replacement.expiresAt,
+    };
+  }
+
+  #takeoverControlFacts(
+    attachmentId: string,
+    confirmedHolder: ControlLease,
+  ): {
+    readonly target: {
+      readonly session_id: string;
+      readonly generation: number;
+      readonly status: Attachment.AttachmentStatus;
+      readonly availability: SessionRuntimeRecord["availability"];
+      readonly session_generation: number;
+      readonly attempt_id: string;
+      readonly task_id: string;
+    };
+    readonly holder: {
+      readonly attachment_id: string;
+      readonly fencing_token: number;
+    };
+  } {
     const target = this.#db
       .prepare(
         `SELECT attachments.session_id, attachments.generation, attachments.status,
@@ -456,75 +559,23 @@ export class SessionRuntime implements SessionRuntimeContract {
       throw new StoreError("ConfirmationRequired", "Confirmed Control Lease target has drifted");
     }
 
-    const now = this.#now();
-    const replacement = transact(
-      this.#db,
-      () => {
-        const holder = this.#db
-          .prepare(
-            `SELECT attachment_id, fencing_token
-             FROM control_leases
-             WHERE session_id = ? AND generation = ? AND expires_at > ?`,
-          )
-          .get(target.session_id, target.generation, now) as
-          | { readonly attachment_id: string; readonly fencing_token: number }
-          | undefined;
-        if (
-          holder === undefined ||
-          holder.attachment_id !== confirmedHolder.attachmentId ||
-          holder.fencing_token !== confirmedHolder.fencingToken
-        ) {
-          throw new StoreError(
-            "ConfirmationRequired",
-            "Confirmed Control Lease holder has drifted",
-          );
-        }
-
-        this.#db
-          .prepare("UPDATE sessions SET fencing_counter = fencing_counter + 1 WHERE session_id = ?")
-          .run(target.session_id);
-        const counter = this.#db
-          .prepare("SELECT fencing_counter FROM sessions WHERE session_id = ?")
-          .get(target.session_id) as { readonly fencing_counter: number };
-        const expiresAt = now + 15_000;
-        const timestamp = new Date(now).toISOString();
-        this.#db
-          .prepare(
-            `UPDATE control_leases
-             SET attachment_id = ?, fencing_token = ?, expires_at = ?, granted_at = ?, renewed_at = ?
-             WHERE session_id = ?`,
-          )
-          .run(
-            attachmentId,
-            counter.fencing_counter,
-            expiresAt,
-            timestamp,
-            timestamp,
-            target.session_id,
-          );
-        this.#appendLifecycleEvent({
-          taskId: target.task_id,
-          attemptId: target.attempt_id,
-          sessionId: target.session_id,
-          type: "control-lease-taken-over",
-          payload: {
-            previousAttachmentId: holder.attachment_id,
-            attachmentId,
-            fencingToken: counter.fencing_counter,
-          },
-        });
-        return { fencingToken: counter.fencing_counter, expiresAt };
-      },
-      this.#now,
-    );
-
-    return {
-      sessionId: target.session_id as SessionId,
-      generation: target.generation as Generation,
-      attachmentId: attachmentId as AttachmentId,
-      fencingToken: replacement.fencingToken as ControlLease["fencingToken"],
-      expiresAt: replacement.expiresAt,
-    };
+    const holder = this.#db
+      .prepare(
+        `SELECT attachment_id, fencing_token
+         FROM control_leases
+         WHERE session_id = ? AND generation = ? AND expires_at > ?`,
+      )
+      .get(target.session_id, target.generation, this.#now()) as
+      | { readonly attachment_id: string; readonly fencing_token: number }
+      | undefined;
+    if (
+      holder === undefined ||
+      holder.attachment_id !== confirmedHolder.attachmentId ||
+      holder.fencing_token !== confirmedHolder.fencingToken
+    ) {
+      throw new StoreError("ConfirmationRequired", "Confirmed Control Lease holder has drifted");
+    }
+    return { target, holder };
   }
 
   closeAttachment(attachmentId: string): void {
@@ -666,21 +717,11 @@ export class SessionRuntime implements SessionRuntimeContract {
       this.#assertControlLease(request.lease);
     }
 
-    const sink = {
+    const sink: Pick<SupervisedPtyProcess, "write"> = {
       write: async (bytes: Uint8Array) => {
         const process = this.#assertControlLease(request.lease);
         await process.write(bytes);
       },
-      resize: async (cols: number, rows: number) => {
-        const process = this.#assertControlLease(request.lease);
-        await process.resize(cols, rows);
-      },
-      kill: async () => {
-        const process = this.#assertControlLease(request.lease);
-        await process.terminate();
-      },
-      onOutput: (listener: (bytes: Uint8Array) => void) =>
-        this.#assertControlLease(request.lease).onOutput(listener),
     };
     const store = new InputIntentStore({
       storeDir: this.#storeDir,
@@ -710,13 +751,6 @@ export class SessionRuntime implements SessionRuntimeContract {
           `commandId ${request.commandId} was already used with different input`,
         );
     }
-  }
-
-  readInputIntentContent(commandId: string): Uint8Array {
-    return new InputIntentStore({
-      storeDir: this.#storeDir,
-      db: this.#db,
-    }).readContent(commandId);
   }
 
   inspectInputIntent(commandId: string): InputIntent | null {
@@ -756,8 +790,17 @@ export class SessionRuntime implements SessionRuntimeContract {
     );
   }
 
-  async terminateSession(lease: ControlLease): Promise<void> {
-    const process = this.#assertControlLease(lease);
+  issueTerminateSessionChallenge(lease: ControlLease): ConfirmationChallenge {
+    this.#assertControlLease(lease);
+    return this.#requireConfirmations().issue(this.#terminateSessionPreview(lease));
+  }
+
+  async terminateSession(request: TerminateSessionRequest): Promise<void> {
+    this.#consumeSideEffectConfirmation(
+      request.confirmationReceipt,
+      this.#terminateSessionPreview(request.lease),
+    );
+    const process = this.#assertControlLease(request.lease);
     await process.terminate();
   }
 
@@ -1588,6 +1631,160 @@ export class SessionRuntime implements SessionRuntimeContract {
       throw new StoreError("StaleControlLease", "Session has no current PTY owner");
     }
     return process;
+  }
+
+  #requireConfirmations(): PersistentChallengeIssuer {
+    if (this.#confirmations === undefined) {
+      throw new StoreError("ConfirmationRequired", "Side-effect confirmation is unavailable");
+    }
+    return this.#confirmations;
+  }
+
+  #terminateSessionPreview(lease: ControlLease): ChallengePreview {
+    const facts = this.#db
+      .prepare(
+        `SELECT sessions.generation AS session_generation, sessions.availability,
+                attachments.status AS attachment_status,
+                control_leases.attachment_id AS lease_attachment_id,
+                control_leases.fencing_token AS lease_fencing_token,
+                control_leases.expires_at AS lease_expires_at
+         FROM sessions
+         LEFT JOIN attachments
+           ON attachments.attachment_id = ?
+          AND attachments.session_id = sessions.session_id
+         LEFT JOIN control_leases
+           ON control_leases.session_id = sessions.session_id
+         WHERE sessions.session_id = ?`,
+      )
+      .get(lease.attachmentId, lease.sessionId) as
+      | {
+          readonly session_generation: number;
+          readonly availability: SessionRuntimeRecord["availability"];
+          readonly attachment_status: Attachment.AttachmentStatus | null;
+          readonly lease_attachment_id: string | null;
+          readonly lease_fencing_token: number | null;
+          readonly lease_expires_at: number | null;
+        }
+      | undefined;
+    if (facts === undefined) {
+      throw new StoreError("NotFound", `Session ${lease.sessionId} does not exist`);
+    }
+    return {
+      kind: "side-effect",
+      display: {
+        title: "Terminate Session",
+        fields: [
+          { label: "Command", value: "TerminateSession" },
+          { label: "Session", value: lease.sessionId },
+          { label: "Generation", value: String(lease.generation) },
+          { label: "Attachment", value: lease.attachmentId },
+          {
+            label: "Impact",
+            value: "Stops this Session; staged, unstaged, and untracked files are not cleaned up",
+          },
+        ],
+      },
+      payload: {
+        commandType: "TerminateSession",
+        sessionId: lease.sessionId,
+        generation: lease.generation,
+      },
+      bindingFacts: [
+        {
+          sessionId: lease.sessionId,
+          generation: facts.session_generation,
+          availability: facts.availability,
+        },
+        {
+          attachmentId: lease.attachmentId,
+          attachmentStatus: facts.attachment_status,
+        },
+        {
+          attachmentId: facts.lease_attachment_id,
+          fencingToken: facts.lease_fencing_token,
+          validAtExecution: facts.lease_expires_at !== null && facts.lease_expires_at > this.#now(),
+        },
+      ],
+      impactSummary: {
+        sideEffectClass: "destructive",
+        stoppedSessionIds: [lease.sessionId],
+        gitCleanup: false,
+      },
+    };
+  }
+
+  #takeoverControlPreview(
+    attachmentId: string,
+    confirmedHolder: ControlLease,
+    target: {
+      readonly session_id: string;
+      readonly generation: number;
+      readonly availability: SessionRuntimeRecord["availability"];
+    },
+    holder: {
+      readonly attachment_id: string;
+      readonly fencing_token: number;
+    },
+  ): ChallengePreview {
+    return {
+      kind: "side-effect",
+      display: {
+        title: "Take Over Session Control",
+        fields: [
+          { label: "Command", value: "TakeoverControl" },
+          { label: "Session", value: target.session_id },
+          { label: "Generation", value: String(target.generation) },
+          { label: "Current holder", value: holder.attachment_id },
+          { label: "New holder", value: attachmentId },
+          {
+            label: "Impact",
+            value: "Immediately revokes the current writer and fences its Control Lease",
+          },
+        ],
+      },
+      payload: {
+        commandType: "TakeoverControl",
+        sessionId: target.session_id,
+        generation: target.generation,
+        attachmentId,
+      },
+      bindingFacts: [
+        {
+          sessionId: target.session_id,
+          generation: target.generation,
+          availability: target.availability,
+        },
+        {
+          attachmentId: confirmedHolder.attachmentId,
+          fencingToken: confirmedHolder.fencingToken,
+        },
+        { replacementAttachmentId: attachmentId },
+      ],
+      impactSummary: {
+        sideEffectClass: "destructive",
+        revokedAttachmentId: holder.attachment_id,
+        replacementAttachmentId: attachmentId,
+      },
+    };
+  }
+
+  #consumeSideEffectConfirmation(receipt: ConfirmationReceipt, preview: ChallengePreview): void {
+    const consumed = this.#requireConfirmations().consume(
+      receipt,
+      "side-effect",
+      {
+        payloadHash: hashPreviewFact(preview.payload),
+        bindingHashes: preview.bindingFacts.map(hashPreviewFact),
+        impactSummaryHash: hashPreviewFact(preview.impactSummary),
+      },
+      this.#now(),
+    );
+    if (!consumed.ok) {
+      throw new StoreError(
+        "ConfirmationRequired",
+        `Side-effect confirmation rejected: ${consumed.reason}`,
+      );
+    }
   }
 
   #inputIntent(commandId: string): InputIntent {

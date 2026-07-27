@@ -65,6 +65,8 @@ export type {
   SessionRuntime,
   SessionRuntimeRecord,
   StoragePressureWait,
+  TakeoverControlRequest,
+  TerminateSessionRequest,
   WriteSessionInputRequest,
 } from "./modules/session-runtime.js";
 export type {

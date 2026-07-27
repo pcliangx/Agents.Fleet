@@ -5,6 +5,7 @@
 
 import type { AttachmentMode, AttachmentStatus } from "../lifecycle/attachment.js";
 import type { SessionAvailability } from "../lifecycle/session.js";
+import type { ConfirmationChallenge, ConfirmationReceipt } from "../protocol/confirmation.js";
 import type {
   AttachResult,
   ControlLease,
@@ -78,6 +79,17 @@ export interface ResizeSessionRequest {
   readonly rows: number;
 }
 
+export interface TerminateSessionRequest {
+  readonly lease: ControlLease;
+  readonly confirmationReceipt: ConfirmationReceipt;
+}
+
+export interface TakeoverControlRequest {
+  readonly attachmentId: string;
+  readonly confirmedHolder: ControlLease;
+  readonly confirmationReceipt: ConfirmationReceipt;
+}
+
 export type ResumableAttemptStatus = "Starting" | "Running" | "Stopping";
 
 export interface StoragePressureWait {
@@ -132,15 +144,19 @@ export interface SessionRuntime {
   attach(sessionId: string): AttachResult;
   acquireControl(attachmentId: string): ControlLease;
   renewControl(lease: ControlLease): ControlLease;
-  takeoverControl(attachmentId: string, confirmedHolder: ControlLease): ControlLease;
+  issueTakeoverControlChallenge(
+    attachmentId: string,
+    confirmedHolder: ControlLease,
+  ): ConfirmationChallenge;
+  takeoverControl(request: TakeoverControlRequest): ControlLease;
   closeAttachment(attachmentId: string): void;
   invalidateAttachment(attachmentId: string): void;
   inspectAttachment(attachmentId: string): AttachmentRuntimeRecord | null;
   writeSessionInput(request: WriteSessionInputRequest): Promise<InputIntent>;
   inspectInputIntent(commandId: string): InputIntent | null;
-  readInputIntentContent(commandId: string): Uint8Array;
   resizeSession(request: ResizeSessionRequest): Promise<void>;
-  terminateSession(lease: ControlLease): Promise<void>;
+  issueTerminateSessionChallenge(lease: ControlLease): ConfirmationChallenge;
+  terminateSession(request: TerminateSessionRequest): Promise<void>;
   readSessionDelta(attachmentId: string, fromSeq: number): SessionDeltaBatch;
   createSessionSnapshot(sessionId: string): Promise<Snapshot>;
   readSessionSnapshot(sessionId: string): Snapshot;

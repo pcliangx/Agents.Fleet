@@ -33,9 +33,9 @@ export interface DispatchCommand {
   readonly commandId: string;
   readonly sessionId: string;
   readonly generation: number;
-  readonly attachmentId?: string;
-  readonly fencingToken?: number;
-  readonly source?: InputSource;
+  readonly attachmentId: string;
+  readonly fencingToken: number;
+  readonly source: InputSource;
   readonly bytes: Uint8Array;
 }
 
@@ -65,14 +65,14 @@ export const contentObjectRelativePath = (commandId: string): string =>
 export class InputIntentStore {
   private readonly storeDir: string;
   private readonly db: DatabaseSync;
-  private readonly ptySink: PtySink | undefined;
+  private readonly ptySink: Pick<PtySink, "write">;
   private readonly now: () => number;
   private readonly onStep: ((step: InputIntentStep, commandId: string) => void) | undefined;
 
   constructor(opts: {
     readonly storeDir: string;
     readonly db: DatabaseSync;
-    readonly ptySink?: PtySink;
+    readonly ptySink: Pick<PtySink, "write">;
     readonly now?: () => number;
     /** 崩溃注入 seam（RT-T-24）：在每个协议边界同步回调。 */
     readonly onStep?: (step: InputIntentStep, commandId: string) => void;
@@ -86,18 +86,13 @@ export class InputIntentStore {
 
   readonly dispatch = async (cmd: DispatchCommand): Promise<DispatchResult> => {
     const sha256 = sha256Hex(cmd.bytes);
-    const attachmentId = cmd.attachmentId ?? "prototype-attachment";
-    const fencingToken = cmd.fencingToken ?? 0;
-    const source = cmd.source ?? "Automation";
     const existing = this.intentRow(cmd.commandId);
     if (existing) {
       if (
         existing.sha256 !== sha256 ||
         existing.session_id !== cmd.sessionId ||
         existing.generation !== cmd.generation ||
-        existing.attachment_id !== attachmentId ||
-        existing.fencing_token !== fencingToken ||
-        existing.source !== source
+        existing.source !== cmd.source
       ) {
         return { status: "IdempotencyConflict", commandId: cmd.commandId };
       }
@@ -149,9 +144,9 @@ export class InputIntentStore {
           cmd.commandId,
           cmd.sessionId,
           cmd.generation,
-          attachmentId,
-          fencingToken,
-          source,
+          cmd.attachmentId,
+          cmd.fencingToken,
+          cmd.source,
           written.relativePath,
           written.sha256,
           written.byteLength,
@@ -162,9 +157,6 @@ export class InputIntentStore {
     this.onStep?.("afterPreparedTx", cmd.commandId);
 
     // Prepared record 已 durable，才把 bytes 交给 PTY owner（RT-INPUT-01）。
-    if (this.ptySink === undefined) {
-      throw new Error("InputIntentStore dispatch requires a PTY sink");
-    }
     await this.ptySink.write(cmd.bytes);
     this.onStep?.("afterPtyWrite", cmd.commandId);
 

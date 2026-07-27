@@ -21,6 +21,11 @@ import { openSessionStoreDb } from "./store-schema.js";
 const INPUT_BYTES = new Uint8Array([0x6c, 0x73, 0x20, 0x2d, 0x6c, 0x0d, 0x00, 0xff]); // "ls -l\r" + NUL + invalid
 const SESSION = "ses-1";
 const GENERATION = 1;
+const PROVENANCE = {
+  attachmentId: "r0-fixture-attachment",
+  fencingToken: 1,
+  source: "Automation",
+} as const;
 
 describe("InputIntentStore (R0-14 Seam 3)", () => {
   let storeDir: string;
@@ -44,6 +49,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(result.status).toBe("Dispatched");
@@ -60,12 +66,14 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     const second = await store.dispatch({
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(second).toEqual(first);
@@ -78,12 +86,14 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     const conflict = await store.dispatch({
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: new Uint8Array([0x01, 0x02]),
     });
     expect(conflict.status).toBe("IdempotencyConflict");
@@ -105,6 +115,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow("simulated daemon crash");
@@ -117,6 +128,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(retry.status).toBe("Uncertain");
@@ -137,6 +149,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow();
@@ -151,6 +164,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(retry.status).toBe("DataGap");
@@ -163,6 +177,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     writeFileSync(join(storeDir, contentObjectRelativePath("cmd-1")), new Uint8Array([0x00]));
@@ -186,6 +201,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow();
@@ -200,6 +216,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(result.status).toBe("Dispatched");

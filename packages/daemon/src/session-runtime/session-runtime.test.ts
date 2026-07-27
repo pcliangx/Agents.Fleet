@@ -12,8 +12,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import type { LaunchSpec, PreparedLaunch } from "@agents-fleet/contracts";
+import {
+  type ConfirmationChallenge,
+  type ConfirmationReceipt,
+  FROZEN_PERFORMANCE_BUDGET,
+  type LaunchSpec,
+  type PreparedLaunch,
+} from "@agents-fleet/contracts";
+import { signConfirmation } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
+import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import {
   copyNodePtyWithHelperMode,
   type TempNodePtyCopy,
@@ -33,6 +41,7 @@ import { SessionRuntime } from "./session-runtime.js";
 
 const T0 = 1_800_000_000_000;
 const SHA = "b".repeat(40);
+const CONFIRMATION_TOKEN = new TextEncoder().encode("r1-06-confirmation-token");
 const tempDirs: string[] = [];
 const databases: DatabaseSync[] = [];
 const nativeCopies: TempNodePtyCopy[] = [];
@@ -88,7 +97,25 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   throw new Error("condition was not observed before timeout");
 };
 
-const createRealProcessSupervisor = async (): Promise<ProcessSupervisor> => {
+const createConfirmations = (db: DatabaseSync, now: () => number = () => T0) =>
+  new PersistentChallengeIssuer({
+    db,
+    token: CONFIRMATION_TOKEN,
+    now,
+  });
+
+const confirm = (challenge: ConfirmationChallenge): ConfirmationReceipt => {
+  const confirmedAt = new Date(T0).toISOString();
+  return {
+    challengeId: challenge.challengeId,
+    confirmedAt,
+    proof: signConfirmation(challenge, confirmedAt, CONFIRMATION_TOKEN),
+  };
+};
+
+const createRealProcessSupervisor = async (
+  injectedOutputListeners?: Set<(bytes: Uint8Array) => void>,
+): Promise<ProcessSupervisor> => {
   const copy = await copyNodePtyWithHelperMode(0o755);
   nativeCopies.push(copy);
   const driver: PtyDriver = {
@@ -102,7 +129,16 @@ const createRealProcessSupervisor = async (): Promise<ProcessSupervisor> => {
         write: (data) => process.write(Buffer.from(data)),
         resize: (cols, rows) => process.resize(cols, rows),
         kill: () => process.kill(),
-        onData: (listener) => process.onData((data) => listener(data as Uint8Array)),
+        onData: (listener) => {
+          injectedOutputListeners?.add(listener);
+          const subscription = process.onData((data) => listener(data as Uint8Array));
+          return {
+            dispose() {
+              injectedOutputListeners?.delete(listener);
+              subscription.dispose();
+            },
+          };
+        },
         onExit: (listener) =>
           process.onExit((event) =>
             listener({ exitCode: event.exitCode, signal: event.signal ?? 0 }),
@@ -113,11 +149,25 @@ const createRealProcessSupervisor = async (): Promise<ProcessSupervisor> => {
   return createProcessSupervisor(driver);
 };
 
+const createControllableProcessSupervisor = async (): Promise<{
+  readonly processSupervisor: ProcessSupervisor;
+  readonly emitOutput: (bytes: Uint8Array) => void;
+}> => {
+  const listeners = new Set<(bytes: Uint8Array) => void>();
+  return {
+    processSupervisor: await createRealProcessSupervisor(listeners),
+    emitOutput: (bytes) => {
+      for (const listener of listeners) listener(bytes);
+    },
+  };
+};
+
 const setupPreparedLaunch = async (
   options: {
     readonly keepAlive?: boolean;
     readonly missingExecutable?: boolean;
     readonly wrapperExecutable?: boolean;
+    readonly outputBytes?: readonly number[];
   } = {},
 ): Promise<{
   readonly db: DatabaseSync;
@@ -177,7 +227,7 @@ const setupPreparedLaunch = async (
   const script = [
     'const fs = require("node:fs");',
     "fs.appendFileSync(process.argv[1], 'x');",
-    "process.stdout.write(Buffer.from([0x41, 0xff, 0x42]));",
+    `process.stdout.write(Buffer.from(${JSON.stringify(options.outputBytes ?? [0x41, 0xff, 0x42])}));`,
     ...(options.keepAlive === false
       ? ["setTimeout(() => {}, 300);"]
       : ["setInterval(() => {}, 1000);"]),
@@ -1124,6 +1174,7 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       db,
       storeDir: root,
       processSupervisor: await createRealProcessSupervisor(),
+      confirmations: createConfirmations(db),
       now: () => T0,
     });
     const launched = await runtime.launch(prepared, { revalidate: async () => true });
@@ -1133,9 +1184,28 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       const first = runtime.attach(launched.sessionId);
       const second = runtime.attach(launched.sessionId);
       const original = runtime.acquireControl(first.attachmentId);
+      const unknownReceipt: ConfirmationReceipt = {
+        challengeId: "ch-unknown",
+        confirmedAt: new Date(T0).toISOString(),
+        proof: "00".repeat(32),
+      };
 
-      const replacement = runtime.takeoverControl(second.attachmentId, original);
+      expect(() =>
+        runtime.takeoverControl({
+          attachmentId: second.attachmentId,
+          confirmedHolder: original,
+          confirmationReceipt: unknownReceipt,
+        }),
+      ).toThrow(expect.objectContaining({ code: "ConfirmationRequired" }));
+      expect(runtime.renewControl(original).fencingToken).toBe(original.fencingToken);
 
+      const challenge = runtime.issueTakeoverControlChallenge(second.attachmentId, original);
+      const receipt = confirm(challenge);
+      const replacement = runtime.takeoverControl({
+        attachmentId: second.attachmentId,
+        confirmedHolder: original,
+        confirmationReceipt: receipt,
+      });
       expect(replacement).toMatchObject({
         attachmentId: second.attachmentId,
         fencingToken: 2,
@@ -1144,6 +1214,13 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       expect(() => runtime.renewControl(original)).toThrow(
         expect.objectContaining({ code: "StaleControlLease" }),
       );
+      expect(() =>
+        runtime.takeoverControl({
+          attachmentId: first.attachmentId,
+          confirmedHolder: replacement,
+          confirmationReceipt: receipt,
+        }),
+      ).toThrow(expect.objectContaining({ code: "ConfirmationRequired" }));
     } finally {
       await runtime.terminate(launched.sessionId);
     }
@@ -1244,7 +1321,53 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
         status: "Dispatched",
       });
       expect(replay).toEqual(first);
-      expect(runtime.readInputIntentContent(command.commandId)).toEqual(bytes);
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("returns the original Dispatched input after Control Lease takeover", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      confirmations: createConfirmations(db),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const firstAttachment = runtime.attach(launched.sessionId);
+      const secondAttachment = runtime.attach(launched.sessionId);
+      const firstLease = runtime.acquireControl(firstAttachment.attachmentId);
+      const bytes = new Uint8Array([0x72, 0x65, 0x74, 0x72, 0x79]);
+      const original = await runtime.writeSessionInput({
+        commandId: "input-across-takeover",
+        lease: firstLease,
+        source: "Automation",
+        bytes,
+      });
+
+      const challenge = runtime.issueTakeoverControlChallenge(
+        secondAttachment.attachmentId,
+        firstLease,
+      );
+      const secondLease = runtime.takeoverControl({
+        attachmentId: secondAttachment.attachmentId,
+        confirmedHolder: firstLease,
+        confirmationReceipt: confirm(challenge),
+      });
+
+      await expect(
+        runtime.writeSessionInput({
+          commandId: "input-across-takeover",
+          lease: secondLease,
+          source: "Automation",
+          bytes,
+        }),
+      ).resolves.toEqual(original);
     } finally {
       await runtime.terminate(launched.sessionId);
     }
@@ -1256,6 +1379,7 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       db,
       storeDir: root,
       processSupervisor: await createRealProcessSupervisor(),
+      confirmations: createConfirmations(db),
       now: () => T0,
     });
     const launched = await runtime.launch(prepared, { revalidate: async () => true });
@@ -1265,7 +1389,13 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       const first = runtime.attach(launched.sessionId);
       const second = runtime.attach(launched.sessionId);
       const oldLease = runtime.acquireControl(first.attachmentId);
-      runtime.takeoverControl(second.attachmentId, oldLease);
+      const terminateChallenge = runtime.issueTerminateSessionChallenge(oldLease);
+      const challenge = runtime.issueTakeoverControlChallenge(second.attachmentId, oldLease);
+      runtime.takeoverControl({
+        attachmentId: second.attachmentId,
+        confirmedHolder: oldLease,
+        confirmationReceipt: confirm(challenge),
+      });
 
       await expect(
         runtime.writeSessionInput({
@@ -1278,10 +1408,47 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       await expect(
         runtime.resizeSession({ lease: oldLease, cols: 120, rows: 40 }),
       ).rejects.toMatchObject({ code: "StaleControlLease" });
-      await expect(runtime.terminateSession(oldLease)).rejects.toMatchObject({
-        code: "StaleControlLease",
-      });
+      await expect(
+        runtime.terminateSession({
+          lease: oldLease,
+          confirmationReceipt: confirm(terminateChallenge),
+        }),
+      ).rejects.toMatchObject({ code: "ConfirmationRequired" });
       expect(runtime.inspectSession(launched.sessionId)?.availability).toBe("Alive");
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("requires a one-time destructive confirmation before terminating a Session", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      confirmations: createConfirmations(db),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const attached = runtime.attach(launched.sessionId);
+      const lease = runtime.acquireControl(attached.attachmentId);
+      const unknownReceipt: ConfirmationReceipt = {
+        challengeId: "ch-unknown",
+        confirmedAt: new Date(T0).toISOString(),
+        proof: "00".repeat(32),
+      };
+
+      await expect(
+        runtime.terminateSession({ lease, confirmationReceipt: unknownReceipt }),
+      ).rejects.toMatchObject({ code: "ConfirmationRequired" });
+      expect(runtime.inspectSession(launched.sessionId)?.availability).toBe("Alive");
+
+      const challenge = runtime.issueTerminateSessionChallenge(lease);
+      await runtime.terminateSession({ lease, confirmationReceipt: confirm(challenge) });
+      await waitFor(() => runtime.inspectSession(launched.sessionId)?.availability === "Exited");
     } finally {
       await runtime.terminate(launched.sessionId);
     }
@@ -1392,6 +1559,104 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
     }
   });
 
+  it("advances Worker Snapshots only at UTF-8, CSI, OSC, and DCS safe byte boundaries", {
+    timeout: 30_000,
+  }, async () => {
+    const { db, root, prepared } = await setupPreparedLaunch({ outputBytes: [] });
+    const controlled = await createControllableProcessSupervisor();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: controlled.processSupervisor,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    // A | 人 | CSI 2;3H | OSC title BEL | DCS zhi ST.
+    // These literals are the independently reviewed safe prefix lengths.
+    const fixture = Uint8Array.from([
+      0x41, 0xe4, 0xba, 0xba, 0x1b, 0x5b, 0x32, 0x3b, 0x33, 0x48, 0x1b, 0x5d, 0x30, 0x3b, 0x48,
+      0x69, 0x07, 0x1b, 0x50, 0x7a, 0x68, 0x69, 0x1b, 0x5c,
+    ]);
+    const safePrefixes = new Set([1, 4, 10, 17, 24]);
+    let lastSafePrefix = 0;
+
+    try {
+      for (const [index, byte] of fixture.entries()) {
+        const seq = index + 1;
+        controlled.emitOutput(Uint8Array.of(byte));
+        await waitFor(
+          () =>
+            runtime.readDurableFrame({
+              sessionId: launched.sessionId,
+              generation: launched.generation,
+              seq,
+            }) !== null,
+        );
+        if (safePrefixes.has(seq)) lastSafePrefix = seq;
+
+        const snapshot = await runtime.createSessionSnapshot(launched.sessionId);
+        expect(snapshot.coversThroughSeq).toBe(lastSafePrefix);
+      }
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("falls back to initial Snapshot plus durable delta for corrupt or incompatible cache", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      await waitFor(
+        () =>
+          runtime.readDurableFrame({
+            sessionId: launched.sessionId,
+            generation: launched.generation,
+            seq: 1,
+          }) !== null,
+      );
+      await runtime.createSessionSnapshot(launched.sessionId);
+      const snapshotPath = join(
+        root,
+        "snapshots",
+        launched.sessionId,
+        String(launched.generation),
+        "snapshot-1.json",
+      );
+
+      writeFileSync(snapshotPath, "corrupt");
+      expect(runtime.readSessionSnapshot(launched.sessionId).coversThroughSeq).toBe(0);
+
+      await runtime.createSessionSnapshot(launched.sessionId);
+      db.prepare(
+        "UPDATE session_snapshots SET schema_version = 999 WHERE session_id = ? AND generation = ?",
+      ).run(launched.sessionId, launched.generation);
+      expect(runtime.readSessionSnapshot(launched.sessionId).coversThroughSeq).toBe(0);
+
+      await runtime.createSessionSnapshot(launched.sessionId);
+      db.prepare(
+        "UPDATE session_snapshots SET package_set_json = '{}' WHERE session_id = ? AND generation = ?",
+      ).run(launched.sessionId, launched.generation);
+      const attached = runtime.attach(launched.sessionId);
+      expect(attached.snapshot.coversThroughSeq).toBe(0);
+      expect(runtime.readSessionDelta(attached.attachmentId, 1).frames).toEqual([
+        expect.objectContaining({
+          header: expect.objectContaining({ seq: 1 }),
+          bytes: new Uint8Array([0x41, 0xff, 0x42]),
+        }),
+      ]);
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
   it("creates a final Snapshot after exit without any Active Attachment", async () => {
     const { db, root, prepared } = await setupPreparedLaunch({ keepAlive: false });
     const runtime = new SessionRuntime({
@@ -1408,6 +1673,41 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
     const attached = runtime.attach(launched.sessionId);
     expect(attached.mode).toBe("Restored");
     expect(attached.snapshot.coversThroughSeq).toBe(1);
+  });
+
+  it("serves a 10,000-line final Snapshot within the daemon-side restore budget", {
+    timeout: 30_000,
+  }, async () => {
+    const output = new TextEncoder().encode("x\n".repeat(10_000));
+    const { db, root, prepared } = await setupPreparedLaunch({
+      keepAlive: false,
+      outputBytes: [...output],
+    });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    await waitFor(
+      () => runtime.inspectSession(launched.sessionId)?.availability === "Exited",
+      5_000,
+    );
+    await waitFor(() => runtime.readSessionSnapshot(launched.sessionId).coversThroughSeq > 0);
+
+    const samples: number[] = [];
+    for (let sample = 0; sample < 20; sample += 1) {
+      const started = performance.now();
+      const attached = runtime.attach(launched.sessionId);
+      samples.push(performance.now() - started);
+      expect(attached.mode).toBe("Restored");
+      expect(attached.snapshot.coversThroughSeq).toBeGreaterThan(0);
+    }
+    samples.sort((left, right) => left - right);
+    const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+    expect(p95).toBeLessThan(FROZEN_PERFORMANCE_BUDGET.sessionRestoreMs.p95);
   });
 
   it("reconciles Prepared input as Uncertain after the PTY-write boundary", async () => {
@@ -1446,9 +1746,6 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
         commandId: "uncertain-input",
         status: "Uncertain",
       });
-      expect(restarted.readInputIntentContent("uncertain-input")).toEqual(
-        new Uint8Array([0x79, 0x0d]),
-      );
       await expect(
         restarted.writeSessionInput({
           commandId: "uncertain-input",

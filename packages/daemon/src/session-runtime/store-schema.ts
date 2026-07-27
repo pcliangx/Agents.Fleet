@@ -1,4 +1,6 @@
-// R0-14 — session store 的权威 schema 与打开方式。
+// R0-14 — chunk / Input Intent 崩溃注入 fixture 的独立 schema 与打开方式。
+// R1 lifecycle DB 的唯一权威是 storage/migrations.ts；本文件只供 R0-14
+// 子进程在隔离数据库中重放 durability 边界，不得用于打开 fleet.db。
 // 真实 node:sqlite，WAL + synchronous=FULL（RT-STO-06 形状，与
 // packages/testing/src/temp-sqlite.ts、r0-07 schema.ts 同一约定）。
 // 每个 durability 步骤的 SQLite 写入都是单个 BEGIN IMMEDIATE … COMMIT：
@@ -36,12 +38,12 @@ CREATE TABLE IF NOT EXISTS input_intents (
   generation INTEGER NOT NULL,
   attachment_id TEXT NOT NULL,
   fencing_token INTEGER NOT NULL,
-  source TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('Keyboard','IME','Paste','Mouse','Automation')),
   content_ref TEXT NOT NULL,        -- 相对 storeDir 的 content object 路径
   sha256 TEXT NOT NULL,
   byte_length INTEGER NOT NULL,
   redacted_preview TEXT NOT NULL,
-  status TEXT NOT NULL,             -- Prepared | Dispatched | Uncertain
+  status TEXT NOT NULL CHECK (status IN ('Prepared','Dispatched','Uncertain')),
   data_gap INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   dispatched_at TEXT
