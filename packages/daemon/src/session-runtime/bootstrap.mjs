@@ -60,7 +60,7 @@ const writeExclusiveDurable = (path, value) => {
   fsyncDirectory(dirname(path));
 };
 
-const processFact = (pid, field) => {
+const readPsField = (pid, field) => {
   const result = spawnSync("/bin/ps", ["-o", `${field}=`, "-p", String(pid)], {
     encoding: "utf8",
   });
@@ -72,8 +72,8 @@ try {
     nonce: config.launchNonce,
     argvHash: config.argvHash,
     pid: process.pid,
-    pgid: Number(processFact(process.pid, "pgid")),
-    lstart: processFact(process.pid, "lstart"),
+    pgid: Number(readPsField(process.pid, "pgid")),
+    lstart: readPsField(process.pid, "lstart"),
   });
 } catch {
   process.exit(4);
@@ -110,8 +110,8 @@ const timer = setInterval(() => {
       nonce: config.launchNonce,
       argvHash: config.argvHash,
       pid: process.pid,
-      pgid: Number(processFact(process.pid, "pgid")),
-      lstart: processFact(process.pid, "lstart"),
+      pgid: Number(readPsField(process.pid, "pgid")),
+      lstart: readPsField(process.pid, "lstart"),
     });
   } catch {
     process.exit(10);

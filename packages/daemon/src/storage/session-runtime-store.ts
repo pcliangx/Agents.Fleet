@@ -18,7 +18,10 @@ export const SESSION_RUNTIME_MIGRATIONS: readonly Migration[] = [
         ALTER TABLE sessions ADD COLUMN process_pid INTEGER;
         ALTER TABLE sessions ADD COLUMN process_pgid INTEGER;
         ALTER TABLE sessions ADD COLUMN process_started_at TEXT;
+        ALTER TABLE sessions ADD COLUMN process_command TEXT;
         ALTER TABLE sessions ADD COLUMN exit_code INTEGER;
+        ALTER TABLE attempts ADD COLUMN waiting_reason TEXT;
+        ALTER TABLE attempts ADD COLUMN resume_status TEXT;
 
         CREATE TABLE slot_leases (
           slot_lease_id TEXT PRIMARY KEY,

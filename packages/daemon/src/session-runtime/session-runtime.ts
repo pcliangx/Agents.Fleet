@@ -5,26 +5,32 @@
 // domain results. The durable LaunchIntent result makes a replay return the
 // original Session without spawning a second bootstrap or Agent.
 
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
   Attempt,
   type DurableFrameRef,
+  FROZEN_RUNTIME_LIMIT_PROFILE,
+  type LaunchFailedReason,
   LaunchIntent,
   type LaunchSessionResult,
+  type LaunchUncertainReason,
   type LaunchValidation,
   type PreparedLaunch,
+  ProcessDisposition,
   type RestartReconciliationReport,
+  type ResumableAttemptStatus,
   type SessionRuntime as SessionRuntimeContract,
   type SessionRuntimeRecord,
+  type StoragePressureWait,
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
-import { EVENT_SCHEMA_VERSION, StoreError } from "../storage/task-store.js";
+import { appendDomainEvent } from "../storage/domain-event-store.js";
+import { StoreError } from "../storage/task-store.js";
 import { ByteJournal } from "./byte-journal.js";
 import { durableWriteContentObject } from "./content-object-io.js";
 import type {
@@ -36,7 +42,11 @@ import { reconcileStore } from "./store-reconciliation.js";
 
 const DEFAULT_BOOTSTRAP = join(dirname(fileURLToPath(import.meta.url)), "bootstrap.mjs");
 
-type LaunchStep = "afterBootstrapReceipt" | "afterAuthorize" | "afterCommitSent";
+type LaunchStep =
+  | "afterBootstrapReceipt"
+  | "afterAuthorize"
+  | "afterCommitSent"
+  | "afterAgentObserved";
 
 interface SessionRuntimeOptions {
   readonly db: DatabaseSync;
@@ -62,6 +72,9 @@ interface LaunchIntentRow {
   readonly launch_spec_json: string;
   readonly launch_spec_hash: string;
   readonly status: LaunchIntent.LaunchIntentStatus;
+  readonly bootstrap_pid: number | null;
+  readonly bootstrap_pgid: number | null;
+  readonly bootstrap_started_at: string | null;
   readonly commit_sent_at: string | null;
   readonly result_json: string | null;
 }
@@ -74,6 +87,30 @@ interface ProcessReceipt {
   readonly lstart: string;
   readonly command?: string;
 }
+
+interface OutputCaptureState {
+  nextSeq: number;
+  active: boolean;
+  pendingBytes: number;
+  readonly pending: Uint8Array[];
+}
+
+interface OwnedProcess {
+  readonly process: SupervisedPtyProcess;
+  readonly processGroupId: number;
+}
+
+type ProcessProbe =
+  | {
+      readonly kind: "observed";
+      readonly identity: {
+        readonly pgid: number;
+        readonly lstart: string;
+        readonly command: string;
+      };
+    }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unavailable" };
 
 const sleep = async (milliseconds: number): Promise<void> =>
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -110,6 +147,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #launches = new Map<string, Promise<LaunchSessionResult>>();
   readonly #processes = new Map<string, SupervisedPtyProcess>();
   readonly #outputSubscriptions = new Map<string, () => void>();
+  readonly #outputCaptures = new Map<string, OutputCaptureState>();
   readonly #exitSubscriptions = new Map<string, () => void>();
   readonly #exitPromises = new Map<string, Promise<void>>();
   readonly #streamFailures = new Map<string, unknown>();
@@ -146,6 +184,135 @@ export class SessionRuntime implements SessionRuntimeContract {
     } finally {
       this.#launches.delete(prepared.launchNonce);
     }
+  }
+
+  async pauseForStoragePressure(attemptId: string): Promise<StoragePressureWait> {
+    const attempt = this.#attempt(attemptId);
+    if (attempt.status === "Waiting") {
+      if (
+        attempt.waiting_reason !== "StoragePressure" ||
+        !isResumableAttemptStatus(attempt.resume_status)
+      ) {
+        throw new StoreError("DataIntegrityFailure", "Waiting Attempt has invalid resume facts");
+      }
+      return {
+        attemptId,
+        waitingReason: "StoragePressure",
+        resumeStatus: attempt.resume_status,
+      };
+    }
+    if (!isResumableAttemptStatus(attempt.status)) {
+      throw new StoreError("Conflict", `Attempt is ${attempt.status}, cannot enter Waiting`);
+    }
+
+    const processes = this.#ownedProcessesForAttempt(attemptId);
+    if (processes.length === 0) {
+      throw new StoreError("Conflict", "Attempt has no owned process to pause");
+    }
+    const paused: OwnedProcess[] = [];
+    try {
+      for (const owned of processes) {
+        await owned.process.pause(owned.processGroupId);
+        paused.push(owned);
+      }
+      transact(
+        this.#db,
+        () => {
+          const current = this.#attempt(attemptId);
+          if (current.status !== attempt.status) {
+            throw new StoreError("Conflict", "Attempt changed while entering Waiting");
+          }
+          this.#transitionAttempt(attemptId, "Waiting");
+          this.#db
+            .prepare(
+              `UPDATE attempts
+               SET waiting_reason = 'StoragePressure', resume_status = ?
+               WHERE attempt_id = ? AND status = 'Waiting'`,
+            )
+            .run(attempt.status, attemptId);
+          this.#appendLifecycleEvent({
+            taskId: attempt.task_id,
+            attemptId,
+            sessionId: this.#primarySessionIdForAttempt(attemptId),
+            type: "attempt-waiting",
+            payload: { waitingReason: "StoragePressure", resumeStatus: attempt.status },
+          });
+        },
+        this.#now,
+      );
+    } catch (error) {
+      await Promise.allSettled(
+        paused.map(async (owned) => await owned.process.resume(owned.processGroupId)),
+      );
+      throw error;
+    }
+    return {
+      attemptId,
+      waitingReason: "StoragePressure",
+      resumeStatus: attempt.status,
+    };
+  }
+
+  async resumeFromStoragePressure(
+    attemptId: string,
+    validation: LaunchValidation,
+  ): Promise<ResumableAttemptStatus> {
+    const attempt = this.#attempt(attemptId);
+    if (
+      attempt.status !== "Waiting" ||
+      attempt.waiting_reason !== "StoragePressure" ||
+      !isResumableAttemptStatus(attempt.resume_status)
+    ) {
+      throw new StoreError("Conflict", "Attempt is not waiting for StoragePressure");
+    }
+    const resumeStatus = attempt.resume_status;
+    let verified = false;
+    try {
+      verified = await validation.revalidate();
+    } catch {
+      throw new StoreError("Conflict", "resume facts could not be verified");
+    }
+    if (!verified) throw new StoreError("Conflict", "resume facts drifted");
+
+    const processes = this.#ownedProcessesForAttempt(attemptId);
+    if (processes.length === 0) {
+      throw new StoreError("Conflict", "Attempt has no owned process to resume");
+    }
+    const resumed: OwnedProcess[] = [];
+    try {
+      for (const owned of processes) {
+        await owned.process.resume(owned.processGroupId);
+        resumed.push(owned);
+      }
+      transact(
+        this.#db,
+        () => {
+          const current = this.#attempt(attemptId);
+          if (
+            current.status !== "Waiting" ||
+            current.waiting_reason !== "StoragePressure" ||
+            current.resume_status !== resumeStatus
+          ) {
+            throw new StoreError("Conflict", "Waiting facts changed before resume");
+          }
+          this.#transitionAttempt(attemptId, resumeStatus);
+          this.#appendLifecycleEvent({
+            taskId: attempt.task_id,
+            attemptId,
+            sessionId: this.#primarySessionIdForAttempt(attemptId),
+            type: "attempt-resumed",
+            payload: { resumedStatus: resumeStatus },
+          });
+        },
+        this.#now,
+      );
+    } catch (error) {
+      await Promise.allSettled(
+        resumed.map(async (owned) => await owned.process.pause(owned.processGroupId)),
+      );
+      throw error;
+    }
+    return resumeStatus;
   }
 
   async terminate(sessionId: string): Promise<void> {
@@ -188,7 +355,9 @@ export class SessionRuntime implements SessionRuntimeContract {
     const storage = reconcileStore(this.#storeDir, this.#db);
     const alive = this.#db
       .prepare(
-        `SELECT sessions.session_id, sessions.attempt_id, attempts.task_id, attempts.status
+        `SELECT sessions.session_id, sessions.attempt_id, sessions.process_pid,
+                sessions.process_pgid, sessions.process_started_at, sessions.process_command,
+                attempts.task_id, attempts.status
          FROM sessions
          JOIN attempts ON attempts.attempt_id = sessions.attempt_id
          WHERE sessions.availability = 'Alive'
@@ -199,6 +368,10 @@ export class SessionRuntime implements SessionRuntimeContract {
       readonly attempt_id: string;
       readonly task_id: string;
       readonly status: Attempt.AttemptStatus;
+      readonly process_pid: number | null;
+      readonly process_pgid: number | null;
+      readonly process_started_at: string | null;
+      readonly process_command: string | null;
     }[];
     const actions: RestartReconciliationReport["actions"][number][] = [];
 
@@ -207,16 +380,6 @@ export class SessionRuntime implements SessionRuntimeContract {
         this.#db,
         () => {
           const now = new Date(this.#now()).toISOString();
-          this.#db
-            .prepare(
-              "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
-            )
-            .run(now, row.session_id);
-          if (Attempt.canTransition(row.status, "Interrupted")) {
-            this.#db
-              .prepare("UPDATE attempts SET status = 'Interrupted' WHERE attempt_id = ?")
-              .run(row.attempt_id);
-          }
           this.#db
             .prepare(
               `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
@@ -229,8 +392,84 @@ export class SessionRuntime implements SessionRuntimeContract {
             taskId: row.task_id,
             attemptId: row.attempt_id,
             sessionId: row.session_id,
+            type: "process-probe-started",
+            payload: {},
+          });
+        },
+        this.#now,
+      );
+
+      const probe =
+        row.process_pid === null
+          ? ({ kind: "unavailable" } as const)
+          : probeProcess(row.process_pid);
+      const identityMatches =
+        probe.kind === "observed" &&
+        row.process_pgid !== null &&
+        row.process_started_at !== null &&
+        row.process_command !== null &&
+        probe.identity.pgid === row.process_pgid &&
+        probe.identity.lstart === row.process_started_at &&
+        probe.identity.command === row.process_command;
+      const resolution:
+        | {
+            readonly status: "Uncertain";
+            readonly disposition: "OrphanFound" | "Probing";
+            readonly reason: string;
+          }
+        | {
+            readonly status: "Interrupted";
+            readonly disposition: "ConfirmedAbsent";
+            readonly reason: string;
+          } = identityMatches
+        ? {
+            status: "Uncertain",
+            disposition: "OrphanFound",
+            reason: "orphan-process-identity-matched",
+          }
+        : probe.kind === "unavailable"
+          ? {
+              status: "Uncertain",
+              disposition: "Probing",
+              reason: "process-identity-unavailable",
+            }
+          : {
+              status: "Interrupted",
+              disposition: "ConfirmedAbsent",
+              reason:
+                probe.kind === "absent" ? "process-confirmed-absent" : "process-identity-mismatch",
+            };
+
+      transact(
+        this.#db,
+        () => {
+          const now = new Date(this.#now()).toISOString();
+          this.#db
+            .prepare(
+              "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
+            )
+            .run(now, row.session_id);
+          this.#transitionAttempt(row.attempt_id, resolution.status);
+          this.#db
+            .prepare(
+              `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT (attempt_id) DO UPDATE
+               SET disposition = excluded.disposition, updated_at = excluded.updated_at`,
+            )
+            .run(row.attempt_id, resolution.disposition, now);
+          if (!ProcessDisposition.dispositionHoldsSlot(resolution.disposition)) {
+            this.#releaseSlot(row.attempt_id, now);
+          }
+          this.#appendLifecycleEvent({
+            taskId: row.task_id,
+            attemptId: row.attempt_id,
+            sessionId: row.session_id,
             type: "session-lost",
-            payload: { reason: "daemon-runtime-restarted" },
+            payload: {
+              reason: resolution.reason,
+              processDisposition: resolution.disposition,
+            },
           });
         },
         this.#now,
@@ -296,7 +535,22 @@ export class SessionRuntime implements SessionRuntimeContract {
       const commitPath = join(this.#storeDir, "launch", row.launch_nonce, "commit-launch.json");
       const launch = preparedLaunchFromRow(row);
       if (row.commit_sent_at !== null || existsSync(commitPath)) {
-        this.#markUncertain(launch, "commit-delivery-unknown-after-restart");
+        const receipt = readReceipt(
+          join(this.#storeDir, "launch", row.launch_nonce, "exec-receipt.json"),
+        );
+        const probe =
+          receipt === null ? ({ kind: "unavailable" } as const) : probeProcess(receipt.pid);
+        const disposition =
+          receipt !== null &&
+          probe.kind === "observed" &&
+          probe.identity.pgid === receipt.pgid &&
+          probe.identity.lstart === receipt.lstart &&
+          commandMatchesExecutable(probe.identity.command, launch.launchSpec.executablePath)
+            ? "OrphanFound"
+            : probe.kind === "unavailable"
+              ? "Probing"
+              : "ConfirmedAbsent";
+        this.#markUncertain(launch, "commit-delivery-unknown-after-restart", disposition);
         actions.push({
           action: "marked-uncertain",
           attemptId: row.attempt_id,
@@ -314,6 +568,7 @@ export class SessionRuntime implements SessionRuntimeContract {
         launchNonce: row.launch_nonce,
       });
     }
+    this.#reconcileSlotLeases();
     return {
       actions,
       dataIntegrity: {
@@ -415,33 +670,80 @@ export class SessionRuntime implements SessionRuntimeContract {
       return this.#markUncertain(prepared, "agent-not-observed-after-commit");
     }
 
+    this.#onLaunchStep?.("afterAgentObserved");
     const result = this.#finalizeRunning(prepared, agent);
+    this.#activateOutputCapture(prepared.plannedSessionId);
     return result;
   }
 
   #captureOutput(prepared: PreparedLaunch, process: SupervisedPtyProcess): void {
-    let nextSeq =
-      this.#journal.durableCursor({
-        sessionId: prepared.plannedSessionId,
-        generation: 1,
-      }) + 1;
+    const capture: OutputCaptureState = {
+      nextSeq:
+        this.#journal.durableCursor({
+          sessionId: prepared.plannedSessionId,
+          generation: 1,
+        }) + 1,
+      active: false,
+      pendingBytes: 0,
+      pending: [],
+    };
+    this.#outputCaptures.set(prepared.plannedSessionId, capture);
     const streamKey = `${prepared.plannedSessionId}:1`;
     const unsubscribe = process.onOutput((bytes) => {
       if (this.#streamFailures.has(streamKey)) return;
-      try {
-        this.#journal.appendFrame({
-          sessionId: prepared.plannedSessionId,
-          generation: 1,
-          seq: nextSeq,
-          bytes: Uint8Array.from(bytes),
-        });
-        nextSeq += 1;
-      } catch (error) {
-        this.#streamFailures.set(streamKey, error);
-        void process.terminate().catch(() => {});
+      const copy = Uint8Array.from(bytes);
+      if (!capture.active) {
+        capture.pendingBytes += copy.byteLength;
+        if (capture.pendingBytes > FROZEN_RUNTIME_LIMIT_PROFILE.terminal.pendingWriteBytes) {
+          this.#streamFailures.set(
+            streamKey,
+            new StoreError("DataIntegrityFailure", "pre-Session output buffer exceeded limit"),
+          );
+          void process.terminate().catch(() => {});
+          return;
+        }
+        capture.pending.push(copy);
+        return;
       }
+      this.#appendOutputFrame(prepared.plannedSessionId, capture, copy);
     });
     this.#outputSubscriptions.set(prepared.plannedSessionId, unsubscribe);
+  }
+
+  #activateOutputCapture(sessionId: string): void {
+    const capture = this.#outputCaptures.get(sessionId);
+    if (capture === undefined) return;
+    capture.active = true;
+    for (const bytes of capture.pending.splice(0)) {
+      this.#appendOutputFrame(sessionId, capture, bytes);
+    }
+    capture.pendingBytes = 0;
+  }
+
+  #appendOutputFrame(sessionId: string, capture: OutputCaptureState, bytes: Uint8Array): void {
+    const streamKey = `${sessionId}:1`;
+    if (this.#streamFailures.has(streamKey)) return;
+    try {
+      this.#journal.appendFrame({
+        sessionId,
+        generation: 1,
+        seq: capture.nextSeq,
+        bytes,
+      });
+      capture.nextSeq += 1;
+    } catch (error) {
+      this.#streamFailures.set(streamKey, error);
+      void this.#processes
+        .get(sessionId)
+        ?.terminate()
+        .catch(() => {});
+    }
+  }
+
+  #discardOutputCapture(sessionId: string): void {
+    this.#outputSubscriptions.get(sessionId)?.();
+    this.#outputSubscriptions.delete(sessionId);
+    this.#outputCaptures.delete(sessionId);
   }
 
   #captureExit(prepared: PreparedLaunch, process: SupervisedPtyProcess): void {
@@ -483,8 +785,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   }
 
   #forgetProcess(sessionId: string): void {
-    this.#outputSubscriptions.get(sessionId)?.();
-    this.#outputSubscriptions.delete(sessionId);
+    this.#discardOutputCapture(sessionId);
     this.#exitSubscriptions.get(sessionId)?.();
     this.#exitSubscriptions.delete(sessionId);
     this.#exitPromises.delete(sessionId);
@@ -536,17 +837,17 @@ export class SessionRuntime implements SessionRuntimeContract {
         receipt.nonce === prepared.launchNonce &&
         receipt.pid === this.#processes.get(prepared.plannedSessionId)?.pid
       ) {
-        const observed = processIdentity(receipt.pid);
+        const observed = probeProcess(receipt.pid);
         if (
-          observed !== null &&
-          observed.pgid === receipt.pgid &&
-          observed.lstart === receipt.lstart &&
-          observed.command.includes(prepared.launchSpec.executablePath)
+          observed.kind === "observed" &&
+          observed.identity.pgid === receipt.pgid &&
+          observed.identity.lstart === receipt.lstart &&
+          commandMatchesExecutable(observed.identity.command, prepared.launchSpec.executablePath)
         ) {
-          return { ...receipt, command: observed.command };
+          return { ...receipt, command: observed.identity.command };
         }
       }
-      await sleep(20);
+      await sleep(50);
     }
     return null;
   }
@@ -597,6 +898,10 @@ export class SessionRuntime implements SessionRuntimeContract {
   }
 
   #finalizeRunning(prepared: PreparedLaunch, agent: ProcessReceipt): LaunchSessionResult {
+    if (agent.command === undefined) {
+      throw new StoreError("DataIntegrityFailure", "observed Agent command is missing");
+    }
+    const processCommand = agent.command;
     const result: LaunchSessionResult = {
       kind: "running",
       attemptId: prepared.attemptId,
@@ -606,18 +911,14 @@ export class SessionRuntime implements SessionRuntimeContract {
     return transact(
       this.#db,
       () => {
-        const attempt = this.#attemptStatus(prepared.attemptId);
-        if (!Attempt.canTransition(attempt, "Running")) {
-          throw new StoreError("Conflict", `Attempt is ${attempt}, cannot become Running`);
-        }
         const now = new Date(this.#now()).toISOString();
         this.#db
           .prepare(
             `INSERT INTO sessions
              (session_id, attempt_id, availability, role, completion_policy, generation,
-              process_pid, process_pgid, process_started_at, created_at, updated_at)
+              process_pid, process_pgid, process_started_at, process_command, created_at, updated_at)
              VALUES (?, ?, 'Alive', 'PrimaryAgent', 'BlocksAttemptCompletion', 1,
-                     ?, ?, ?, ?, ?)`,
+                     ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             prepared.plannedSessionId,
@@ -625,12 +926,11 @@ export class SessionRuntime implements SessionRuntimeContract {
             agent.pid,
             agent.pgid,
             agent.lstart,
+            processCommand,
             now,
             now,
           );
-        this.#db
-          .prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?")
-          .run(prepared.attemptId);
+        this.#transitionAttempt(prepared.attemptId, "Running");
         this.#db
           .prepare(
             "UPDATE launch_intents SET result_json = ?, updated_at = ? WHERE launch_nonce = ?",
@@ -647,7 +947,7 @@ export class SessionRuntime implements SessionRuntimeContract {
     );
   }
 
-  #abort(prepared: PreparedLaunch, reason: string): LaunchSessionResult {
+  #abort(prepared: PreparedLaunch, reason: LaunchFailedReason): LaunchSessionResult {
     const result: LaunchSessionResult = {
       kind: "failed",
       attemptId: prepared.attemptId,
@@ -671,9 +971,7 @@ export class SessionRuntime implements SessionRuntimeContract {
              WHERE launch_nonce = ?`,
           )
           .run(reason, JSON.stringify(result), now, prepared.launchNonce);
-        this.#db
-          .prepare("UPDATE attempts SET status = 'Failed' WHERE attempt_id = ?")
-          .run(prepared.attemptId);
+        this.#transitionAttempt(prepared.attemptId, "Failed");
         this.#db
           .prepare("UPDATE slot_leases SET released_at = ? WHERE slot_lease_id = ?")
           .run(now, prepared.slotLeaseId);
@@ -684,7 +982,11 @@ export class SessionRuntime implements SessionRuntimeContract {
     );
   }
 
-  #markUncertain(prepared: PreparedLaunch, reason: string): LaunchSessionResult {
+  #markUncertain(
+    prepared: PreparedLaunch,
+    reason: LaunchUncertainReason,
+    disposition: ProcessDisposition.ProcessDisposition = "Probing",
+  ): LaunchSessionResult {
     const result: LaunchSessionResult = {
       kind: "uncertain",
       attemptId: prepared.attemptId,
@@ -694,9 +996,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       this.#db,
       () => {
         const now = new Date(this.#now()).toISOString();
-        this.#db
-          .prepare("UPDATE attempts SET status = 'Uncertain' WHERE attempt_id = ?")
-          .run(prepared.attemptId);
+        this.#transitionAttempt(prepared.attemptId, "Uncertain");
         this.#db
           .prepare(
             "UPDATE launch_intents SET result_json = ?, updated_at = ? WHERE launch_nonce = ?",
@@ -705,12 +1005,18 @@ export class SessionRuntime implements SessionRuntimeContract {
         this.#db
           .prepare(
             `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
-             VALUES (?, 'Probing', ?)
+             VALUES (?, ?, ?)
              ON CONFLICT (attempt_id) DO UPDATE
-             SET disposition = 'Probing', updated_at = excluded.updated_at`,
+             SET disposition = excluded.disposition, updated_at = excluded.updated_at`,
           )
-          .run(prepared.attemptId, now);
-        this.#appendEvent(prepared, "attempt-uncertain", { reason });
+          .run(prepared.attemptId, disposition, now);
+        if (!ProcessDisposition.dispositionHoldsSlot(disposition)) {
+          this.#releaseSlot(prepared.attemptId, now);
+        }
+        this.#appendEvent(prepared, "attempt-uncertain", {
+          reason,
+          processDisposition: disposition,
+        });
         return result;
       },
       this.#now,
@@ -728,12 +1034,149 @@ export class SessionRuntime implements SessionRuntimeContract {
     });
   }
 
-  #attemptStatus(attemptId: string): Attempt.AttemptStatus {
+  #attempt(attemptId: string): {
+    readonly task_id: string;
+    readonly status: Attempt.AttemptStatus;
+    readonly waiting_reason: string | null;
+    readonly resume_status: string | null;
+  } {
     const row = this.#db
-      .prepare("SELECT status FROM attempts WHERE attempt_id = ?")
-      .get(attemptId) as { status: Attempt.AttemptStatus } | undefined;
+      .prepare(
+        "SELECT task_id, status, waiting_reason, resume_status FROM attempts WHERE attempt_id = ?",
+      )
+      .get(attemptId) as
+      | {
+          readonly task_id: string;
+          readonly status: Attempt.AttemptStatus;
+          readonly waiting_reason: string | null;
+          readonly resume_status: string | null;
+        }
+      | undefined;
     if (row === undefined) throw new StoreError("NotFound", "no such Attempt");
-    return row.status;
+    return row;
+  }
+
+  #transitionAttempt(attemptId: string, to: Attempt.AttemptStatus): void {
+    const from = this.#attempt(attemptId).status;
+    if (!Attempt.canTransition(from, to)) {
+      throw new StoreError("Conflict", `Attempt is ${from}, cannot become ${to}`);
+    }
+    if (to === "Waiting") {
+      this.#db.prepare("UPDATE attempts SET status = ? WHERE attempt_id = ?").run(to, attemptId);
+      return;
+    }
+    this.#db
+      .prepare(
+        `UPDATE attempts
+         SET status = ?, waiting_reason = NULL, resume_status = NULL
+         WHERE attempt_id = ?`,
+      )
+      .run(to, attemptId);
+  }
+
+  #ownedProcessesForAttempt(attemptId: string): OwnedProcess[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT planned_session_id AS session_id, bootstrap_pgid AS process_group_id
+         FROM launch_intents
+         WHERE attempt_id = ? AND bootstrap_pgid IS NOT NULL
+         UNION
+         SELECT session_id, process_pgid AS process_group_id
+         FROM sessions
+         WHERE attempt_id = ? AND availability = 'Alive' AND process_pgid IS NOT NULL`,
+      )
+      .all(attemptId, attemptId) as unknown as {
+      readonly session_id: string;
+      readonly process_group_id: number;
+    }[];
+    const found = new Map<SupervisedPtyProcess, number>();
+    for (const row of rows) {
+      const process = this.#processes.get(row.session_id);
+      if (process !== undefined && row.process_group_id > 1) {
+        found.set(process, row.process_group_id);
+      }
+    }
+    return [...found].map(([process, processGroupId]) => ({ process, processGroupId }));
+  }
+
+  #primarySessionIdForAttempt(attemptId: string): string | null {
+    const row = this.#db
+      .prepare(
+        `SELECT session_id
+         FROM sessions
+         WHERE attempt_id = ? AND role = 'PrimaryAgent'
+         ORDER BY created_at DESC, session_id DESC
+         LIMIT 1`,
+      )
+      .get(attemptId) as { readonly session_id: string } | undefined;
+    if (row !== undefined) return row.session_id;
+    const planned = this.#db
+      .prepare("SELECT planned_session_id FROM launch_intents WHERE attempt_id = ?")
+      .get(attemptId) as { readonly planned_session_id: string } | undefined;
+    return planned?.planned_session_id ?? null;
+  }
+
+  #releaseSlot(attemptId: string, releasedAt: string): void {
+    this.#db
+      .prepare(
+        "UPDATE slot_leases SET released_at = ? WHERE attempt_id = ? AND released_at IS NULL",
+      )
+      .run(releasedAt, attemptId);
+  }
+
+  #reconcileSlotLeases(): void {
+    transact(
+      this.#db,
+      () => {
+        const now = new Date(this.#now()).toISOString();
+        const rows = this.#db
+          .prepare(
+            `SELECT slot_leases.attempt_id, slot_leases.released_at, attempts.status,
+                    process_dispositions.disposition
+             FROM slot_leases
+             JOIN attempts ON attempts.attempt_id = slot_leases.attempt_id
+             LEFT JOIN process_dispositions
+               ON process_dispositions.attempt_id = slot_leases.attempt_id
+             ORDER BY slot_leases.acquired_at, slot_leases.slot_lease_id`,
+          )
+          .all() as unknown as {
+          readonly attempt_id: string;
+          readonly released_at: string | null;
+          readonly status: Attempt.AttemptStatus;
+          readonly disposition: ProcessDisposition.ProcessDisposition | null;
+        }[];
+        for (const row of rows) {
+          const activeAttempt =
+            row.status === "Starting" ||
+            row.status === "Running" ||
+            row.status === "Waiting" ||
+            row.status === "Stopping";
+          let disposition = row.disposition;
+          if (row.status === "Uncertain" && disposition === null) {
+            disposition = "Probing";
+            this.#db
+              .prepare(
+                `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
+                 VALUES (?, 'Probing', ?)`,
+              )
+              .run(row.attempt_id, now);
+          }
+          const shouldHold =
+            activeAttempt ||
+            (row.status === "Uncertain" &&
+              disposition !== null &&
+              ProcessDisposition.dispositionHoldsSlot(disposition));
+          if (shouldHold && row.released_at !== null) {
+            this.#db
+              .prepare("UPDATE slot_leases SET released_at = NULL WHERE attempt_id = ?")
+              .run(row.attempt_id);
+          } else if (!shouldHold && row.released_at === null) {
+            this.#releaseSlot(row.attempt_id, now);
+          }
+        }
+      },
+      this.#now,
+    );
   }
 
   #appendEvent(prepared: PreparedLaunch, type: string, payload: unknown): void {
@@ -749,35 +1192,11 @@ export class SessionRuntime implements SessionRuntimeContract {
   #appendLifecycleEvent(input: {
     readonly taskId: string;
     readonly attemptId: string;
-    readonly sessionId: string;
+    readonly sessionId: string | null;
     readonly type: string;
     readonly payload: unknown;
   }): void {
-    const now = new Date(this.#now()).toISOString();
-    const sequence = this.#db
-      .prepare(
-        "SELECT COALESCE(MAX(timeline_seq), 0) + 1 AS seq FROM domain_events WHERE task_id = ?",
-      )
-      .get(input.taskId) as { seq: number };
-    this.#db
-      .prepare(
-        `INSERT INTO domain_events
-         (event_id, schema_version, task_id, attempt_id, session_id, timeline_seq,
-          type, source, confidence, payload_json, occurred_at, observed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'daemon', 'authoritative', ?, ?, ?)`,
-      )
-      .run(
-        `ev_${randomUUID()}`,
-        EVENT_SCHEMA_VERSION,
-        input.taskId,
-        input.attemptId,
-        input.sessionId,
-        sequence.seq,
-        input.type,
-        JSON.stringify(input.payload),
-        now,
-        now,
-      );
+    appendDomainEvent(this.#db, input, this.#now);
   }
 }
 
@@ -811,23 +1230,38 @@ const preparedLaunchFromRow = (
   };
 };
 
-const processIdentity = (
-  pid: number,
-): { readonly pgid: number; readonly lstart: string; readonly command: string } | null => {
-  try {
-    const field = (name: string): string =>
-      execFileSync("/bin/ps", ["-o", `${name}=`, "-p", String(pid)], {
-        encoding: "utf8",
-        timeout: 1_000,
-      })
-        .trim()
-        .replace(/\s+/g, " ");
-    const pgid = Number(field("pgid"));
-    const lstart = field("lstart");
-    const command = field("command");
-    if (!Number.isInteger(pgid) || lstart.length === 0 || command.length === 0) return null;
-    return { pgid, lstart, command };
-  } catch {
-    return null;
+const isResumableAttemptStatus = (status: string | null): status is ResumableAttemptStatus =>
+  status === "Starting" || status === "Running" || status === "Stopping";
+
+const probeProcess = (pid: number): ProcessProbe => {
+  const result = spawnSync("/bin/ps", ["-o", "pid=,pgid=,lstart=,command=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 1_000,
+  });
+  if (result.error !== undefined || result.status === null) return { kind: "unavailable" };
+  if (result.status !== 0)
+    return result.status === 1 ? { kind: "absent" } : { kind: "unavailable" };
+
+  const tokens = result.stdout.trim().split(/\s+/);
+  const observedPid = Number(tokens[0]);
+  const pgid = Number(tokens[1]);
+  const lstart = tokens.slice(2, 7).join(" ");
+  const command = tokens.slice(7).join(" ");
+  if (
+    observedPid !== pid ||
+    !Number.isInteger(pgid) ||
+    lstart.length === 0 ||
+    command.length === 0
+  ) {
+    return { kind: "unavailable" };
   }
+  return { kind: "observed", identity: { pgid, lstart, command } };
+};
+
+const commandMatchesExecutable = (command: string, executablePath: string): boolean => {
+  if (command.includes(executablePath)) return true;
+  const observedExecutable = command.split(/\s+/, 1)[0];
+  return (
+    observedExecutable !== undefined && basename(observedExecutable) === basename(executablePath)
+  );
 };

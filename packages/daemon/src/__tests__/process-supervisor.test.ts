@@ -60,11 +60,16 @@ class FakeDriverProcess implements PtyDriverProcess {
 const spawnFakeProcess = (): {
   readonly driverProcess: FakeDriverProcess;
   readonly process: SupervisedPtyProcess;
+  readonly groupSignals: Array<{ readonly pgid: number; readonly signal: string }>;
 } => {
   const driverProcess = new FakeDriverProcess();
-  const supervisor = createProcessSupervisor({
-    spawn: () => driverProcess,
-  });
+  const groupSignals: Array<{ readonly pgid: number; readonly signal: string }> = [];
+  const supervisor = createProcessSupervisor(
+    {
+      spawn: () => driverProcess,
+    },
+    (pgid, signal) => groupSignals.push({ pgid, signal }),
+  );
   const process = supervisor.spawn({
     executablePath: "/usr/bin/true",
     args: [],
@@ -73,7 +78,7 @@ const spawnFakeProcess = (): {
     cols: 80,
     rows: 24,
   });
-  return { driverProcess, process };
+  return { driverProcess, process, groupSignals };
 };
 
 describe("ProcessSupervisor", () => {
@@ -127,6 +132,26 @@ describe("ProcessSupervisor", () => {
     await process.resize(132, 43);
 
     expect(driverProcess.sizes).toEqual([{ cols: 132, rows: 43 }]);
+  });
+
+  it("pauses and resumes the owned PTY process group", async () => {
+    const { groupSignals, process } = spawnFakeProcess();
+
+    await process.pause(4242);
+    await process.resume(4242);
+
+    expect(groupSignals).toEqual([
+      { pgid: 4242, signal: "SIGSTOP" },
+      { pgid: 4242, signal: "SIGCONT" },
+    ]);
+  });
+
+  it("refuses to signal a process group that is not owned by the PTY leader", async () => {
+    const { groupSignals, process } = spawnFakeProcess();
+
+    await expect(process.pause(777)).rejects.toThrow("not the recorded process-group leader");
+
+    expect(groupSignals).toEqual([]);
   });
 
   it("terminates the owned PTY process", async () => {

@@ -12,8 +12,9 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { checkLimit, FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
 import { type Migration, transact } from "./database.js";
+import { appendDomainEvent } from "./domain-event-store.js";
 
-export const EVENT_SCHEMA_VERSION = 1;
+export { EVENT_SCHEMA_VERSION } from "./domain-event-store.js";
 
 export const TASK_MIGRATIONS: readonly Migration[] = [
   {
@@ -242,17 +243,8 @@ export class TaskStore {
     };
   }
 
-  // Per-table seq helpers — no SQL identifier interpolation (prepared-only
-  // invariant). domain_events.timeline_seq is per-task; attempts.created_seq is global.
-  #nextEventTimelineSeq(taskId: string): number {
-    const row = this.#db
-      .prepare(
-        "SELECT COALESCE(MAX(timeline_seq), 0) + 1 AS seq FROM domain_events WHERE task_id = ?",
-      )
-      .get(taskId) as { seq: number };
-    return row.seq;
-  }
-
+  // Per-table seq helper — no SQL identifier interpolation (prepared-only
+  // invariant). attempts.created_seq is global.
   #nextAttemptCreatedSeq(): number {
     const row = this.#db
       .prepare("SELECT COALESCE(MAX(created_seq), 0) + 1 AS seq FROM attempts")
@@ -264,24 +256,16 @@ export class TaskStore {
   // monotonic display order (RT-EVENT-01); locally produced events are
   // authoritative and observed as written.
   #appendEvent(taskId: string, type: string, payload: unknown, attemptId?: string): void {
-    const now = new Date(this.#now()).toISOString();
-    this.#db
-      .prepare(
-        `INSERT INTO domain_events
-         (event_id, schema_version, task_id, attempt_id, session_id, timeline_seq, type, source, confidence, payload_json, occurred_at, observed_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, 'daemon', 'authoritative', ?, ?, ?)`,
-      )
-      .run(
-        `ev_${randomUUID()}`,
-        EVENT_SCHEMA_VERSION,
+    appendDomainEvent(
+      this.#db,
+      {
         taskId,
-        attemptId ?? null,
-        this.#nextEventTimelineSeq(taskId),
+        ...(attemptId === undefined ? {} : { attemptId }),
         type,
-        JSON.stringify(payload),
-        now,
-        now,
-      );
+        payload,
+      },
+      this.#now,
+    );
   }
 
   createTask(input: { readonly workspaceId: string; readonly spec: TaskSpec }): TaskRecord {

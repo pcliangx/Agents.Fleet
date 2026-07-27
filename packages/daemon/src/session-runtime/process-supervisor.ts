@@ -21,7 +21,7 @@ export interface PtyDriverProcess {
   readonly pid: number;
   write(data: Uint8Array): void;
   resize(cols: number, rows: number): void;
-  kill(): void;
+  kill(signal?: string): void;
   onData(listener: (data: Uint8Array) => void): { dispose(): void };
   onExit(listener: (event: PtyExitEvent) => void): { dispose(): void };
 }
@@ -43,6 +43,8 @@ export interface SupervisedPtyProcess {
   readonly pid: number;
   write(bytes: Uint8Array): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
+  pause(processGroupId: number): Promise<void>;
+  resume(processGroupId: number): Promise<void>;
   terminate(): Promise<void>;
   onOutput(listener: (bytes: Uint8Array) => void): () => void;
   onExit(listener: (event: PtyExitEvent) => void): () => void;
@@ -52,9 +54,18 @@ export interface ProcessSupervisor {
   spawn(request: SpawnPtyRequest): SupervisedPtyProcess;
 }
 
-export const createProcessSupervisor = (driver: PtyDriver): ProcessSupervisor => ({
+type ProcessGroupSignal = "SIGSTOP" | "SIGCONT";
+
+const signalProcessGroup = (pgid: number, signal: ProcessGroupSignal): void => {
+  process.kill(-pgid, signal);
+};
+
+export const createProcessSupervisor = (
+  driver: PtyDriver,
+  signalGroup: (pgid: number, signal: ProcessGroupSignal) => void = signalProcessGroup,
+): ProcessSupervisor => ({
   spawn(request) {
-    const process = driver.spawn(request.executablePath, request.args, {
+    const driverProcess = driver.spawn(request.executablePath, request.args, {
       cwd: request.cwd,
       env: request.env,
       cols: request.cols,
@@ -64,22 +75,34 @@ export const createProcessSupervisor = (driver: PtyDriver): ProcessSupervisor =>
     let rawOutputFailed = false;
 
     return {
-      pid: process.pid,
+      pid: driverProcess.pid,
       async write(bytes) {
-        process.write(bytes);
+        driverProcess.write(bytes);
       },
       async resize(cols, rows) {
-        process.resize(cols, rows);
+        driverProcess.resize(cols, rows);
+      },
+      async pause(processGroupId) {
+        if (processGroupId !== driverProcess.pid) {
+          throw new Error("PTY owner is not the recorded process-group leader");
+        }
+        signalGroup(processGroupId, "SIGSTOP");
+      },
+      async resume(processGroupId) {
+        if (processGroupId !== driverProcess.pid) {
+          throw new Error("PTY owner is not the recorded process-group leader");
+        }
+        signalGroup(processGroupId, "SIGCONT");
       },
       async terminate() {
-        process.kill();
+        driverProcess.kill();
       },
       onOutput(listener) {
-        const subscription = process.onData((data: unknown) => {
+        const subscription = driverProcess.onData((data: unknown) => {
           if (rawOutputFailed) return;
           if (!(data instanceof Uint8Array)) {
             rawOutputFailed = true;
-            process.kill();
+            driverProcess.kill();
             return;
           }
           listener(data);
@@ -87,7 +110,7 @@ export const createProcessSupervisor = (driver: PtyDriver): ProcessSupervisor =>
         return () => subscription.dispose();
       },
       onExit(listener) {
-        const subscription = process.onExit(listener);
+        const subscription = driverProcess.onExit(listener);
         return () => subscription.dispose();
       },
     };

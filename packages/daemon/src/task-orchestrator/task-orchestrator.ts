@@ -14,7 +14,8 @@ import type {
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
-import { EVENT_SCHEMA_VERSION, StoreError } from "../storage/task-store.js";
+import { appendDomainEvent } from "../storage/domain-event-store.js";
+import { StoreError } from "../storage/task-store.js";
 
 export interface SchedulableAttempt {
   readonly attemptId: string;
@@ -177,29 +178,15 @@ export class TaskOrchestrator implements TaskOrchestratorContract {
   }
 
   #appendEvent(attempt: SchedulableAttempt, type: string, payload: unknown): void {
-    const now = new Date(this.#now()).toISOString();
-    const sequence = this.#db
-      .prepare(
-        "SELECT COALESCE(MAX(timeline_seq), 0) + 1 AS seq FROM domain_events WHERE task_id = ?",
-      )
-      .get(attempt.taskId) as { seq: number };
-    this.#db
-      .prepare(
-        `INSERT INTO domain_events
-         (event_id, schema_version, task_id, attempt_id, session_id, timeline_seq,
-          type, source, confidence, payload_json, occurred_at, observed_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, 'daemon', 'authoritative', ?, ?, ?)`,
-      )
-      .run(
-        `ev_${randomUUID()}`,
-        EVENT_SCHEMA_VERSION,
-        attempt.taskId,
-        attempt.attemptId,
-        sequence.seq,
+    appendDomainEvent(
+      this.#db,
+      {
+        taskId: attempt.taskId,
+        attemptId: attempt.attemptId,
         type,
-        JSON.stringify(payload),
-        now,
-        now,
-      );
+        payload,
+      },
+      this.#now,
+    );
   }
 }

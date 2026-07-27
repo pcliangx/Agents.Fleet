@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -8,14 +9,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { LaunchSpec, PreparedLaunch } from "@agents-fleet/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   copyNodePtyWithHelperMode,
   type TempNodePtyCopy,
 } from "../native-artifact/temp-node-pty-copy.js";
+import { resolveTsxLoader } from "../prototypes/r0-07-at-most-once-launch/driver.js";
 import { openDatabase } from "../storage/database.js";
 import { ALL_MIGRATIONS } from "../storage/migrations.js";
 import { WorktreeStore } from "../storage/worktree-store.js";
@@ -33,6 +36,42 @@ const SHA = "b".repeat(40);
 const tempDirs: string[] = [];
 const databases: DatabaseSync[] = [];
 const nativeCopies: TempNodePtyCopy[] = [];
+const TEST_CHILD = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "test-children",
+  "runtime-crash-child.ts",
+);
+
+const runTestChild = (
+  configPath: string,
+): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", resolveTsxLoader(), TEST_CHILD, configPath],
+      { stdio: "pipe" },
+    );
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`SessionRuntime child timed out: ${stderr}`));
+    }, 15_000);
+    child.stderr.on("data", (bytes) => {
+      stderr += String(bytes);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timeout);
+      if (code !== 0 && signal === null) {
+        reject(new Error(`SessionRuntime child exited ${code}: ${stderr}`));
+        return;
+      }
+      resolve({ code, signal });
+    });
+  });
 
 afterEach(async () => {
   for (const db of databases.splice(0)) db.close();
@@ -275,6 +314,19 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
       },
     ]);
     expect(restarted.inspectSession(launched.sessionId)?.availability).toBe("Lost");
+    expect(new WorktreeStore(db).disposeLifecycleFacts("worktree-1").processDispositions).toEqual([
+      expect.objectContaining({
+        attemptId: launched.attemptId,
+        disposition: "OrphanFound",
+      }),
+    ]);
+    expect(
+      (
+        db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(launched.attemptId) as {
+          status: string;
+        }
+      ).status,
+    ).toBe("Uncertain");
     expect(await restarted.launch(prepared, { revalidate: async () => true })).toEqual(launched);
 
     await original.terminate(launched.sessionId);
@@ -431,7 +483,7 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     expect(new WorktreeStore(db).disposeLifecycleFacts("worktree-1").processDispositions).toEqual([
       expect.objectContaining({
         attemptId: prepared.attemptId,
-        disposition: "Probing",
+        disposition: "OrphanFound",
       }),
     ]);
     await expect(restarted.launch(prepared, { revalidate: async () => true })).resolves.toEqual({
@@ -541,9 +593,328 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
       reason: "bootstrap-receipt-lost",
     });
     expect(runtime.inspectSession(prepared.plannedSessionId)).toBeNull();
+    expect(
+      (db.prepare("SELECT COUNT(*) AS count FROM chunks").get() as { readonly count: number })
+        .count,
+    ).toBe(0);
     expect(existsSync(counterPath)).toBe(false);
     await expect(runtime.launch(prepared, { revalidate: async () => true })).resolves.toEqual(
       failed,
     );
   });
+
+  it("persists Waiting/StoragePressure, retains the slot, and resumes only after revalidation", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`unexpected launch result: ${launched.kind}`);
+
+    await expect(runtime.pauseForStoragePressure(launched.attemptId)).resolves.toEqual({
+      attemptId: launched.attemptId,
+      waitingReason: "StoragePressure",
+      resumeStatus: "Running",
+    });
+    expect(
+      db
+        .prepare("SELECT status, waiting_reason, resume_status FROM attempts WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({
+      status: "Waiting",
+      waiting_reason: "StoragePressure",
+      resume_status: "Running",
+    });
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({ released_at: null });
+
+    await expect(
+      runtime.resumeFromStoragePressure(launched.attemptId, {
+        revalidate: async () => false,
+      }),
+    ).rejects.toThrow("resume facts drifted");
+    expect(
+      (
+        db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(launched.attemptId) as {
+          status: string;
+        }
+      ).status,
+    ).toBe("Waiting");
+
+    await expect(
+      runtime.resumeFromStoragePressure(launched.attemptId, {
+        revalidate: async () => true,
+      }),
+    ).resolves.toBe("Running");
+    expect(
+      db
+        .prepare("SELECT status, waiting_reason, resume_status FROM attempts WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({
+      status: "Running",
+      waiting_reason: null,
+      resume_status: null,
+    });
+    await runtime.terminate(launched.sessionId);
+  });
+
+  it("restores Starting and Stopping from StoragePressure without collapsing either phase", async () => {
+    const starting = await setupPreparedLaunch();
+    const startingRuntime = new SessionRuntime({
+      db: starting.db,
+      storeDir: starting.root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    let releaseValidation: ((value: boolean) => void) | undefined;
+    const validationGate = new Promise<boolean>((resolve) => {
+      releaseValidation = resolve;
+    });
+    const startingLaunch = startingRuntime.launch(starting.prepared, {
+      revalidate: async () => await validationGate,
+    });
+    await waitFor(
+      () =>
+        (
+          starting.db
+            .prepare("SELECT bootstrap_pid FROM launch_intents WHERE launch_nonce = ?")
+            .get(starting.prepared.launchNonce) as { bootstrap_pid: number | null }
+        ).bootstrap_pid !== null,
+    );
+    await expect(
+      startingRuntime.pauseForStoragePressure(starting.prepared.attemptId),
+    ).resolves.toMatchObject({ resumeStatus: "Starting" });
+    await expect(
+      startingRuntime.resumeFromStoragePressure(starting.prepared.attemptId, {
+        revalidate: async () => true,
+      }),
+    ).resolves.toBe("Starting");
+    releaseValidation?.(true);
+    const startingResult = await startingLaunch;
+    if (startingResult.kind !== "running") {
+      throw new Error(`unexpected launch result: ${startingResult.kind}`);
+    }
+    await startingRuntime.terminate(startingResult.sessionId);
+
+    const stopping = await setupPreparedLaunch();
+    const stoppingRuntime = new SessionRuntime({
+      db: stopping.db,
+      storeDir: stopping.root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const stoppingResult = await stoppingRuntime.launch(stopping.prepared, {
+      revalidate: async () => true,
+    });
+    if (stoppingResult.kind !== "running") {
+      throw new Error(`unexpected launch result: ${stoppingResult.kind}`);
+    }
+    stopping.db
+      .prepare("UPDATE attempts SET status = 'Stopping' WHERE attempt_id = ?")
+      .run(stoppingResult.attemptId);
+    await expect(
+      stoppingRuntime.pauseForStoragePressure(stoppingResult.attemptId),
+    ).resolves.toMatchObject({ resumeStatus: "Stopping" });
+    await expect(
+      stoppingRuntime.resumeFromStoragePressure(stoppingResult.attemptId, {
+        revalidate: async () => true,
+      }),
+    ).resolves.toBe("Stopping");
+    await stoppingRuntime.terminate(stoppingResult.sessionId);
+  });
+
+  it("confirms a missing recorded process absent and releases its held slot on restart", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const now = new Date(T0).toISOString();
+    db.prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?").run(
+      prepared.attemptId,
+    );
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, generation,
+        process_pid, process_pgid, process_started_at, process_command, created_at, updated_at)
+       VALUES (?, ?, 'Alive', 'PrimaryAgent', 'BlocksAttemptCompletion', 1,
+               999999, 999999, 'Mon Jan 1 00:00:00 2001', '/missing/agent', ?, ?)`,
+    ).run(prepared.plannedSessionId, prepared.attemptId, now, now);
+
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    expect(restarted.reconcileAfterRestart().actions).toContainEqual({
+      action: "marked-lost",
+      attemptId: prepared.attemptId,
+      sessionId: prepared.plannedSessionId,
+    });
+    expect(new WorktreeStore(db).disposeLifecycleFacts("worktree-1").processDispositions).toEqual([
+      expect.objectContaining({
+        attemptId: prepared.attemptId,
+        disposition: "ConfirmedAbsent",
+      }),
+    ]);
+    expect(
+      db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(prepared.attemptId),
+    ).toEqual({ status: "Interrupted" });
+    expect(
+      (
+        db
+          .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+          .get(prepared.attemptId) as { released_at: string | null }
+      ).released_at,
+    ).not.toBeNull();
+  });
+
+  it("does not mistake PID reuse for the recorded Session owner", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const now = new Date(T0).toISOString();
+    db.prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?").run(
+      prepared.attemptId,
+    );
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, generation,
+        process_pid, process_pgid, process_started_at, process_command, created_at, updated_at)
+       VALUES (?, ?, 'Alive', 'PrimaryAgent', 'BlocksAttemptCompletion', 1,
+               ?, 999999, 'Mon Jan 1 00:00:00 2001', '/different/command', ?, ?)`,
+    ).run(prepared.plannedSessionId, prepared.attemptId, process.pid, now, now);
+
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    restarted.reconcileAfterRestart();
+
+    expect(new WorktreeStore(db).disposeLifecycleFacts("worktree-1").processDispositions).toEqual([
+      expect.objectContaining({
+        attemptId: prepared.attemptId,
+        disposition: "ConfirmedAbsent",
+      }),
+    ]);
+    expect(
+      db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(prepared.attemptId),
+    ).toEqual({ status: "Interrupted" });
+  });
+
+  it("reopens a stale released lease when an Uncertain disposition still holds the slot", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const now = new Date(T0).toISOString();
+    db.prepare("UPDATE attempts SET status = 'Uncertain' WHERE attempt_id = ?").run(
+      prepared.attemptId,
+    );
+    db.prepare(
+      `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
+       VALUES (?, 'OrphanFound', ?)`,
+    ).run(prepared.attemptId, now);
+    db.prepare("UPDATE slot_leases SET released_at = ? WHERE attempt_id = ?").run(
+      now,
+      prepared.attemptId,
+    );
+
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    restarted.reconcileAfterRestart();
+
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(prepared.attemptId),
+    ).toEqual({ released_at: null });
+  });
+
+  it.each([
+    "afterBootstrapReceipt",
+    "afterAuthorize",
+    "afterCommitSent",
+    "afterAgentObserved",
+  ] as const)(
+    "uses a real SIGKILL and a fresh process to reconcile %s",
+    async (crashStep) => {
+      const { db, root, prepared, counterPath } = await setupPreparedLaunch();
+      const nativeCopy = await copyNodePtyWithHelperMode(0o755);
+      nativeCopies.push(nativeCopy);
+      const crashOutcomePath = join(root, `crash-${crashStep}.json`);
+      const crashConfigPath = join(root, `crash-${crashStep}-config.json`);
+      writeFileSync(
+        crashConfigPath,
+        JSON.stringify({
+          mode: "crash",
+          dbPath: join(root, "fleet.db"),
+          storeDir: root,
+          nodePtyModulePath: nativeCopy.modulePath,
+          prepared,
+          crashStep,
+          outcomePath: crashOutcomePath,
+        }),
+      );
+
+      await expect(runTestChild(crashConfigPath)).resolves.toEqual({
+        code: null,
+        signal: "SIGKILL",
+      });
+      expect(JSON.parse(readFileSync(crashOutcomePath, "utf8"))).toEqual({
+        crashedAt: crashStep,
+      });
+
+      const reconcileOutcomePath = join(root, `reconcile-${crashStep}.json`);
+      const reconcileConfigPath = join(root, `reconcile-${crashStep}-config.json`);
+      writeFileSync(
+        reconcileConfigPath,
+        JSON.stringify({
+          mode: "reconcile",
+          dbPath: join(root, "fleet.db"),
+          storeDir: root,
+          nodePtyModulePath: nativeCopy.modulePath,
+          prepared,
+          outcomePath: reconcileOutcomePath,
+        }),
+      );
+      await expect(runTestChild(reconcileConfigPath)).resolves.toEqual({
+        code: 0,
+        signal: null,
+      });
+      const report = JSON.parse(readFileSync(reconcileOutcomePath, "utf8")) as {
+        readonly actions: readonly { readonly action: string }[];
+      };
+      const expectedAction =
+        crashStep === "afterBootstrapReceipt"
+          ? "aborted-bootstrap-lost"
+          : crashStep === "afterAuthorize"
+            ? "aborted-before-commit"
+            : "marked-uncertain";
+      expect(report.actions.map((action) => action.action)).toContain(expectedAction);
+      expect(
+        (db.prepare("SELECT COUNT(*) AS count FROM attempts").get() as { count: number }).count,
+      ).toBe(1);
+      expect(
+        (db.prepare("SELECT COUNT(*) AS count FROM launch_intents").get() as { count: number })
+          .count,
+      ).toBe(1);
+      expect(
+        (db.prepare("SELECT COUNT(*) AS count FROM sessions").get() as { count: number }).count,
+      ).toBe(0);
+      if (existsSync(counterPath)) {
+        expect(readFileSync(counterPath, "utf8")).toBe("x");
+      }
+
+      const processRow = db
+        .prepare("SELECT bootstrap_pgid FROM launch_intents WHERE launch_nonce = ?")
+        .get(prepared.launchNonce) as { readonly bootstrap_pgid: number | null };
+      if (processRow.bootstrap_pgid !== null && processRow.bootstrap_pgid > 1) {
+        try {
+          process.kill(-processRow.bootstrap_pgid, "SIGKILL");
+        } catch {
+          // The bootstrap/Agent already exited; the full identity probe covered that case.
+        }
+      }
+    },
+    20_000,
+  );
 });

@@ -6,6 +6,17 @@
 import type { SessionAvailability } from "../lifecycle/session.js";
 import type { PreparedLaunch } from "./task-orchestrator.js";
 
+export type LaunchFailedReason =
+  | "bootstrap-receipt-lost"
+  | "bootstrap-lost-before-authorize"
+  | "commit-never-sent-after-restart"
+  | "launch-facts-drifted"
+  | "launch-facts-unverifiable";
+
+export type LaunchUncertainReason =
+  | "agent-not-observed-after-commit"
+  | "commit-delivery-unknown-after-restart";
+
 export type LaunchSessionResult =
   | {
       readonly kind: "running";
@@ -13,8 +24,12 @@ export type LaunchSessionResult =
       readonly sessionId: string;
       readonly generation: number;
     }
-  | { readonly kind: "failed"; readonly attemptId: string; readonly reason: string }
-  | { readonly kind: "uncertain"; readonly attemptId: string; readonly reason: string };
+  | { readonly kind: "failed"; readonly attemptId: string; readonly reason: LaunchFailedReason }
+  | {
+      readonly kind: "uncertain";
+      readonly attemptId: string;
+      readonly reason: LaunchUncertainReason;
+    };
 
 export interface LaunchValidation {
   readonly revalidate: () => Promise<boolean>;
@@ -31,6 +46,14 @@ export interface SessionRuntimeRecord {
   readonly attemptId: string;
   readonly generation: number;
   readonly availability: SessionAvailability;
+}
+
+export type ResumableAttemptStatus = "Starting" | "Running" | "Stopping";
+
+export interface StoragePressureWait {
+  readonly attemptId: string;
+  readonly waitingReason: "StoragePressure";
+  readonly resumeStatus: ResumableAttemptStatus;
 }
 
 export type RestartReconciliationAction =
@@ -73,6 +96,11 @@ export interface RestartReconciliationReport {
 
 export interface SessionRuntime {
   launch(prepared: PreparedLaunch, validation: LaunchValidation): Promise<LaunchSessionResult>;
+  pauseForStoragePressure(attemptId: string): Promise<StoragePressureWait>;
+  resumeFromStoragePressure(
+    attemptId: string,
+    validation: LaunchValidation,
+  ): Promise<ResumableAttemptStatus>;
   terminate(sessionId: string): Promise<void>;
   inspectSession(sessionId: string): SessionRuntimeRecord | null;
   readDurableFrame(frame: DurableFrameRef): Uint8Array | null;

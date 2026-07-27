@@ -53,12 +53,16 @@ export type {
 } from "./modules/host-environment.js";
 export type {
   DurableFrameRef,
+  LaunchFailedReason,
   LaunchSessionResult,
+  LaunchUncertainReason,
   LaunchValidation,
   RestartReconciliationAction,
   RestartReconciliationReport,
+  ResumableAttemptStatus,
   SessionRuntime,
   SessionRuntimeRecord,
+  StoragePressureWait,
 } from "./modules/session-runtime.js";
 export type {
   PreparedLaunch,

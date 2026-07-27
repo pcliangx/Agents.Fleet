@@ -47,8 +47,17 @@ const waitFor = async (pred: () => boolean, timeoutMs = 5000): Promise<boolean> 
   return false;
 };
 
-const readJson = (path: string): Record<string, unknown> | null =>
-  existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>) : null;
+const readJson = (path: string): Record<string, unknown> | null => {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    // O_EXCL makes receipt creation unique, not instantly complete for a
+    // concurrent reader. Match SessionRuntime.readReceipt: retry until the
+    // writer has finished the durable JSON payload.
+    return null;
+  }
+};
 
 interface SpawnBootstrapOpts {
   readonly nonce?: string;
