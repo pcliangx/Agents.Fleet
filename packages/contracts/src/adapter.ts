@@ -1,5 +1,7 @@
 // RT-ADAPTER-01..07 — adapter capability & discovery shapes.
 
+import type { ExecutableIdentity, ProbeEnvironment } from "./environment.js";
+
 export type AdapterCapability =
   | "Discovery"
   | "Hook"
@@ -11,22 +13,16 @@ export type AdapterCapability =
 // Full / Launch-level is a UI summary label only.
 export type AdapterTier = "Full" | "Launch-level";
 
-export interface ExecutableIdentity {
-  readonly canonicalEntryPath: string;
-  readonly filesystemIdentity: string;
-  readonly entryContentHash: string;
-  readonly interpreterIdentity: string | undefined;
-  readonly codeSigningIdentity: string | undefined;
-  readonly observedAt: number;
-  readonly identityCoverage: readonly string[];
-}
-
 // RT-ADAPTER-02 — verified discovery (Active Trust only).
 export interface DiscoveryResult {
+  readonly agentId: string;
   readonly executableIdentity: ExecutableIdentity;
   readonly cliVersion: string;
   readonly supportedVersionRange: string;
   readonly capabilities: readonly AdapterCapability[];
+  readonly tier: AdapterTier;
+  readonly permissionMappings: readonly PermissionMapping[];
+  readonly probeEnvironment: ProbeEnvironment;
 }
 
 // SV1-PERM-05 — PermissionMode is user intent, NOT a uniform cross-agent safety level.
@@ -43,3 +39,36 @@ export interface PermissionMapping {
   readonly unsupportedControls: readonly string[];
   readonly warnings: readonly string[];
 }
+
+export type AdapterObservationSource = "Hook" | "Transcript" | "StreamJson";
+
+export interface AdapterObservationInput {
+  readonly source: AdapterObservationSource;
+  readonly bytes: Uint8Array;
+  readonly observedAt: string;
+}
+
+export type AdapterObservationDiagnosticCode =
+  | "observation-limit-exceeded"
+  | "invalid-utf8"
+  | "malformed-json";
+
+export interface AdapterObservation {
+  readonly kind: "AgentEvent" | "Diagnostic";
+  readonly source: AdapterObservationSource;
+  readonly confidence: "authoritative" | "inferred";
+  readonly observedAt: string;
+  readonly payload: unknown;
+  readonly diagnosticCode: AdapterObservationDiagnosticCode | null;
+}
+
+const PERMISSION_BREADTH: Readonly<Record<PermissionMode, number>> = {
+  Manual: 0,
+  Balanced: 1,
+  YOLO: 2,
+};
+
+// SV1-PERM-01 — an Adapter mapping may be equally or more restrictive than
+// requested, but never silently broader.
+export const isPermissionExpansion = (mapping: PermissionMapping): boolean =>
+  PERMISSION_BREADTH[mapping.effectiveMode] > PERMISSION_BREADTH[mapping.requestedMode];

@@ -2,6 +2,7 @@
 // Pure types + pure functions; zero runtime deps; no Electron/Node-only imports.
 
 export * from "./adapter.js";
+export * from "./environment.js";
 export type { LoadClassBudget, PerformanceBudget } from "./frozen-performance-budget.js";
 export { FROZEN_PERFORMANCE_BUDGET } from "./frozen-performance-budget.js";
 export { FROZEN_PLATFORM_MATRIX, PLATFORM_MATRIX_VERSION } from "./frozen-platform-matrix.js";
@@ -37,7 +38,17 @@ export type {
 } from "./limit-guard.js";
 export { checkLimit, checkTerminalLimit } from "./limit-guard.js";
 export type { RuntimeLimitProfile, TerminalLimits } from "./limits.js";
-export type { AgentAdapter, LaunchSpec, PrepareInput } from "./modules/agent-adapter.js";
+export type {
+  AgentAdapter,
+  LaunchSpec,
+  PrepareInput,
+  VerifiedDiscoveryInput,
+} from "./modules/agent-adapter.js";
+export type {
+  CreateEnvironmentSnapshotInput,
+  ExecutableProbeInput,
+  HostEnvironment,
+} from "./modules/host-environment.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
 export type {
   MinimumHardware,
@@ -55,6 +66,7 @@ export {
   checkPlatform,
   sampleHostPlatform,
 } from "./platform-gate.js";
+export * from "./profile.js";
 export * from "./protocol/command.js";
 export * from "./protocol/confirmation.js";
 export * from "./protocol/error.js";

@@ -116,6 +116,8 @@ export type StoreErrorCode =
   | "InvalidRequest"
   | "Conflict"
   | "NotFound"
+  | "CapabilityUnavailable"
+  | "DataIntegrityFailure"
   | "IdempotencyConflict"
   // RT-CMD-06/16 — a confirmation receipt was forged, replayed, expired,
   // cross-kind or drifted; the command fails closed and changes nothing.
