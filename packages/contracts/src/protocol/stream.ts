@@ -31,6 +31,20 @@ export interface SessionStreamCursor {
   readonly seq: Seq;
 }
 
+export interface SessionStreamFrame {
+  readonly header: StreamFrameHeader;
+  readonly bytes: Uint8Array;
+}
+
+export interface SessionDeltaBatch {
+  readonly attachmentId: AttachmentId;
+  readonly sessionId: SessionId;
+  readonly generation: Generation;
+  readonly durableThroughSeq: Seq;
+  readonly nextSeq: Seq;
+  readonly frames: readonly SessionStreamFrame[];
+}
+
 // RT-ORDER-04 / RT-ORDER-08 — Snapshot declares coversThroughSeq at a safe checkpoint.
 export interface Snapshot {
   readonly coversThroughSeq: Seq;

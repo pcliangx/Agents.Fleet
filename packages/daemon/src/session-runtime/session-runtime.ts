@@ -6,16 +6,25 @@
 // original Session without spawning a second bootstrap or Agent.
 
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
+  Attachment,
+  type AttachmentId,
+  type AttachmentRuntimeRecord,
+  type AttachResult,
   Attempt,
+  type CommandId,
+  type ControlLease,
+  checkLimit,
   type DurableFrameRef,
   FROZEN_RUNTIME_LIMIT_PROFILE,
+  type Generation,
+  type InputIntent,
   type LaunchFailedReason,
   LaunchIntent,
   type LaunchSessionResult,
@@ -23,11 +32,17 @@ import {
   type LaunchValidation,
   type PreparedLaunch,
   ProcessDisposition,
+  type ResizeSessionRequest,
   type RestartReconciliationReport,
   type ResumableAttemptStatus,
+  type Seq,
+  type SessionDeltaBatch,
+  type SessionId,
   type SessionRuntime as SessionRuntimeContract,
   type SessionRuntimeRecord,
+  type Snapshot,
   type StoragePressureWait,
+  type WriteSessionInputRequest,
 } from "@agents-fleet/contracts";
 import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
@@ -35,11 +50,17 @@ import { appendDomainEvent } from "../storage/domain-event-store.js";
 import { StoreError } from "../storage/task-store.js";
 import { ByteJournal } from "./byte-journal.js";
 import { durableWriteContentObject } from "./content-object-io.js";
+import {
+  type InputIntentStep,
+  InputIntentStore,
+  reconcileInputIntents,
+} from "./input-intent-store.js";
 import type {
   ProcessSupervisor,
   PtyExitEvent,
   SupervisedPtyProcess,
 } from "./process-supervisor.js";
+import { SnapshotCoordinator } from "./snapshot-coordinator.js";
 import { reconcileStore } from "./store-reconciliation.js";
 
 const DEFAULT_BOOTSTRAP = join(dirname(fileURLToPath(import.meta.url)), "bootstrap.mjs");
@@ -64,6 +85,8 @@ interface SessionRuntimeOptions {
   readonly now?: () => number;
   /** RT-T-11 crash injection at protocol boundaries. */
   readonly onLaunchStep?: (step: LaunchStep) => void;
+  /** RT-T-24 failure injection at Input Intent durability boundaries. */
+  readonly onInputStep?: (step: InputIntentStep, commandId: string) => void;
 }
 
 interface LaunchIntentRow {
@@ -169,7 +192,9 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #waitForExecBarrier: (barrier: ExecBarrier, timeoutMs: number) => Promise<boolean>;
   readonly #now: () => number;
   readonly #onLaunchStep: ((step: LaunchStep) => void) | undefined;
+  readonly #onInputStep: ((step: InputIntentStep, commandId: string) => void) | undefined;
   readonly #journal: ByteJournal;
+  readonly #snapshotCoordinator: SnapshotCoordinator;
   readonly #launches = new Map<string, Promise<LaunchSessionResult>>();
   readonly #processes = new Map<string, SupervisedPtyProcess>();
   readonly #outputSubscriptions = new Map<string, () => void>();
@@ -178,6 +203,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #exitPromises = new Map<string, Promise<void>>();
   readonly #pendingExits = new Map<string, PtyExitEvent>();
   readonly #streamFailures = new Map<string, unknown>();
+  readonly #snapshotTasks = new Map<string, Promise<void>>();
 
   constructor(options: SessionRuntimeOptions) {
     this.#db = options.db;
@@ -194,7 +220,14 @@ export class SessionRuntime implements SessionRuntimeContract {
       (async (barrier, timeoutMs) => await barrier.waitForClose(timeoutMs));
     this.#now = options.now ?? Date.now;
     this.#onLaunchStep = options.onLaunchStep;
+    this.#onInputStep = options.onInputStep;
     this.#journal = new ByteJournal({ storeDir: options.storeDir, db: options.db });
+    this.#snapshotCoordinator = new SnapshotCoordinator({
+      db: options.db,
+      storeDir: options.storeDir,
+      journal: this.#journal,
+      now: this.#now,
+    });
   }
 
   async launch(
@@ -216,6 +249,640 @@ export class SessionRuntime implements SessionRuntimeContract {
     } finally {
       this.#launches.delete(prepared.launchNonce);
     }
+  }
+
+  attach(sessionId: string): AttachResult {
+    const session = this.inspectSession(sessionId);
+    if (session === null) {
+      throw new StoreError("NotFound", `Session ${sessionId} does not exist`);
+    }
+    const attachmentId = `attachment-${randomUUID()}`;
+    const now = new Date(this.#now()).toISOString();
+    transact(
+      this.#db,
+      () => {
+        this.#db
+          .prepare(
+            `INSERT INTO attachments
+               (attachment_id, session_id, generation, status, created_at, updated_at)
+             VALUES (?, ?, ?, 'Active', ?, ?)`,
+          )
+          .run(attachmentId, session.sessionId, session.generation, now, now);
+      },
+      this.#now,
+    );
+
+    const snapshot = this.readSessionSnapshot(session.sessionId);
+    return {
+      attachmentId: attachmentId as AttachmentId,
+      mode: Attachment.attachmentModeFor(session.availability),
+      sessionId: session.sessionId as SessionId,
+      generation: session.generation as Generation,
+      snapshot,
+    };
+  }
+
+  acquireControl(attachmentId: string): ControlLease {
+    const attachment = this.#db
+      .prepare(
+        `SELECT attachments.session_id, attachments.generation, attachments.status,
+                sessions.availability, sessions.generation AS session_generation
+         FROM attachments
+         JOIN sessions ON sessions.session_id = attachments.session_id
+         WHERE attachments.attachment_id = ?`,
+      )
+      .get(attachmentId) as
+      | {
+          readonly session_id: string;
+          readonly generation: number;
+          readonly status: Attachment.AttachmentStatus;
+          readonly availability: SessionRuntimeRecord["availability"];
+          readonly session_generation: number;
+        }
+      | undefined;
+    if (attachment === undefined) {
+      throw new StoreError("NotFound", `Attachment ${attachmentId} does not exist`);
+    }
+    if (
+      attachment.status !== "Active" ||
+      attachment.availability !== "Alive" ||
+      attachment.generation !== attachment.session_generation
+    ) {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "Control is available only to an Active Live Attachment",
+      );
+    }
+
+    const now = this.#now();
+    const lease = transact(
+      this.#db,
+      () => {
+        this.#db
+          .prepare("DELETE FROM control_leases WHERE session_id = ? AND expires_at <= ?")
+          .run(attachment.session_id, now);
+        const current = this.#db
+          .prepare(
+            "SELECT attachment_id FROM control_leases WHERE session_id = ? AND expires_at > ?",
+          )
+          .get(attachment.session_id, now) as { readonly attachment_id: string } | undefined;
+        if (current !== undefined) {
+          throw new StoreError(
+            "Conflict",
+            `Session already has a Control Lease holder (${current.attachment_id})`,
+          );
+        }
+
+        this.#db
+          .prepare("UPDATE sessions SET fencing_counter = fencing_counter + 1 WHERE session_id = ?")
+          .run(attachment.session_id);
+        const counter = this.#db
+          .prepare("SELECT fencing_counter FROM sessions WHERE session_id = ?")
+          .get(attachment.session_id) as { readonly fencing_counter: number };
+        const expiresAt = now + 15_000;
+        const timestamp = new Date(now).toISOString();
+        this.#db
+          .prepare(
+            `INSERT INTO control_leases
+               (session_id, generation, attachment_id, fencing_token, expires_at,
+                granted_at, renewed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            attachment.session_id,
+            attachment.generation,
+            attachmentId,
+            counter.fencing_counter,
+            expiresAt,
+            timestamp,
+            timestamp,
+          );
+        return { fencingToken: counter.fencing_counter, expiresAt };
+      },
+      this.#now,
+    );
+
+    return {
+      sessionId: attachment.session_id as SessionId,
+      generation: attachment.generation as Generation,
+      attachmentId: attachmentId as AttachmentId,
+      fencingToken: lease.fencingToken as ControlLease["fencingToken"],
+      expiresAt: lease.expiresAt,
+    };
+  }
+
+  renewControl(lease: ControlLease): ControlLease {
+    const now = this.#now();
+    const expiresAt = now + 15_000;
+    const renewed = transact(
+      this.#db,
+      () =>
+        this.#db
+          .prepare(
+            `UPDATE control_leases
+             SET expires_at = ?, renewed_at = ?
+             WHERE session_id = ?
+               AND generation = ?
+               AND attachment_id = ?
+               AND fencing_token = ?
+               AND expires_at > ?
+               AND EXISTS (
+                 SELECT 1
+                 FROM attachments
+                 JOIN sessions ON sessions.session_id = attachments.session_id
+                 WHERE attachments.attachment_id = control_leases.attachment_id
+                   AND attachments.status = 'Active'
+                   AND attachments.generation = control_leases.generation
+                   AND sessions.availability = 'Alive'
+                   AND sessions.generation = control_leases.generation
+               )`,
+          )
+          .run(
+            expiresAt,
+            new Date(now).toISOString(),
+            lease.sessionId,
+            lease.generation,
+            lease.attachmentId,
+            lease.fencingToken,
+            now,
+          ).changes,
+      this.#now,
+    );
+    if (renewed !== 1) {
+      throw new StoreError("StaleControlLease", "Control Lease is stale or expired");
+    }
+    return { ...lease, expiresAt };
+  }
+
+  takeoverControl(attachmentId: string, confirmedHolder: ControlLease): ControlLease {
+    const target = this.#db
+      .prepare(
+        `SELECT attachments.session_id, attachments.generation, attachments.status,
+                sessions.availability, sessions.generation AS session_generation,
+                sessions.attempt_id, attempts.task_id
+         FROM attachments
+         JOIN sessions ON sessions.session_id = attachments.session_id
+         JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+         WHERE attachments.attachment_id = ?`,
+      )
+      .get(attachmentId) as
+      | {
+          readonly session_id: string;
+          readonly generation: number;
+          readonly status: Attachment.AttachmentStatus;
+          readonly availability: SessionRuntimeRecord["availability"];
+          readonly session_generation: number;
+          readonly attempt_id: string;
+          readonly task_id: string;
+        }
+      | undefined;
+    if (target === undefined) {
+      throw new StoreError("NotFound", `Attachment ${attachmentId} does not exist`);
+    }
+    if (
+      target.status !== "Active" ||
+      target.availability !== "Alive" ||
+      target.generation !== target.session_generation
+    ) {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "Control is available only to an Active Live Attachment",
+      );
+    }
+    if (
+      confirmedHolder.sessionId !== target.session_id ||
+      confirmedHolder.generation !== target.generation
+    ) {
+      throw new StoreError("ConfirmationRequired", "Confirmed Control Lease target has drifted");
+    }
+
+    const now = this.#now();
+    const replacement = transact(
+      this.#db,
+      () => {
+        const holder = this.#db
+          .prepare(
+            `SELECT attachment_id, fencing_token
+             FROM control_leases
+             WHERE session_id = ? AND generation = ? AND expires_at > ?`,
+          )
+          .get(target.session_id, target.generation, now) as
+          | { readonly attachment_id: string; readonly fencing_token: number }
+          | undefined;
+        if (
+          holder === undefined ||
+          holder.attachment_id !== confirmedHolder.attachmentId ||
+          holder.fencing_token !== confirmedHolder.fencingToken
+        ) {
+          throw new StoreError(
+            "ConfirmationRequired",
+            "Confirmed Control Lease holder has drifted",
+          );
+        }
+
+        this.#db
+          .prepare("UPDATE sessions SET fencing_counter = fencing_counter + 1 WHERE session_id = ?")
+          .run(target.session_id);
+        const counter = this.#db
+          .prepare("SELECT fencing_counter FROM sessions WHERE session_id = ?")
+          .get(target.session_id) as { readonly fencing_counter: number };
+        const expiresAt = now + 15_000;
+        const timestamp = new Date(now).toISOString();
+        this.#db
+          .prepare(
+            `UPDATE control_leases
+             SET attachment_id = ?, fencing_token = ?, expires_at = ?, granted_at = ?, renewed_at = ?
+             WHERE session_id = ?`,
+          )
+          .run(
+            attachmentId,
+            counter.fencing_counter,
+            expiresAt,
+            timestamp,
+            timestamp,
+            target.session_id,
+          );
+        this.#appendLifecycleEvent({
+          taskId: target.task_id,
+          attemptId: target.attempt_id,
+          sessionId: target.session_id,
+          type: "control-lease-taken-over",
+          payload: {
+            previousAttachmentId: holder.attachment_id,
+            attachmentId,
+            fencingToken: counter.fencing_counter,
+          },
+        });
+        return { fencingToken: counter.fencing_counter, expiresAt };
+      },
+      this.#now,
+    );
+
+    return {
+      sessionId: target.session_id as SessionId,
+      generation: target.generation as Generation,
+      attachmentId: attachmentId as AttachmentId,
+      fencingToken: replacement.fencingToken as ControlLease["fencingToken"],
+      expiresAt: replacement.expiresAt,
+    };
+  }
+
+  closeAttachment(attachmentId: string): void {
+    const attachment = this.#db
+      .prepare(
+        `SELECT attachments.session_id, attachments.status,
+                sessions.attempt_id, attempts.task_id
+         FROM attachments
+         JOIN sessions ON sessions.session_id = attachments.session_id
+         JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+         WHERE attachments.attachment_id = ?`,
+      )
+      .get(attachmentId) as
+      | {
+          readonly session_id: string;
+          readonly status: Attachment.AttachmentStatus;
+          readonly attempt_id: string;
+          readonly task_id: string;
+        }
+      | undefined;
+    if (attachment === undefined) {
+      throw new StoreError("NotFound", `Attachment ${attachmentId} does not exist`);
+    }
+    if (attachment.status !== "Active") return;
+
+    transact(
+      this.#db,
+      () => {
+        const now = new Date(this.#now()).toISOString();
+        this.#db
+          .prepare(
+            `UPDATE attachments
+             SET status = 'Closed', updated_at = ?
+             WHERE attachment_id = ? AND status = 'Active'`,
+          )
+          .run(now, attachmentId);
+        this.#db.prepare("DELETE FROM control_leases WHERE attachment_id = ?").run(attachmentId);
+        this.#appendLifecycleEvent({
+          taskId: attachment.task_id,
+          attemptId: attachment.attempt_id,
+          sessionId: attachment.session_id,
+          type: "attachment-closed",
+          payload: { attachmentId },
+        });
+      },
+      this.#now,
+    );
+  }
+
+  invalidateAttachment(attachmentId: string): void {
+    const attachment = this.#db
+      .prepare(
+        `SELECT attachments.session_id, attachments.status,
+                sessions.attempt_id, attempts.task_id
+         FROM attachments
+         JOIN sessions ON sessions.session_id = attachments.session_id
+         JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+         WHERE attachments.attachment_id = ?`,
+      )
+      .get(attachmentId) as
+      | {
+          readonly session_id: string;
+          readonly status: Attachment.AttachmentStatus;
+          readonly attempt_id: string;
+          readonly task_id: string;
+        }
+      | undefined;
+    if (attachment === undefined) {
+      throw new StoreError("NotFound", `Attachment ${attachmentId} does not exist`);
+    }
+    if (attachment.status !== "Active") return;
+
+    transact(
+      this.#db,
+      () => {
+        const now = new Date(this.#now()).toISOString();
+        this.#db
+          .prepare(
+            `UPDATE attachments
+             SET status = 'Invalidated', updated_at = ?
+             WHERE attachment_id = ? AND status = 'Active'`,
+          )
+          .run(now, attachmentId);
+        this.#db.prepare("DELETE FROM control_leases WHERE attachment_id = ?").run(attachmentId);
+        this.#appendLifecycleEvent({
+          taskId: attachment.task_id,
+          attemptId: attachment.attempt_id,
+          sessionId: attachment.session_id,
+          type: "attachment-invalidated",
+          payload: { attachmentId },
+        });
+      },
+      this.#now,
+    );
+  }
+
+  inspectAttachment(attachmentId: string): AttachmentRuntimeRecord | null {
+    const row = this.#db
+      .prepare(
+        `SELECT attachments.attachment_id, attachments.session_id,
+                attachments.generation, attachments.status, sessions.availability
+         FROM attachments
+         JOIN sessions ON sessions.session_id = attachments.session_id
+         WHERE attachments.attachment_id = ?`,
+      )
+      .get(attachmentId) as
+      | {
+          readonly attachment_id: string;
+          readonly session_id: string;
+          readonly generation: number;
+          readonly status: Attachment.AttachmentStatus;
+          readonly availability: SessionRuntimeRecord["availability"];
+        }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          attachmentId: row.attachment_id,
+          sessionId: row.session_id,
+          generation: row.generation,
+          status: row.status,
+          mode: Attachment.attachmentModeFor(row.availability),
+        };
+  }
+
+  async writeSessionInput(request: WriteSessionInputRequest): Promise<InputIntent> {
+    const limit = checkLimit(
+      FROZEN_RUNTIME_LIMIT_PROFILE,
+      "inputIntentBytes",
+      request.bytes.byteLength,
+    );
+    if (!limit.ok) {
+      throw new StoreError(
+        "InvalidRequest",
+        `Input Intent exceeds ${limit.allowed} byte runtime limit`,
+      );
+    }
+    if (this.inspectInputIntent(request.commandId) === null) {
+      this.#assertControlLease(request.lease);
+    }
+
+    const sink = {
+      write: async (bytes: Uint8Array) => {
+        const process = this.#assertControlLease(request.lease);
+        await process.write(bytes);
+      },
+      resize: async (cols: number, rows: number) => {
+        const process = this.#assertControlLease(request.lease);
+        await process.resize(cols, rows);
+      },
+      kill: async () => {
+        const process = this.#assertControlLease(request.lease);
+        await process.terminate();
+      },
+      onOutput: (listener: (bytes: Uint8Array) => void) =>
+        this.#assertControlLease(request.lease).onOutput(listener),
+    };
+    const store = new InputIntentStore({
+      storeDir: this.#storeDir,
+      db: this.#db,
+      ptySink: sink,
+      now: this.#now,
+      ...(this.#onInputStep === undefined ? {} : { onStep: this.#onInputStep }),
+    });
+    const dispatched = await store.dispatch({
+      commandId: request.commandId,
+      sessionId: request.lease.sessionId,
+      generation: request.lease.generation,
+      attachmentId: request.lease.attachmentId,
+      fencingToken: request.lease.fencingToken,
+      source: request.source,
+      bytes: request.bytes,
+    });
+    switch (dispatched.status) {
+      case "Dispatched":
+      case "Uncertain":
+        return this.#inputIntent(request.commandId);
+      case "DataGap":
+        throw new StoreError("DataIntegrityFailure", dispatched.reason);
+      case "IdempotencyConflict":
+        throw new StoreError(
+          "IdempotencyConflict",
+          `commandId ${request.commandId} was already used with different input`,
+        );
+    }
+  }
+
+  readInputIntentContent(commandId: string): Uint8Array {
+    return new InputIntentStore({
+      storeDir: this.#storeDir,
+      db: this.#db,
+    }).readContent(commandId);
+  }
+
+  inspectInputIntent(commandId: string): InputIntent | null {
+    const exists = this.#db
+      .prepare("SELECT 1 AS present FROM input_intents WHERE command_id = ?")
+      .get(commandId);
+    return exists === undefined ? null : this.#inputIntent(commandId);
+  }
+
+  async resizeSession(request: ResizeSessionRequest): Promise<void> {
+    const process = this.#assertControlLease(request.lease);
+    if (
+      !Number.isSafeInteger(request.cols) ||
+      request.cols <= 0 ||
+      !Number.isSafeInteger(request.rows) ||
+      request.rows <= 0
+    ) {
+      throw new StoreError("InvalidRequest", "Terminal dimensions must be positive integers");
+    }
+    await process.resize(request.cols, request.rows);
+    transact(
+      this.#db,
+      () => {
+        this.#assertControlLease(request.lease);
+        this.#db
+          .prepare(
+            "UPDATE sessions SET terminal_cols = ?, terminal_rows = ?, updated_at = ? WHERE session_id = ?",
+          )
+          .run(
+            request.cols,
+            request.rows,
+            new Date(this.#now()).toISOString(),
+            request.lease.sessionId,
+          );
+      },
+      this.#now,
+    );
+  }
+
+  async terminateSession(lease: ControlLease): Promise<void> {
+    const process = this.#assertControlLease(lease);
+    await process.terminate();
+  }
+
+  readSessionDelta(attachmentId: string, fromSeq: number): SessionDeltaBatch {
+    if (!Number.isSafeInteger(fromSeq) || fromSeq < 1) {
+      throw new StoreError("InvalidRequest", "delta fromSeq must be a positive integer");
+    }
+    const attachment = this.inspectAttachment(attachmentId);
+    if (attachment === null) {
+      throw new StoreError("NotFound", `Attachment ${attachmentId} does not exist`);
+    }
+    if (attachment.status !== "Active") {
+      throw new StoreError("Conflict", "Attachment is no longer Active");
+    }
+    const session = this.inspectSession(attachment.sessionId);
+    if (session === null) {
+      throw new StoreError("NotFound", `Session ${attachment.sessionId} does not exist`);
+    }
+    if (session.generation !== attachment.generation) {
+      throw new StoreError("StaleGeneration", "Attachment generation is stale");
+    }
+
+    const durableThroughSeq = this.#journal.durableCursor({
+      sessionId: attachment.sessionId,
+      generation: attachment.generation,
+    });
+    const frames: SessionDeltaBatch["frames"][number][] = [];
+    let queueBytes = 0;
+    let seq = fromSeq;
+    while (
+      seq <= durableThroughSeq &&
+      frames.length < FROZEN_RUNTIME_LIMIT_PROFILE.attachmentQueueFrames
+    ) {
+      const bytes = this.#journal.readFrame({
+        sessionId: attachment.sessionId,
+        generation: attachment.generation,
+        seq,
+      });
+      if (bytes === null) {
+        throw new StoreError("DataIntegrityFailure", `durable stream is missing seq ${seq}`);
+      }
+      const payload = new Uint8Array(bytes);
+      const header = {
+        frameType: "PtyOutput",
+        sessionId: attachment.sessionId as SessionId,
+        generation: attachment.generation as Generation,
+        seq: seq as Seq,
+        payloadLength: payload.byteLength,
+      };
+      const wireBytes = 4 + Buffer.byteLength(JSON.stringify(header), "utf8") + payload.byteLength;
+      if (
+        frames.length > 0 &&
+        queueBytes + wireBytes > FROZEN_RUNTIME_LIMIT_PROFILE.attachmentQueueBytes
+      ) {
+        break;
+      }
+      if (wireBytes > FROZEN_RUNTIME_LIMIT_PROFILE.attachmentQueueBytes) {
+        throw new StoreError("StoragePressure", "one durable frame exceeds Attachment queue limit");
+      }
+      frames.push({ header, bytes: payload });
+      queueBytes += wireBytes;
+      seq += 1;
+    }
+
+    return {
+      attachmentId: attachmentId as AttachmentId,
+      sessionId: attachment.sessionId as SessionId,
+      generation: attachment.generation as Generation,
+      durableThroughSeq: durableThroughSeq as Seq,
+      nextSeq: seq as Seq,
+      frames,
+    };
+  }
+
+  async createSessionSnapshot(sessionId: string): Promise<Snapshot> {
+    const row = this.#db
+      .prepare(
+        `SELECT generation, terminal_cols, terminal_rows
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          readonly generation: number;
+          readonly terminal_cols: number;
+          readonly terminal_rows: number;
+        }
+      | undefined;
+    if (row === undefined) {
+      throw new StoreError("NotFound", `Session ${sessionId} does not exist`);
+    }
+    return await this.#snapshotCoordinator.create({
+      sessionId,
+      generation: row.generation,
+      cols: row.terminal_cols,
+      rows: row.terminal_rows,
+    });
+  }
+
+  readSessionSnapshot(sessionId: string): Snapshot {
+    const session = this.#db
+      .prepare(
+        `SELECT generation, terminal_cols, terminal_rows
+         FROM sessions
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          readonly generation: number;
+          readonly terminal_cols: number;
+          readonly terminal_rows: number;
+        }
+      | undefined;
+    if (session === undefined) {
+      throw new StoreError("NotFound", `Session ${sessionId} does not exist`);
+    }
+    return (
+      this.#snapshotCoordinator.read(sessionId, session.generation) ??
+      this.#snapshotCoordinator.initial({
+        sessionId,
+        generation: session.generation,
+        cols: session.terminal_cols,
+        rows: session.terminal_rows,
+      })
+    );
   }
 
   async pauseForStoragePressure(attemptId: string): Promise<StoragePressureWait> {
@@ -357,6 +1024,8 @@ export class SessionRuntime implements SessionRuntimeContract {
     if (exited !== undefined) {
       await Promise.race([exited, sleep(1_000)]);
     }
+    const snapshotTask = this.#snapshotTasks.get(sessionId);
+    if (snapshotTask !== undefined) await snapshotTask;
     this.#processes.delete(sessionId);
   }
 
@@ -385,6 +1054,7 @@ export class SessionRuntime implements SessionRuntimeContract {
 
   reconcileAfterRestart(): RestartReconciliationReport {
     const storage = reconcileStore(this.#storeDir, this.#db);
+    const inputs = reconcileInputIntents(this.#storeDir, this.#db);
     const alive = this.#db
       .prepare(
         `SELECT sessions.session_id, sessions.attempt_id, sessions.process_pid,
@@ -493,6 +1163,7 @@ export class SessionRuntime implements SessionRuntimeContract {
               "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
             )
             .run(now, row.session_id);
+          this.#db.prepare("DELETE FROM control_leases WHERE session_id = ?").run(row.session_id);
           this.#transitionAttempt(row.attempt_id, resolution.status);
           this.#db
             .prepare(
@@ -623,6 +1294,9 @@ export class SessionRuntime implements SessionRuntimeContract {
         isolatedOrphanCount: storage.isolatedOrphans.length,
         dataGapCount: storage.dataGaps.length,
         verifiedChunks: storage.verifiedChunks,
+        uncertainInputIntentCount: inputs.markedUncertain.length,
+        inputDataGapCount: inputs.dataGaps.length,
+        isolatedInputOrphanCount: inputs.isolatedOrphans.length,
       },
     };
   }
@@ -845,6 +1519,9 @@ export class SessionRuntime implements SessionRuntimeContract {
              WHERE session_id = ? AND availability = 'Alive'`,
           )
           .run(event.exitCode, now, prepared.plannedSessionId);
+        this.#db
+          .prepare("DELETE FROM control_leases WHERE session_id = ?")
+          .run(prepared.plannedSessionId);
         this.#appendEvent(prepared, "session-exited", {
           sessionId: prepared.plannedSessionId,
           exitCode: event.exitCode,
@@ -853,6 +1530,16 @@ export class SessionRuntime implements SessionRuntimeContract {
       },
       this.#now,
     );
+    const generation = this.inspectSession(prepared.plannedSessionId)?.generation ?? 1;
+    const snapshotTask = this.createSessionSnapshot(prepared.plannedSessionId)
+      .then(() => {})
+      .catch((error: unknown) => {
+        this.#streamFailures.set(`${prepared.plannedSessionId}:${generation}`, error);
+      })
+      .finally(() => {
+        this.#snapshotTasks.delete(prepared.plannedSessionId);
+      });
+    this.#snapshotTasks.set(prepared.plannedSessionId, snapshotTask);
     this.#forgetProcess(prepared.plannedSessionId);
   }
 
@@ -870,6 +1557,78 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#exitPromises.delete(sessionId);
     this.#processes.delete(sessionId);
     this.#pendingExits.delete(sessionId);
+  }
+
+  #assertControlLease(lease: ControlLease): SupervisedPtyProcess {
+    const session = this.inspectSession(lease.sessionId);
+    if (session === null) {
+      throw new StoreError("NotFound", `Session ${lease.sessionId} does not exist`);
+    }
+    if (session.generation !== lease.generation) {
+      throw new StoreError("StaleGeneration", "Session generation has changed");
+    }
+    const current = this.#db
+      .prepare(
+        `SELECT 1 AS present
+         FROM control_leases
+         JOIN attachments ON attachments.attachment_id = control_leases.attachment_id
+         WHERE control_leases.session_id = ?
+           AND control_leases.generation = ?
+           AND control_leases.attachment_id = ?
+           AND control_leases.fencing_token = ?
+           AND control_leases.expires_at > ?
+           AND attachments.status = 'Active'`,
+      )
+      .get(lease.sessionId, lease.generation, lease.attachmentId, lease.fencingToken, this.#now());
+    if (session.availability !== "Alive" || current === undefined) {
+      throw new StoreError("StaleControlLease", "Control Lease is stale or expired");
+    }
+    const process = this.#processes.get(lease.sessionId);
+    if (process === undefined) {
+      throw new StoreError("StaleControlLease", "Session has no current PTY owner");
+    }
+    return process;
+  }
+
+  #inputIntent(commandId: string): InputIntent {
+    const row = this.#db
+      .prepare(
+        `SELECT input_intent_id, command_id, session_id, generation, attachment_id,
+                fencing_token, source, byte_length, content_ref, created_at, status
+         FROM input_intents
+         WHERE command_id = ?`,
+      )
+      .get(commandId) as
+      | {
+          readonly input_intent_id: string;
+          readonly command_id: string;
+          readonly session_id: string;
+          readonly generation: number;
+          readonly attachment_id: string;
+          readonly fencing_token: number;
+          readonly source: InputIntent["source"];
+          readonly byte_length: number;
+          readonly content_ref: string;
+          readonly created_at: string;
+          readonly status: InputIntent["status"];
+        }
+      | undefined;
+    if (row === undefined) {
+      throw new StoreError("NotFound", `Input Intent ${commandId} does not exist`);
+    }
+    return {
+      inputIntentId: row.input_intent_id,
+      commandId: row.command_id as CommandId,
+      sessionId: row.session_id as SessionId,
+      generation: row.generation as Generation,
+      attachmentId: row.attachment_id as AttachmentId,
+      fencingToken: row.fencing_token as InputIntent["fencingToken"],
+      source: row.source,
+      byteLength: row.byte_length,
+      contentRef: row.content_ref,
+      createdAt: Date.parse(row.created_at),
+      status: row.status,
+    };
   }
 
   #intent(launchNonce: string): LaunchIntentRow {

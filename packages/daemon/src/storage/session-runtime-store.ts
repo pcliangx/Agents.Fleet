@@ -77,4 +77,69 @@ export const SESSION_RUNTIME_MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: "session-attachments",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE sessions ADD COLUMN fencing_counter INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN terminal_cols INTEGER NOT NULL DEFAULT 80;
+        ALTER TABLE sessions ADD COLUMN terminal_rows INTEGER NOT NULL DEFAULT 24;
+
+        CREATE TABLE attachments (
+          attachment_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(session_id),
+          generation INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('Active','Closed','Invalidated')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_attachments_session_status
+          ON attachments(session_id, status);
+
+        CREATE TABLE control_leases (
+          session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+          generation INTEGER NOT NULL,
+          attachment_id TEXT NOT NULL UNIQUE REFERENCES attachments(attachment_id),
+          fencing_token INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          granted_at TEXT NOT NULL,
+          renewed_at TEXT NOT NULL
+        );
+
+        CREATE TABLE input_intents (
+          input_intent_id TEXT PRIMARY KEY,
+          command_id TEXT NOT NULL UNIQUE,
+          session_id TEXT NOT NULL REFERENCES sessions(session_id),
+          generation INTEGER NOT NULL,
+          attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id),
+          fencing_token INTEGER NOT NULL,
+          source TEXT NOT NULL CHECK (source IN ('Keyboard','IME','Paste','Mouse','Automation')),
+          content_ref TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          redacted_preview TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('Prepared','Dispatched','Uncertain')),
+          data_gap INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          dispatched_at TEXT
+        );
+
+        CREATE TABLE session_snapshots (
+          session_id TEXT NOT NULL REFERENCES sessions(session_id),
+          generation INTEGER NOT NULL,
+          covers_through_seq INTEGER NOT NULL,
+          content_ref TEXT NOT NULL,
+          sha256 TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          schema_version INTEGER NOT NULL,
+          package_set_json TEXT NOT NULL,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          truncated_before_seq INTEGER,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, generation)
+        );
+      `);
+    },
+  },
 ];

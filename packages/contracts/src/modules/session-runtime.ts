@@ -3,7 +3,16 @@
 // ProcessSupervisor, ByteJournal, chunk paths, SQLite and PTY types are
 // intentionally absent (RT-MOD-13).
 
+import type { AttachmentMode, AttachmentStatus } from "../lifecycle/attachment.js";
 import type { SessionAvailability } from "../lifecycle/session.js";
+import type {
+  AttachResult,
+  ControlLease,
+  InputIntent,
+  InputSource,
+  SessionDeltaBatch,
+  Snapshot,
+} from "../protocol/stream.js";
 import type { PreparedLaunch } from "./task-orchestrator.js";
 
 export type LaunchFailedReason =
@@ -46,6 +55,27 @@ export interface SessionRuntimeRecord {
   readonly attemptId: string;
   readonly generation: number;
   readonly availability: SessionAvailability;
+}
+
+export interface AttachmentRuntimeRecord {
+  readonly attachmentId: string;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly status: AttachmentStatus;
+  readonly mode: AttachmentMode;
+}
+
+export interface WriteSessionInputRequest {
+  readonly commandId: string;
+  readonly lease: ControlLease;
+  readonly source: InputSource;
+  readonly bytes: Uint8Array;
+}
+
+export interface ResizeSessionRequest {
+  readonly lease: ControlLease;
+  readonly cols: number;
+  readonly rows: number;
 }
 
 export type ResumableAttemptStatus = "Starting" | "Running" | "Stopping";
@@ -91,11 +121,29 @@ export interface RestartReconciliationReport {
     readonly isolatedOrphanCount: number;
     readonly dataGapCount: number;
     readonly verifiedChunks: number;
+    readonly uncertainInputIntentCount: number;
+    readonly inputDataGapCount: number;
+    readonly isolatedInputOrphanCount: number;
   };
 }
 
 export interface SessionRuntime {
   launch(prepared: PreparedLaunch, validation: LaunchValidation): Promise<LaunchSessionResult>;
+  attach(sessionId: string): AttachResult;
+  acquireControl(attachmentId: string): ControlLease;
+  renewControl(lease: ControlLease): ControlLease;
+  takeoverControl(attachmentId: string, confirmedHolder: ControlLease): ControlLease;
+  closeAttachment(attachmentId: string): void;
+  invalidateAttachment(attachmentId: string): void;
+  inspectAttachment(attachmentId: string): AttachmentRuntimeRecord | null;
+  writeSessionInput(request: WriteSessionInputRequest): Promise<InputIntent>;
+  inspectInputIntent(commandId: string): InputIntent | null;
+  readInputIntentContent(commandId: string): Uint8Array;
+  resizeSession(request: ResizeSessionRequest): Promise<void>;
+  terminateSession(lease: ControlLease): Promise<void>;
+  readSessionDelta(attachmentId: string, fromSeq: number): SessionDeltaBatch;
+  createSessionSnapshot(sessionId: string): Promise<Snapshot>;
+  readSessionSnapshot(sessionId: string): Snapshot;
   pauseForStoragePressure(attemptId: string): Promise<StoragePressureWait>;
   resumeFromStoragePressure(
     attemptId: string,

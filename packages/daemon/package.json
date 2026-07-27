@@ -13,7 +13,11 @@
   },
   "dependencies": {
     "@agents-fleet/contracts": "workspace:*",
+    "@agents-fleet/terminal": "workspace:*",
     "@agents-fleet/transport": "workspace:*",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/headless": "6.0.0",
     "node-pty": "1.1.0"
   },
   "devDependencies": {

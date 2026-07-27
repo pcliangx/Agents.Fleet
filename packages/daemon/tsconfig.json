@@ -6,5 +6,10 @@
     "composite": true
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../contracts" }, { "path": "../transport" }, { "path": "../testing" }]
+  "references": [
+    { "path": "../contracts" },
+    { "path": "../terminal" },
+    { "path": "../transport" },
+    { "path": "../testing" }
+  ]
 }

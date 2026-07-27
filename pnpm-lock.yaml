@@ -56,9 +56,21 @@ importers:
       '@agents-fleet/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@agents-fleet/terminal':
+        specifier: workspace:*
+        version: link:../terminal
       '@agents-fleet/transport':
         specifier: workspace:*
         version: link:../transport
+      '@xterm/addon-serialize':
+        specifier: 0.14.0
+        version: 0.14.0
+      '@xterm/addon-unicode11':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@xterm/headless':
+        specifier: 6.0.0
+        version: 6.0.0
       node-pty:
         specifier: 1.1.0
         version: 1.1.0

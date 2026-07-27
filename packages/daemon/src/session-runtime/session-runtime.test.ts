@@ -1018,3 +1018,475 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     20_000,
   );
 });
+
+describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
+  it("attach creates an observe-only Live Attachment without a fencing token", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const attached = runtime.attach(launched.sessionId);
+
+      expect(attached).toMatchObject({
+        mode: "Live",
+        sessionId: launched.sessionId,
+        generation: launched.generation,
+        snapshot: {
+          coversThroughSeq: 0,
+        },
+      });
+      expect(JSON.parse(new TextDecoder().decode(attached.snapshot.bytes))).toMatchObject({
+        schemaVersion: 1,
+        coversThroughSeq: 0,
+        producer: { kind: "InitialState", receivedPtyHandle: false },
+        checkpoint: { parserGround: true, utf8DecoderEmpty: true },
+      });
+      expect(attached.attachmentId).toEqual(expect.any(String));
+      expect(attached).not.toHaveProperty("fencingToken");
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("grants one 15-second Control Lease and rejects a second writer", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const first = runtime.attach(launched.sessionId);
+      const second = runtime.attach(launched.sessionId);
+
+      expect(runtime.acquireControl(first.attachmentId)).toEqual({
+        sessionId: launched.sessionId,
+        generation: launched.generation,
+        attachmentId: first.attachmentId,
+        fencingToken: 1,
+        expiresAt: T0 + 15_000,
+      });
+      expect(() => runtime.acquireControl(second.attachmentId)).toThrow(
+        expect.objectContaining({ code: "Conflict" }),
+      );
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("renews the same token and fences the old holder after TTL expiry", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    let now = T0;
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => now,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const first = runtime.attach(launched.sessionId);
+      const second = runtime.attach(launched.sessionId);
+      const original = runtime.acquireControl(first.attachmentId);
+
+      now += 5_000;
+      expect(runtime.renewControl(original)).toEqual({
+        ...original,
+        expiresAt: T0 + 20_000,
+      });
+
+      now = T0 + 20_000;
+      const replacement = runtime.acquireControl(second.attachmentId);
+      expect(replacement.fencingToken).toBe(2);
+      expect(() => runtime.renewControl(original)).toThrow(
+        expect.objectContaining({ code: "StaleControlLease" }),
+      );
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("takes over only the confirmed holder and immediately fences its token", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const first = runtime.attach(launched.sessionId);
+      const second = runtime.attach(launched.sessionId);
+      const original = runtime.acquireControl(first.attachmentId);
+
+      const replacement = runtime.takeoverControl(second.attachmentId, original);
+
+      expect(replacement).toMatchObject({
+        attachmentId: second.attachmentId,
+        fencingToken: 2,
+        expiresAt: T0 + 15_000,
+      });
+      expect(() => runtime.renewControl(original)).toThrow(
+        expect.objectContaining({ code: "StaleControlLease" }),
+      );
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("closes an Attachment on control disconnect and revokes its Lease", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const first = runtime.attach(launched.sessionId);
+      const second = runtime.attach(launched.sessionId);
+      const original = runtime.acquireControl(first.attachmentId);
+
+      runtime.closeAttachment(first.attachmentId);
+
+      expect(() => runtime.renewControl(original)).toThrow(
+        expect.objectContaining({ code: "StaleControlLease" }),
+      );
+      expect(runtime.acquireControl(second.attachmentId).fencingToken).toBe(2);
+      expect(() => runtime.acquireControl(first.attachmentId)).toThrow(
+        expect.objectContaining({ code: "CapabilityUnavailable" }),
+      );
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("reprojects the same Active Attachment to Restored when its Session exits", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch({ keepAlive: false });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    const attached = runtime.attach(launched.sessionId);
+    const lease = runtime.acquireControl(attached.attachmentId);
+
+    await waitFor(() => runtime.inspectSession(launched.sessionId)?.availability === "Exited");
+
+    expect(runtime.inspectAttachment(attached.attachmentId)).toEqual({
+      attachmentId: attached.attachmentId,
+      sessionId: launched.sessionId,
+      generation: launched.generation,
+      status: "Active",
+      mode: "Restored",
+    });
+    expect(() => runtime.renewControl(lease)).toThrow(
+      expect.objectContaining({ code: "StaleControlLease" }),
+    );
+    expect(() => runtime.acquireControl(attached.attachmentId)).toThrow(
+      expect.objectContaining({ code: "CapabilityUnavailable" }),
+    );
+  });
+
+  it("durably dispatches input once through the current Control Lease", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const attached = runtime.attach(launched.sessionId);
+      const lease = runtime.acquireControl(attached.attachmentId);
+      const bytes = new Uint8Array([0x68, 0x69, 0x0d, 0x00]);
+      const command = {
+        commandId: "input-command-1",
+        lease,
+        source: "Paste" as const,
+        bytes,
+      };
+
+      const first = await runtime.writeSessionInput(command);
+      const replay = await runtime.writeSessionInput(command);
+
+      expect(first).toMatchObject({
+        commandId: command.commandId,
+        sessionId: launched.sessionId,
+        generation: launched.generation,
+        attachmentId: attached.attachmentId,
+        fencingToken: lease.fencingToken,
+        source: "Paste",
+        byteLength: bytes.byteLength,
+        status: "Dispatched",
+      });
+      expect(replay).toEqual(first);
+      expect(runtime.readInputIntentContent(command.commandId)).toEqual(bytes);
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("rejects input, resize, and terminate through an old fencing token", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      now: () => T0,
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const first = runtime.attach(launched.sessionId);
+      const second = runtime.attach(launched.sessionId);
+      const oldLease = runtime.acquireControl(first.attachmentId);
+      runtime.takeoverControl(second.attachmentId, oldLease);
+
+      await expect(
+        runtime.writeSessionInput({
+          commandId: "stale-input",
+          lease: oldLease,
+          source: "Automation",
+          bytes: new Uint8Array([0x78]),
+        }),
+      ).rejects.toMatchObject({ code: "StaleControlLease" });
+      await expect(
+        runtime.resizeSession({ lease: oldLease, cols: 120, rows: 40 }),
+      ).rejects.toMatchObject({ code: "StaleControlLease" });
+      await expect(runtime.terminateSession(oldLease)).rejects.toMatchObject({
+        code: "StaleControlLease",
+      });
+      expect(runtime.inspectSession(launched.sessionId)?.availability).toBe("Alive");
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("reads durable delta from the Attachment Snapshot cursor without changing identity", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const attached = runtime.attach(launched.sessionId);
+      await waitFor(
+        () =>
+          runtime.readDurableFrame({
+            sessionId: launched.sessionId,
+            generation: launched.generation,
+            seq: 1,
+          }) !== null,
+      );
+
+      const delta = runtime.readSessionDelta(
+        attached.attachmentId,
+        attached.snapshot.coversThroughSeq + 1,
+      );
+
+      expect(delta).toEqual({
+        attachmentId: attached.attachmentId,
+        sessionId: launched.sessionId,
+        generation: launched.generation,
+        durableThroughSeq: 1,
+        nextSeq: 2,
+        frames: [
+          {
+            header: {
+              frameType: "PtyOutput",
+              sessionId: launched.sessionId,
+              generation: launched.generation,
+              seq: 1,
+              payloadLength: 3,
+            },
+            bytes: new Uint8Array([0x41, 0xff, 0x42]),
+          },
+        ],
+      });
+      expect(runtime.inspectAttachment(attached.attachmentId)?.status).toBe("Active");
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("attaches from a durable parser-safe Snapshot and only requests later delta", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      await waitFor(
+        () =>
+          runtime.readDurableFrame({
+            sessionId: launched.sessionId,
+            generation: launched.generation,
+            seq: 1,
+          }) !== null,
+      );
+      const created = await runtime.createSessionSnapshot(launched.sessionId);
+      const document = JSON.parse(new TextDecoder().decode(created.bytes)) as {
+        readonly schemaVersion: number;
+        readonly terminalPackageSet: Readonly<Record<string, string>>;
+        readonly producer: {
+          readonly kind: string;
+          readonly threadId: number;
+          readonly receivedPtyHandle: boolean;
+        };
+        readonly checkpoint: {
+          readonly parserGround: boolean;
+          readonly utf8DecoderEmpty: boolean;
+        };
+      };
+      const attached = runtime.attach(launched.sessionId);
+
+      expect(created.coversThroughSeq).toBe(1);
+      expect(document).toMatchObject({
+        schemaVersion: 1,
+        terminalPackageSet: { "@xterm/headless": "6.0.0" },
+        producer: {
+          kind: "SnapshotWorker",
+          threadId: expect.any(Number),
+          receivedPtyHandle: false,
+        },
+        checkpoint: { parserGround: true, utf8DecoderEmpty: true },
+      });
+      expect(document.producer.threadId).toBeGreaterThan(0);
+      expect(attached.snapshot).toEqual(created);
+      expect(runtime.readSessionDelta(attached.attachmentId, 2).frames).toEqual([]);
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("creates a final Snapshot after exit without any Active Attachment", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch({ keepAlive: false });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    await waitFor(() => runtime.inspectSession(launched.sessionId)?.availability === "Exited");
+    await waitFor(() => runtime.readSessionSnapshot(launched.sessionId).coversThroughSeq === 1);
+
+    const attached = runtime.attach(launched.sessionId);
+    expect(attached.mode).toBe("Restored");
+    expect(attached.snapshot.coversThroughSeq).toBe(1);
+  });
+
+  it("reconciles Prepared input as Uncertain after the PTY-write boundary", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const original = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      onInputStep: (step: string) => {
+        if (step === "afterPtyWrite") throw new Error("injected daemon boundary failure");
+      },
+    });
+    const launched = await original.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    try {
+      const attached = original.attach(launched.sessionId);
+      const lease = original.acquireControl(attached.attachmentId);
+
+      await expect(
+        original.writeSessionInput({
+          commandId: "uncertain-input",
+          lease,
+          source: "Automation",
+          bytes: new Uint8Array([0x79, 0x0d]),
+        }),
+      ).rejects.toThrow("injected daemon boundary failure");
+
+      const restarted = new SessionRuntime({
+        db,
+        storeDir: root,
+        processSupervisor: await createRealProcessSupervisor(),
+      });
+      restarted.reconcileAfterRestart();
+
+      expect(restarted.inspectInputIntent("uncertain-input")).toMatchObject({
+        commandId: "uncertain-input",
+        status: "Uncertain",
+      });
+      expect(restarted.readInputIntentContent("uncertain-input")).toEqual(
+        new Uint8Array([0x79, 0x0d]),
+      );
+      await expect(
+        restarted.writeSessionInput({
+          commandId: "uncertain-input",
+          lease,
+          source: "Automation",
+          bytes: new Uint8Array([0x79, 0x0d]),
+        }),
+      ).resolves.toMatchObject({
+        commandId: "uncertain-input",
+        status: "Uncertain",
+      });
+    } finally {
+      await original.terminate(launched.sessionId);
+    }
+  });
+
+  it("invalidates an Attachment and immediately revokes its Control Lease", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      const attached = runtime.attach(launched.sessionId);
+      const lease = runtime.acquireControl(attached.attachmentId);
+
+      runtime.invalidateAttachment(attached.attachmentId);
+
+      expect(runtime.inspectAttachment(attached.attachmentId)?.status).toBe("Invalidated");
+      expect(() => runtime.renewControl(lease)).toThrow(
+        expect.objectContaining({ code: "StaleControlLease" }),
+      );
+    } finally {
+      await runtime.terminate(launched.sessionId);
+    }
+  });
+});

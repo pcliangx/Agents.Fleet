@@ -34,9 +34,13 @@ CREATE TABLE IF NOT EXISTS input_intents (
   command_id TEXT NOT NULL UNIQUE,  -- 幂等键：一个 command 至多一个 intent
   session_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
+  attachment_id TEXT NOT NULL,
+  fencing_token INTEGER NOT NULL,
+  source TEXT NOT NULL,
   content_ref TEXT NOT NULL,        -- 相对 storeDir 的 content object 路径
   sha256 TEXT NOT NULL,
   byte_length INTEGER NOT NULL,
+  redacted_preview TEXT NOT NULL,
   status TEXT NOT NULL,             -- Prepared | Dispatched | Uncertain
   data_gap INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,

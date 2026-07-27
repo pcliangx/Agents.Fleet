@@ -11,7 +11,11 @@ import { join } from "node:path";
 import { FakePty } from "@agents-fleet/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DataIntegrityFailure } from "./byte-journal.js";
-import { InputIntentStore, reconcileInputIntents } from "./input-intent-store.js";
+import {
+  contentObjectRelativePath,
+  InputIntentStore,
+  reconcileInputIntents,
+} from "./input-intent-store.js";
 import { openSessionStoreDb } from "./store-schema.js";
 
 const INPUT_BYTES = new Uint8Array([0x6c, 0x73, 0x20, 0x2d, 0x6c, 0x0d, 0x00, 0xff]); // "ls -l\r" + NUL + invalid
@@ -137,7 +141,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       }),
     ).rejects.toThrow();
     // 磁盘损坏：content object 丢失。
-    unlinkSync(join(storeDir, "input-intents", "cmd-1.bin"));
+    unlinkSync(join(storeDir, contentObjectRelativePath("cmd-1")));
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.dataGaps).toEqual(["cmd-1"]);
@@ -161,7 +165,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       generation: GENERATION,
       bytes: INPUT_BYTES,
     });
-    writeFileSync(join(storeDir, "input-intents", "cmd-1.bin"), new Uint8Array([0x00]));
+    writeFileSync(join(storeDir, contentObjectRelativePath("cmd-1")), new Uint8Array([0x00]));
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.dataGaps).toEqual(["cmd-1"]);
@@ -188,7 +192,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.isolatedOrphans).toHaveLength(1);
-    expect(report.isolatedOrphans[0]?.originalPath).toContain("cmd-1.bin");
+    expect(report.isolatedOrphans[0]?.originalPath).toContain(contentObjectRelativePath("cmd-1"));
 
     // object 被隔离后，同 commandId 作为全新命令正常 dispatch（此前从未有 record）。
     const store = new InputIntentStore({ storeDir, db, ptySink: sink });

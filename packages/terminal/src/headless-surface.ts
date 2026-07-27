@@ -5,7 +5,9 @@
 // class's public methods (RT-MOD-09); feed/appliedCursor/cursorPosition/
 // renderText live on the shared base.
 
-import { Terminal } from "@xterm/headless";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import type { Terminal as HeadlessTerminal } from "@xterm/headless";
+import * as HeadlessModule from "@xterm/headless";
 import {
   BaseTerminalSurface,
   configureUnicode11,
@@ -16,6 +18,23 @@ import {
 // DCS in progress). Empirically 0 on @xterm/headless 6.0.0 (mid-CSI == 4,
 // mid-OSC == 8); named so the safe-checkpoint read is self-explanatory.
 const PARSER_GROUND = 0;
+
+// @xterm/headless 6.0.0 is CommonJS: native Node ESM exposes Terminal on the
+// default export, while Vite/Vitest also synthesize the named export. Resolve
+// both shapes so the Daemon's real child process and bundled tests use the
+// same pinned package.
+const Terminal =
+  (
+    HeadlessModule as unknown as {
+      readonly Terminal?: typeof HeadlessTerminal;
+      readonly default?: { readonly Terminal: typeof HeadlessTerminal };
+    }
+  ).Terminal ??
+  (
+    HeadlessModule as unknown as {
+      readonly default: { readonly Terminal: typeof HeadlessTerminal };
+    }
+  ).default.Terminal;
 
 // RT-TERM-12 — the only xterm.js internals needed to prove a Snapshot safe
 // checkpoint: the parser's current state and the UTF-8 decoder's interim bytes.
@@ -36,6 +55,8 @@ const internals = (term: unknown): XtermCheckpointInternals["_core"]["_inputHand
   (term as unknown as XtermCheckpointInternals)._core._inputHandler;
 
 export class HeadlessTerminalSurface extends BaseTerminalSurface {
+  private readonly headlessTerm: HeadlessTerminal;
+
   constructor(opts: TerminalSurfaceOptions) {
     // xterm 6 gates the `buffer` namespace behind allowProposedApi. Reading the
     // grid/cursor (base) and the Snapshot Worker's addon-serialize both need
@@ -43,6 +64,7 @@ export class HeadlessTerminalSurface extends BaseTerminalSurface {
     const term = new Terminal({ cols: opts.cols, rows: opts.rows, allowProposedApi: true });
     configureUnicode11(term);
     super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
+    this.headlessTerm = term;
   }
 
   /** RT-TERM-12 / RT-ORDER-08 — parserGround && utf8DecoderEmpty at the last write. */
@@ -59,5 +81,16 @@ export class HeadlessTerminalSurface extends BaseTerminalSurface {
   /** RT-T-22 — the OSC 0/2 window title, for Snapshot+delta title consistency. */
   getTitle(): string {
     return internals(this.term)._windowTitle;
+  }
+
+  /** RT-TERM-07/11 — ANSI serialization wrapped by Agents.Fleet's Snapshot schema. */
+  serializeText(): string {
+    const addon = new SerializeAddon();
+    this.headlessTerm.loadAddon(addon);
+    try {
+      return addon.serialize();
+    } finally {
+      addon.dispose();
+    }
   }
 }
