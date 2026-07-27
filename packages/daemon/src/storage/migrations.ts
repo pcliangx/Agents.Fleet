@@ -5,14 +5,19 @@
 // of each caller spelling out `[...TASK_MIGRATIONS, ...IdempotencyStore.migrations]`)
 // prevents two stores from silently colliding on the same version (A4/I2).
 
+import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import type { Migration } from "./database.js";
 import { IdempotencyStore } from "./idempotency.js";
+import { REPOSITORY_TRUST_MIGRATIONS } from "./repository-trust-store.js";
 import { TASK_MIGRATIONS } from "./task-store.js";
 
 export const ALL_MIGRATIONS: readonly Migration[] = (() => {
-  const all = [...TASK_MIGRATIONS, ...IdempotencyStore.migrations].sort(
-    (a, b) => a.version - b.version,
-  );
+  const all = [
+    ...TASK_MIGRATIONS,
+    ...IdempotencyStore.migrations,
+    ...REPOSITORY_TRUST_MIGRATIONS,
+    ...PersistentChallengeIssuer.migrations,
+  ].sort((a, b) => a.version - b.version);
   const versions = all.map((m) => m.version);
   if (new Set(versions).size !== versions.length) {
     throw new Error(

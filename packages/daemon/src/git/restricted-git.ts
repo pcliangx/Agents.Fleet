@@ -83,6 +83,60 @@ export type RepositoryValidationResult =
   | { ok: true; repository: ValidatedRepository }
   | { ok: false; failure: RepositoryValidationFailure };
 
+// RT-REPO-06 — the validation plan the Trust challenge displays and binds.
+// A bounded, structured list of the exact plumbing steps validateRepository
+// runs (SV1-TRUST-02: the dialog must show what PendingValidation will do);
+// it is data, never shell text. Frozen so the displayed plan, the bound
+// validationPlanHash and the executed plan cannot drift apart.
+export const VALIDATION_PLAN: readonly {
+  readonly step: string;
+  readonly argv: readonly string[];
+}[] = Object.freeze([
+  Object.freeze({ step: "git-version", argv: Object.freeze(["--version"]) }),
+  Object.freeze({ step: "bare-check", argv: Object.freeze(["rev-parse", "--is-bare-repository"]) }),
+  Object.freeze({
+    step: "working-tree-root",
+    argv: Object.freeze(["rev-parse", "--show-toplevel"]),
+  }),
+  Object.freeze({ step: "git-dir", argv: Object.freeze(["rev-parse", "--absolute-git-dir"]) }),
+  Object.freeze({ step: "common-git-dir", argv: Object.freeze(["rev-parse", "--git-common-dir"]) }),
+  Object.freeze({ step: "head-symbolic-ref", argv: Object.freeze(["symbolic-ref", "-q", "HEAD"]) }),
+  Object.freeze({
+    step: "head-commit",
+    argv: Object.freeze(["rev-parse", "--verify", "HEAD^{commit}"]),
+  }),
+  Object.freeze({
+    step: "enumerate-refs",
+    argv: Object.freeze(["for-each-ref", "--format=%(refname)"]),
+  }),
+  Object.freeze({
+    step: "default-base-ref",
+    argv: Object.freeze(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]),
+  }),
+  Object.freeze({
+    step: "default-base-commit",
+    argv: Object.freeze(["rev-parse", "--verify", "<defaultBaseRef>^{commit}"]),
+  }),
+]);
+
+// RT-REPO-04 — the declared post-Active read-only inspection shape
+// (SV1-FILE-06): current commit and branch, default base ref and its SHA,
+// the common Repository identity and the observation time.
+export interface RepositoryInspection {
+  readonly currentCommitSha: string;
+  /** null when HEAD is detached (RT-REPO-04). */
+  readonly currentBranch: string | null;
+  readonly defaultBaseRef: string | null;
+  readonly defaultBaseRefSha: string | null;
+  readonly commonGitDir: string;
+  readonly gitVersion: string;
+  readonly observedAt: string;
+}
+
+export type RepositoryInspectionResult =
+  | { ok: true; inspection: RepositoryInspection }
+  | { ok: false; failure: RepositoryValidationFailure };
+
 export interface GitExecRequest {
   readonly argv: readonly string[];
   readonly cwd: string;
@@ -355,6 +409,31 @@ export class RestrictedGitRunner {
         defaultBaseRefSha,
         gitVersion,
         observedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  // RT-REPO-04 / SV1-FILE-06 — the declared read-only inspection allowed once
+  // the Trust is Active. It runs the same bounded plumbing queries as
+  // validateRepository (still the restricted interface: explicit binary,
+  // structured argv, scrubbed environment) but changes NO state: a drift or a
+  // failure comes back as the same stable classification and it is the
+  // caller's decision what to do with it — inspection never revokes.
+  async inspectValidatedRepository(
+    candidate: RepositoryCandidate,
+  ): Promise<RepositoryInspectionResult> {
+    const result = await this.validateRepository(candidate);
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      inspection: {
+        currentCommitSha: result.repository.headCommitSha,
+        currentBranch: result.repository.currentBranch,
+        defaultBaseRef: result.repository.defaultBaseRef,
+        defaultBaseRefSha: result.repository.defaultBaseRefSha,
+        commonGitDir: result.repository.commonGitDir,
+        gitVersion: result.repository.gitVersion,
+        observedAt: result.repository.observedAt,
       },
     };
   }
