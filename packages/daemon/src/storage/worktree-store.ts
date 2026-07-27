@@ -107,6 +107,8 @@ export const WORKTREE_MIGRATIONS: readonly Migration[] = [
 ];
 
 export interface PlannedWorktreeInput {
+  /** RT-CMD-14 — preallocated by the Launch Confirmation preview. */
+  readonly worktreeId?: WorktreeId;
   readonly taskId: string;
   readonly attemptId: string;
   readonly workspaceId: string;
@@ -310,7 +312,11 @@ export class WorktreeStore {
 
   #failQueuedAttempt(attemptId: string): void {
     this.#db
-      .prepare("UPDATE attempts SET status = 'Failed' WHERE attempt_id = ? AND status = 'Queued'")
+      .prepare(
+        `UPDATE attempts
+         SET status = 'Failed', state_version = state_version + 1
+         WHERE attempt_id = ? AND status = 'Queued'`,
+      )
       .run(attemptId);
   }
 
@@ -507,7 +513,10 @@ export class WorktreeStore {
           throw new StoreError("Conflict", "Attempt already has a Worktree binding");
         }
         const workspace = this.#workspaceIdentity(input.workspaceId);
-        const worktreeId = `wt_${randomUUID()}` as WorktreeId;
+        const worktreeId = input.worktreeId ?? (`wt_${randomUUID()}` as WorktreeId);
+        if (typeof worktreeId !== "string" || worktreeId.length === 0) {
+          throw new StoreError("InvalidRequest", "planned Worktree id must be non-empty");
+        }
         const now = new Date(this.#now()).toISOString();
         try {
           this.#db
@@ -555,6 +564,66 @@ export class WorktreeStore {
           baseCommitSha: input.baseCommitSha,
         });
         return this.get(worktreeId);
+      },
+      this.#now,
+    );
+  }
+
+  bindReadyToAttempt(input: {
+    readonly attemptId: string;
+    readonly taskId: string;
+    readonly worktreeId: WorktreeId;
+    readonly baseCommitSha: string;
+  }): WorktreeRecord {
+    if (!SHA_RE.test(input.baseCommitSha)) {
+      throw new StoreError("InvalidRequest", "baseCommitSha must be a full commit SHA");
+    }
+    return transact(
+      this.#db,
+      () => {
+        const attempt = this.#attemptTask(input.attemptId);
+        if (
+          attempt.task_id !== input.taskId ||
+          attempt.status !== "Queued" ||
+          attempt.lifecycle !== "Runnable"
+        ) {
+          throw new StoreError(
+            "Conflict",
+            "existing Worktree binding requires the Task's Runnable Queued Attempt",
+          );
+        }
+        const worktree = this.get(input.worktreeId);
+        if (
+          worktree.taskId !== input.taskId ||
+          worktree.state !== "Ready" ||
+          worktree.role !== "Active" ||
+          worktree.baseCommitSha !== input.baseCommitSha
+        ) {
+          throw new StoreError(
+            "Conflict",
+            "ContinueCurrentWorktree requires the Task's active Ready Worktree and base SHA",
+          );
+        }
+        if (this.worktreeForAttempt(input.attemptId) !== null) {
+          throw new StoreError("Conflict", "Attempt already has a Worktree binding");
+        }
+        this.#db
+          .prepare(
+            `INSERT INTO attempt_worktree_bindings
+             (attempt_id, worktree_id, base_commit_sha, created_at)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .run(
+            input.attemptId,
+            input.worktreeId,
+            input.baseCommitSha,
+            new Date(this.#now()).toISOString(),
+          );
+        this.#appendEvent(input.taskId, input.attemptId, "worktree-reused", {
+          worktreeId: input.worktreeId,
+          baseCommitSha: input.baseCommitSha,
+        });
+        return worktree;
       },
       this.#now,
     );

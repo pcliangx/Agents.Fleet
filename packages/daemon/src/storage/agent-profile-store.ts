@@ -522,6 +522,63 @@ export class AgentProfileStore {
     );
   }
 
+  /**
+   * RT-CMD-17 — build the immutable Profile/Capability/Permission facts used
+   * by a Launch Confirmation preview without creating an Attempt row.
+   */
+  previewAttemptSnapshot(
+    profileId: ProfileId,
+    adapter: AdapterSnapshotFacts,
+  ): AgentProfileSnapshot {
+    const profile = this.getProfile(profileId);
+    if (profile.deletedAt !== null) {
+      throw new StoreError("Conflict", "cannot snapshot a deleted Agent Profile");
+    }
+    if (profile.agentId !== adapter.agentId) {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "Agent Profile does not match verified Adapter discovery",
+      );
+    }
+    if (!adapter.capabilities.includes("PermissionMapping")) {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "verified Adapter does not declare Permission Mapping capability",
+      );
+    }
+    const mappings = adapter.permissionMappings.filter(
+      (candidate) => candidate.requestedMode === profile.permissionMode,
+    );
+    const mapping = mappings[0];
+    if (mapping === undefined || mappings.length !== 1) {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "verified Adapter must provide exactly one Permission Mapping for the saved mode",
+      );
+    }
+    if (isPermissionExpansion(mapping)) {
+      throw new StoreError(
+        "ConfirmationRequired",
+        "effective Permission Mode is broader than the saved user intent",
+      );
+    }
+    return deepFreeze({
+      profileId: profile.profileId,
+      profileVersion: profile.profileVersion,
+      agentId: profile.agentId,
+      accountRef: profile.accountRef,
+      model: profile.model,
+      mode: profile.mode,
+      permissionMode: profile.permissionMode,
+      secretRefs: structuredClone(profile.secretRefs),
+      secretReferenceIdentities: profile.secretRefs.map(secretReferenceIdentity),
+      adapterCapabilities: [...adapter.capabilities],
+      adapterCapabilitiesHash: canonicalSha256(adapter.capabilities),
+      permissionMapping: structuredClone(mapping),
+      permissionMappingHash: canonicalSha256(mapping),
+    });
+  }
+
   createAttemptSnapshot(input: CreateAttemptProfileSnapshotInput): AgentProfileSnapshot {
     return transact(
       this.#db,
@@ -534,53 +591,7 @@ export class AgentProfileStore {
           .get(input.attemptId) as { attempt_id: string } | undefined;
         if (attempt === undefined) throw new StoreError("NotFound", "no such Attempt");
 
-        const profile = this.getProfile(input.profileId);
-        if (profile.deletedAt !== null) {
-          throw new StoreError("Conflict", "cannot snapshot a deleted Agent Profile");
-        }
-        if (profile.agentId !== input.adapter.agentId) {
-          throw new StoreError(
-            "CapabilityUnavailable",
-            "Agent Profile does not match verified Adapter discovery",
-          );
-        }
-        if (!input.adapter.capabilities.includes("PermissionMapping")) {
-          throw new StoreError(
-            "CapabilityUnavailable",
-            "verified Adapter does not declare Permission Mapping capability",
-          );
-        }
-        const mappings = input.adapter.permissionMappings.filter(
-          (candidate) => candidate.requestedMode === profile.permissionMode,
-        );
-        const mapping = mappings[0];
-        if (mapping === undefined || mappings.length !== 1) {
-          throw new StoreError(
-            "CapabilityUnavailable",
-            "verified Adapter must provide exactly one Permission Mapping for the saved mode",
-          );
-        }
-        if (isPermissionExpansion(mapping)) {
-          throw new StoreError(
-            "ConfirmationRequired",
-            "effective Permission Mode is broader than the saved user intent",
-          );
-        }
-        const snapshot: AgentProfileSnapshot = {
-          profileId: profile.profileId,
-          profileVersion: profile.profileVersion,
-          agentId: profile.agentId,
-          accountRef: profile.accountRef,
-          model: profile.model,
-          mode: profile.mode,
-          permissionMode: profile.permissionMode,
-          secretRefs: structuredClone(profile.secretRefs),
-          secretReferenceIdentities: profile.secretRefs.map(secretReferenceIdentity),
-          adapterCapabilities: [...input.adapter.capabilities],
-          adapterCapabilitiesHash: canonicalSha256(input.adapter.capabilities),
-          permissionMapping: structuredClone(mapping),
-          permissionMappingHash: canonicalSha256(mapping),
-        };
+        const snapshot = this.previewAttemptSnapshot(input.profileId, input.adapter);
         const snapshotHash = canonicalSha256(snapshot);
         this.#db
           .prepare(

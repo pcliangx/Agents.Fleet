@@ -7,16 +7,19 @@ import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { type DaemonHandshakeConfig, NdjsonDecoder } from "@agents-fleet/transport";
 import type { ProofVerifier } from "./auth/proof-verifier.js";
-import { type ConnectionSink, ControlDispatcher } from "./control-dispatcher.js";
-import type { TrustCommandRouter } from "./repository-trust/trust-command-router.js";
+import {
+  type CommandRouter,
+  type ConnectionSink,
+  ControlDispatcher,
+} from "./control-dispatcher.js";
 
 export interface StartServerOptions {
   readonly socketDir: string;
   readonly config: DaemonHandshakeConfig;
   readonly verifier: ProofVerifier;
   readonly token: Uint8Array;
-  /** R1-02 — production command router; omitted in handshake-only tests. */
-  readonly router?: TrustCommandRouter;
+  /** Production command router; omitted in handshake-only tests. */
+  readonly router?: CommandRouter;
 }
 
 export interface StartedServer {

@@ -60,6 +60,49 @@ export const TASK_MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: "command-surface-state-versions",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE tasks ADD COLUMN state_version INTEGER NOT NULL DEFAULT 1
+          CHECK (state_version >= 1);
+        ALTER TABLE attempts ADD COLUMN state_version INTEGER NOT NULL DEFAULT 1
+          CHECK (state_version >= 1);
+        ALTER TABLE attempts ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'Start'
+          CHECK (command_kind IN ('Start','Retry','Resume'));
+        ALTER TABLE attempts ADD COLUMN source_attempt_id TEXT REFERENCES attempts(attempt_id);
+        ALTER TABLE attempts ADD COLUMN launch_confirmation_challenge_id TEXT;
+      `);
+    },
+  },
+  {
+    version: 11,
+    name: "launch-confirmation-plans",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE attempts ADD COLUMN launch_command_id TEXT;
+        ALTER TABLE attempts ADD COLUMN failure_reason TEXT;
+        CREATE UNIQUE INDEX idx_attempts_launch_command
+          ON attempts(launch_command_id) WHERE launch_command_id IS NOT NULL;
+
+        CREATE TABLE launch_confirmation_plans (
+          challenge_id TEXT PRIMARY KEY
+            REFERENCES confirmation_challenges(challenge_id) ON DELETE CASCADE,
+          target_command_id TEXT NOT NULL,
+          command_type TEXT NOT NULL CHECK (command_type IN ('Start','Retry','Resume')),
+          task_id TEXT NOT NULL REFERENCES tasks(task_id),
+          source_attempt_id TEXT REFERENCES attempts(attempt_id),
+          normalized_command_json TEXT NOT NULL,
+          plan_json TEXT NOT NULL,
+          preview_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_launch_confirmation_target
+          ON launch_confirmation_plans(target_command_id, created_at);
+      `);
+    },
+  },
 ];
 
 export type TaskLifecycle = "Draft" | "Runnable" | "Cancelled";
@@ -81,6 +124,7 @@ export interface TaskRecord {
   readonly workspaceId: string;
   readonly lifecycle: TaskLifecycle;
   readonly taskSpecVersion: number;
+  readonly stateVersion: number;
 }
 
 export interface AttemptRecord {
@@ -89,6 +133,10 @@ export interface AttemptRecord {
   readonly status: AttemptStatus;
   readonly specSnapshot: unknown;
   readonly taskSpecVersion: number;
+  readonly stateVersion: number;
+  readonly commandKind: "Start" | "Retry" | "Resume";
+  readonly sourceAttemptId: string | null;
+  readonly launchConfirmationChallengeId: string | null;
 }
 
 export interface DomainEventRecord {
@@ -115,6 +163,7 @@ export interface TaskSpec {
 
 export type StoreErrorCode =
   | "InvalidRequest"
+  | "Forbidden"
   | "Conflict"
   | "NotFound"
   | "CapabilityUnavailable"
@@ -182,6 +231,7 @@ interface TaskRow {
   readonly lifecycle: TaskLifecycle;
   readonly spec_json: string;
   readonly task_spec_version: number;
+  readonly state_version: number;
 }
 
 export class TaskStore {
@@ -230,7 +280,7 @@ export class TaskStore {
   #taskRow(taskId: string): TaskRow {
     const row = this.#db
       .prepare(
-        "SELECT task_id, workspace_id, lifecycle, spec_json, task_spec_version FROM tasks WHERE task_id = ?",
+        "SELECT task_id, workspace_id, lifecycle, spec_json, task_spec_version, state_version FROM tasks WHERE task_id = ?",
       )
       .get(taskId) as TaskRow | undefined;
     if (row === undefined) throw new StoreError("NotFound", `no such task: ${taskId}`);
@@ -243,6 +293,7 @@ export class TaskStore {
       workspaceId: row.workspace_id,
       lifecycle: row.lifecycle,
       taskSpecVersion: row.task_spec_version,
+      stateVersion: row.state_version,
     };
   }
 
@@ -301,7 +352,7 @@ export class TaskStore {
         assertDraft(row.lifecycle, "edit the spec of");
         this.#db
           .prepare(
-            "UPDATE tasks SET spec_json = ?, task_spec_version = ?, updated_at = ? WHERE task_id = ?",
+            "UPDATE tasks SET spec_json = ?, task_spec_version = ?, state_version = state_version + 1, updated_at = ? WHERE task_id = ?",
           )
           .run(
             JSON.stringify(spec),
@@ -327,7 +378,9 @@ export class TaskStore {
         const row = this.#taskRow(taskId);
         assertDraft(row.lifecycle, "start");
         this.#db
-          .prepare("UPDATE tasks SET lifecycle = 'Runnable', updated_at = ? WHERE task_id = ?")
+          .prepare(
+            "UPDATE tasks SET lifecycle = 'Runnable', state_version = state_version + 1, updated_at = ? WHERE task_id = ?",
+          )
           .run(new Date(this.#now()).toISOString(), taskId);
         this.#appendEvent(taskId, "task-started", {});
         const attemptId = `at_${randomUUID()}`;
@@ -363,11 +416,13 @@ export class TaskStore {
         const row = this.#taskRow(taskId);
         assertCancelable(row.lifecycle);
         this.#db
-          .prepare("UPDATE tasks SET lifecycle = 'Cancelled', updated_at = ? WHERE task_id = ?")
+          .prepare(
+            "UPDATE tasks SET lifecycle = 'Cancelled', state_version = state_version + 1, updated_at = ? WHERE task_id = ?",
+          )
           .run(new Date(this.#now()).toISOString(), taskId);
         const cancelled = this.#db
           .prepare(
-            "UPDATE attempts SET status = 'Cancelled' WHERE task_id = ? AND status = 'Queued'",
+            "UPDATE attempts SET status = 'Cancelled', state_version = state_version + 1 WHERE task_id = ? AND status = 'Queued'",
           )
           .run(taskId);
         this.#appendEvent(taskId, "task-cancelled", {
@@ -382,7 +437,7 @@ export class TaskStore {
   listTasks(workspaceId: string): readonly TaskRecord[] {
     const rows = this.#db
       .prepare(
-        "SELECT task_id, workspace_id, lifecycle, task_spec_version FROM tasks WHERE workspace_id = ? ORDER BY created_at",
+        "SELECT task_id, workspace_id, lifecycle, task_spec_version, state_version FROM tasks WHERE workspace_id = ? ORDER BY created_at",
       )
       .all(workspaceId) as Omit<TaskRow, "spec_json">[];
     return rows.map((r) => ({
@@ -390,13 +445,17 @@ export class TaskStore {
       workspaceId: r.workspace_id,
       lifecycle: r.lifecycle,
       taskSpecVersion: r.task_spec_version,
+      stateVersion: r.state_version,
     }));
   }
 
   listAttempts(taskId: string): readonly AttemptRecord[] {
     const rows = this.#db
       .prepare(
-        "SELECT attempt_id, task_id, status, spec_snapshot_json, task_spec_version FROM attempts WHERE task_id = ? ORDER BY created_seq",
+        `SELECT attempt_id, task_id, status, spec_snapshot_json, task_spec_version,
+                state_version, command_kind, source_attempt_id,
+                launch_confirmation_challenge_id
+         FROM attempts WHERE task_id = ? ORDER BY created_seq`,
       )
       .all(taskId) as {
       attempt_id: string;
@@ -404,6 +463,10 @@ export class TaskStore {
       status: AttemptStatus;
       spec_snapshot_json: string;
       task_spec_version: number;
+      state_version: number;
+      command_kind: "Start" | "Retry" | "Resume";
+      source_attempt_id: string | null;
+      launch_confirmation_challenge_id: string | null;
     }[];
     return rows.map((r) => ({
       attemptId: r.attempt_id,
@@ -411,6 +474,10 @@ export class TaskStore {
       status: r.status,
       specSnapshot: JSON.parse(r.spec_snapshot_json),
       taskSpecVersion: r.task_spec_version,
+      stateVersion: r.state_version,
+      commandKind: r.command_kind,
+      sourceAttemptId: r.source_attempt_id,
+      launchConfirmationChallengeId: r.launch_confirmation_challenge_id,
     }));
   }
 

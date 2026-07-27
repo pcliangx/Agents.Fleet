@@ -6,14 +6,12 @@
 // RT-HS-04 — resolves the shared capability token (dev token file per
 // SV1-AUTH-07, or Keychain in prod) and wires the real mutual-auth verifier.
 //
-// R1-02 composition root: opens the lifecycle database (default
+// R1-07 composition root: opens the lifecycle database (default
 // ~/.agents-fleet/data/fleet.db, overridable via --db-path or
-// AGENTS_FLEET_DB) and wires the Repository Trust production chain
-// (RepositoryTrustStore + IdempotencyStore + PersistentChallengeIssuer +
-// RestrictedGitRunner + TrustService) into a TrustCommandRouter shared by
-// every connection's ControlDispatcher. A read-only-recovery open
+// AGENTS_FLEET_DB) and wires Trust, Worktree, Task, Session and launch modules
+// behind the authenticated Control Dispatcher. A read-only-recovery open
 // (RT-STATE-27) still boots: mutating commands fail RecoveryRequired while
-// the bounded read-only queries remain available on the readable handle.
+// bounded read-only queries remain available on the readable handle.
 
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,15 +22,28 @@ import {
   KeychainTokenSource,
   securityKeychainRunner,
 } from "@agents-fleet/transport";
+import { ClaudeCodeAdapter } from "./agent-adapters/claude-code-adapter.js";
 import { KeychainCapabilityProofVerifier } from "./auth/keychain-capability-proof-verifier.js";
 import { PersistentChallengeIssuer } from "./confirmation/persistent-challenge-issuer.js";
+import type { CommandRouter } from "./control-dispatcher.js";
 import { RestrictedGitRunner } from "./git/restricted-git.js";
+import { LocalHostEnvironment } from "./host-environment/host-environment.js";
 import { TrustCommandRouter } from "./repository-trust/trust-command-router.js";
 import { TrustService } from "./repository-trust/trust-service.js";
+import { ReadOnlyRecoveryCommandRouter, RuntimeCommandRouter } from "./runtime-command-router.js";
 import { startServer } from "./server.js";
+import { createNodePtyProcessSupervisor } from "./session-runtime/process-supervisor.js";
+import { SessionRuntime } from "./session-runtime/session-runtime.js";
+import { AgentProfileStore } from "./storage/agent-profile-store.js";
 import { openDatabase } from "./storage/database.js";
+import { EnvironmentSnapshotStore } from "./storage/environment-snapshot-store.js";
 import { IdempotencyStore } from "./storage/idempotency.js";
 import { ALL_MIGRATIONS } from "./storage/migrations.js";
+import { RepositoryTrustStore } from "./storage/repository-trust-store.js";
+import { StoreError } from "./storage/task-store.js";
+import { WorktreeStore } from "./storage/worktree-store.js";
+import { LaunchCommandCoordinator } from "./task-orchestrator/launch-command-coordinator.js";
+import { TaskOrchestrator } from "./task-orchestrator/task-orchestrator.js";
 import {
   DAEMON_GENERATION,
   DAEMON_ID,
@@ -40,6 +51,7 @@ import {
   DAEMON_PROTOCOL_VERSIONS,
   DAEMON_RUNTIME_LIMIT_PROFILE_VERSION,
 } from "./version.js";
+import { WorktreeManagerImpl } from "./worktree-manager/worktree-manager.js";
 
 const { values } = parseArgs({
   options: { "socket-dir": { type: "string" }, "db-path": { type: "string" } },
@@ -65,7 +77,7 @@ const token = await tokenSource.read();
 mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 const opened = openDatabase({ path: dbPath, migrations: ALL_MIGRATIONS });
 
-let router: TrustCommandRouter;
+let router: CommandRouter;
 if (opened.kind === "ready") {
   if (opened.backupsCreated.length > 0) {
     process.stderr.write(
@@ -77,7 +89,64 @@ if (opened.kind === "ready") {
   const challenges = new PersistentChallengeIssuer({ db, token });
   const runner = new RestrictedGitRunner();
   const service = new TrustService({ db, challenges, idem, runner });
-  router = new TrustCommandRouter({ service, challenges });
+  const trustRouter = new TrustCommandRouter({ service, challenges });
+  const worktreeStore = new WorktreeStore(db);
+  const worktrees = new WorktreeManagerImpl({
+    db,
+    store: worktreeStore,
+    idempotency: idem,
+  });
+  const runtimeStoreDir = join(dirname(dbPath), "runtime");
+  mkdirSync(runtimeStoreDir, { recursive: true, mode: 0o700 });
+  const sessions = new SessionRuntime({
+    db,
+    storeDir: runtimeStoreDir,
+    processSupervisor: createNodePtyProcessSupervisor(),
+    confirmations: challenges,
+  });
+  let launches: LaunchCommandCoordinator;
+  const taskOrchestrator = new TaskOrchestrator({
+    db,
+    sessions,
+    prepareLaunch: async (attempt) => launches.prepareScheduledLaunch(attempt),
+  });
+  const hostEnvironment = new LocalHostEnvironment({
+    appDataRoot: dirname(dbPath),
+    explicitPathEntries: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"],
+  });
+  const claude = new ClaudeCodeAdapter({
+    candidateExecutablePath: process.env.AGENTS_FLEET_CLAUDE_PATH ?? "/usr/local/bin/claude",
+    hostEnvironment,
+  });
+  launches = new LaunchCommandCoordinator({
+    db,
+    idempotency: idem,
+    challenges,
+    profiles: new AgentProfileStore(db),
+    environments: new EnvironmentSnapshotStore(db),
+    trustStore: new RepositoryTrustStore(db),
+    worktreeStore,
+    worktrees,
+    hostEnvironment,
+    adapterFor: (agentId) => {
+      if (agentId !== claude.agentId) {
+        throw new StoreError("CapabilityUnavailable", "Agent Adapter is unavailable");
+      }
+      return claude;
+    },
+    managedWorktreeRoot: join(dirname(dbPath), "worktrees"),
+  });
+  router = new RuntimeCommandRouter({
+    db,
+    idempotency: idem,
+    challenges,
+    taskOrchestrator,
+    launches,
+    autoLaunch: true,
+    sessions,
+    worktrees,
+    fallback: trustRouter,
+  });
 } else {
   // RT-STATE-27 — read-only recovery. Keep the daemon up for bounded
   // diagnostics; every state-changing command fails RecoveryRequired. When a
@@ -88,13 +157,19 @@ if (opened.kind === "ready") {
     const idem = new IdempotencyStore(db);
     const challenges = new PersistentChallengeIssuer({ db, token });
     const service = new TrustService({ db, challenges, idem, runner: new RestrictedGitRunner() });
-    router = new TrustCommandRouter({ service, challenges, recoveryReason: opened.reason });
+    const trustRouter = new TrustCommandRouter({
+      service,
+      challenges,
+      recoveryReason: opened.reason,
+    });
+    router = new ReadOnlyRecoveryCommandRouter(trustRouter, opened.reason);
   } else {
-    router = new TrustCommandRouter({
+    const trustRouter = new TrustCommandRouter({
       service: null,
       challenges: null,
       recoveryReason: opened.reason,
     });
+    router = new ReadOnlyRecoveryCommandRouter(trustRouter, opened.reason);
   }
 }
 

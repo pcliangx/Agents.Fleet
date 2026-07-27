@@ -28,9 +28,34 @@ export interface ChallengeDisplay {
   readonly fields: readonly ChallengeField[];
 }
 
+export type SideEffectClass = "read" | "reversible" | "destructive" | "external";
+
+/** Public, inert identity facts shown/fetched with an RT-CMD-18 challenge. */
+export interface ConfirmationTargetIdentity {
+  readonly targetType: string;
+  readonly targetId: string;
+  readonly generation?: number;
+  readonly fencingToken?: number;
+}
+
+/** Optimistic state bindings that must still match when a command executes. */
+export interface ConfirmationExpectedStateVersion {
+  readonly targetType: string;
+  readonly targetId: string;
+  readonly stateVersion: number;
+}
+
 export interface ConfirmationChallenge {
   readonly challengeId: string;
   readonly kind: ConfirmationKind;
+  /** RT-CMD-17/18 command discriminator, when the challenge authorizes a command. */
+  readonly commandType?: string;
+  /** RT-CMD-18 — always Daemon-derived for a side-effect challenge. */
+  readonly sideEffectClass?: SideEffectClass;
+  /** RT-CMD-18 — authoritative target scope, never supplied by Renderer display text. */
+  readonly targetIdentities?: readonly ConfirmationTargetIdentity[];
+  /** RT-CMD-18 — state versions bound into bindingHashes. */
+  readonly expectedStateVersions?: readonly ConfirmationExpectedStateVersion[];
   readonly display: ChallengeDisplay;
   /** sha256 hex of the canonicalized preview payload. */
   readonly payloadHash: string;

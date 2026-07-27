@@ -8,12 +8,14 @@ import type {
   CommandId,
   FencingToken,
   Generation,
-  Receipt,
+  ProfileId,
   SessionId,
   TaskId,
   WorkspaceId,
+  WorktreeId,
 } from "../identity.js";
 import type { ConfirmationReceipt } from "./confirmation.js";
+import type { InputSource } from "./stream.js";
 
 export interface CommandEnvelope<P = unknown> {
   readonly commandId: CommandId;
@@ -26,41 +28,48 @@ export interface CommandEnvelope<P = unknown> {
   readonly expectedGeneration: Generation | undefined;
   readonly attachmentId: AttachmentId | undefined;
   readonly fencingToken: FencingToken | undefined;
-  readonly confirmationReceipt: Receipt | undefined;
+  readonly confirmationReceipt: ConfirmationReceipt | undefined;
   // RT-REPO-06 — the Main-signed one-time repository-trust receipt is a
   // structured object (challengeId + proof + confirmedAt), not a bare string.
   readonly repositoryTrustReceipt: ConfirmationReceipt | undefined;
-  readonly launchConfirmationReceipt: Receipt | undefined;
+  readonly launchConfirmationReceipt: ConfirmationReceipt | undefined;
   readonly payload: P;
 }
 
-// RT-CMD-10..18, RT-CMD-03 — the command vocabulary.
-export type CommandKind =
-  | "Start"
-  | "Retry"
-  | "Resume"
-  | "RequestAttemptStop"
-  | "CancelTask"
-  | "TerminateSession"
-  | "WriteSessionInput"
-  | "ResizeSession"
-  | "AcquireControl"
-  | "Attach"
-  | "DisposeWorktree"
+// RT-CMD-10..18, RT-CMD-03 — the closed command vocabulary. Keeping the
+// runtime list beside the type lets ControlDispatcher reject unknown kinds
+// before routing instead of turning them into InternalFailure.
+export const COMMAND_KINDS = [
+  "Start",
+  "Retry",
+  "Resume",
+  "RequestAttemptStop",
+  "CancelTask",
+  "TerminateSession",
+  "WriteSessionInput",
+  "ResizeSession",
+  "AcquireControl",
+  "Attach",
+  "DisposeWorktree",
   // R1-02 — Repository Trust production chain (RT-REPO-01..06).
-  | "PrepareTrustCandidate"
-  | "IssueRepositoryTrustChallenge"
-  | "ConfirmRepositoryTrust"
-  | "ValidateAndActivateTrust"
-  | "RevokeRepositoryTrust"
-  | "InspectRepositoryTrust"
-  | "GetConfirmationChallenge";
+  "PrepareTrustCandidate",
+  "IssueRepositoryTrustChallenge",
+  "ConfirmRepositoryTrust",
+  "ValidateAndActivateTrust",
+  "RevokeRepositoryTrust",
+  "InspectRepositoryTrust",
+  "GetConfirmationChallenge",
+  "IssueLaunchConfirmationChallenge",
+  "IssueSideEffectConfirmationChallenge",
+] as const;
 
-// Minimal payload shapes for the commands #1 needs to route. Later tickets
-// expand each. WriteSessionInput/ResizeSession/TerminateSession require the
-// RT-CMD-04 identity triple (attachment + generation + fencing token).
+export type CommandKind = (typeof COMMAND_KINDS)[number];
+
+// WriteSessionInput/ResizeSession/TerminateSession carry their RT-CMD-04
+// identity triple in the envelope (attachment + generation + fencing token).
 export interface WriteSessionInputPayload {
   readonly bytes: Uint8Array;
+  readonly source: InputSource;
 }
 
 export interface ResizeSessionPayload {
@@ -71,6 +80,49 @@ export interface ResizeSessionPayload {
 export interface AttachPayload {
   readonly sessionId: SessionId;
   readonly fromSeq: number | undefined;
+}
+
+export type LaunchCommandKind = "Start" | "Retry" | "Resume";
+export type StopCommandKind = "RequestAttemptStop" | "CancelTask" | "TerminateSession";
+
+export type WorktreeMode =
+  | "CreateFromBase"
+  | "ContinueCurrentWorktree"
+  | "Rebaseline"
+  | "FromCommit";
+
+export interface PlannedWorktreeSelection {
+  readonly worktreeId: WorktreeId;
+  readonly canonicalPath: string;
+  readonly branchName: string;
+}
+
+export interface LaunchCommandPayload {
+  readonly userIdentity: string;
+  readonly profileId: ProfileId;
+  readonly worktreeMode: WorktreeMode;
+  readonly baseCommitSha: string;
+  /** Present only for modes that create a new Fleet-managed Worktree. */
+  readonly plannedWorktree?: PlannedWorktreeSelection;
+}
+
+export interface IssueLaunchConfirmationChallengePayload {
+  readonly commandType: LaunchCommandKind;
+  readonly targetCommandId: CommandId;
+  readonly command: LaunchCommandPayload;
+}
+
+export interface IssueSideEffectConfirmationChallengePayload {
+  readonly commandType: StopCommandKind;
+  readonly targetCommandId: CommandId;
+}
+
+export interface DisposeWorktreePayload {
+  readonly worktreeId: WorktreeId;
+  readonly expectedFilesystemIdentity: { readonly dev: number; readonly ino: number };
+  readonly expectedStateFingerprint: string;
+  readonly integrationTarget: { readonly ref: string | null; readonly sha: string };
+  readonly branchDisposition: "preserve";
 }
 
 export type EmptyPayload = Record<string, never>;
@@ -135,9 +187,9 @@ export interface GetConfirmationChallengePayload {
 
 // Maps a CommandKind to its payload type. Unspecified kinds use EmptyPayload.
 export interface CommandPayloadMap {
-  readonly Start: unknown;
-  readonly Retry: unknown;
-  readonly Resume: unknown;
+  readonly Start: LaunchCommandPayload;
+  readonly Retry: LaunchCommandPayload;
+  readonly Resume: LaunchCommandPayload;
   readonly RequestAttemptStop: EmptyPayload;
   readonly CancelTask: EmptyPayload;
   readonly TerminateSession: EmptyPayload;
@@ -145,7 +197,7 @@ export interface CommandPayloadMap {
   readonly ResizeSession: ResizeSessionPayload;
   readonly AcquireControl: EmptyPayload;
   readonly Attach: AttachPayload;
-  readonly DisposeWorktree: EmptyPayload;
+  readonly DisposeWorktree: DisposeWorktreePayload;
   readonly PrepareTrustCandidate: PrepareTrustCandidatePayload;
   readonly IssueRepositoryTrustChallenge: IssueRepositoryTrustChallengePayload;
   readonly ConfirmRepositoryTrust: ConfirmRepositoryTrustPayload;
@@ -153,6 +205,8 @@ export interface CommandPayloadMap {
   readonly RevokeRepositoryTrust: RevokeRepositoryTrustPayload;
   readonly InspectRepositoryTrust: InspectRepositoryTrustPayload;
   readonly GetConfirmationChallenge: GetConfirmationChallengePayload;
+  readonly IssueLaunchConfirmationChallenge: IssueLaunchConfirmationChallengePayload;
+  readonly IssueSideEffectConfirmationChallenge: IssueSideEffectConfirmationChallengePayload;
 }
 
 export type PayloadFor<K extends CommandKind> = CommandPayloadMap[K];

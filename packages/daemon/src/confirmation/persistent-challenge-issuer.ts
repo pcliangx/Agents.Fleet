@@ -25,6 +25,7 @@ import type { Migration } from "../storage/database.js";
 import {
   assertChallengeDisplayBounded,
   type ChallengePreview,
+  challengeDescriptor,
   hashPreviewFact,
   type IssuerOptions,
 } from "./challenge-issuer.js";
@@ -41,6 +42,8 @@ const CONSUMED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 interface ChallengeRow {
   readonly challenge_id: string;
   readonly kind: ConfirmationKind;
+  /** Absent on a readable pre-v12 database opened in recovery mode. */
+  readonly descriptor_json?: string;
   readonly display_json: string;
   readonly payload_hash: string;
   readonly binding_hashes_json: string;
@@ -53,6 +56,10 @@ interface ChallengeRow {
 const toChallenge = (row: ChallengeRow): ConfirmationChallenge => ({
   challengeId: row.challenge_id,
   kind: row.kind,
+  ...(JSON.parse(row.descriptor_json ?? "{}") as Pick<
+    ConfirmationChallenge,
+    "commandType" | "sideEffectClass" | "targetIdentities" | "expectedStateVersions"
+  >),
   display: JSON.parse(row.display_json) as ChallengeDisplay,
   payloadHash: row.payload_hash,
   bindingHashes: JSON.parse(row.binding_hashes_json) as string[],
@@ -80,6 +87,15 @@ export class PersistentChallengeIssuer {
             consumed_at TEXT
           );
         `);
+      },
+    },
+    {
+      version: 12,
+      name: "confirmation-challenge-descriptor",
+      up: (db) => {
+        db.exec(
+          "ALTER TABLE confirmation_challenges ADD COLUMN descriptor_json TEXT NOT NULL DEFAULT '{}'",
+        );
       },
     },
   ];
@@ -140,6 +156,7 @@ export class PersistentChallengeIssuer {
     const challenge: ConfirmationChallenge = {
       challengeId: `ch_${randomUUID()}`,
       kind: preview.kind,
+      ...challengeDescriptor(preview),
       display: preview.display,
       payloadHash: hashPreviewFact(preview.payload),
       bindingHashes: preview.bindingFacts.map(hashPreviewFact),
@@ -150,12 +167,14 @@ export class PersistentChallengeIssuer {
     this.#db
       .prepare(
         `INSERT INTO confirmation_challenges
-         (challenge_id, kind, display_json, payload_hash, binding_hashes_json, impact_summary_hash, issued_at, expires_at, consumed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         (challenge_id, kind, descriptor_json, display_json, payload_hash,
+          binding_hashes_json, impact_summary_hash, issued_at, expires_at, consumed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         challenge.challengeId,
         challenge.kind,
+        JSON.stringify(challengeDescriptor(preview)),
         JSON.stringify(challenge.display),
         challenge.payloadHash,
         JSON.stringify(challenge.bindingHashes),
