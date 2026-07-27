@@ -277,6 +277,39 @@ const makeHostileRepo = async (
 // --- tests -------------------------------------------------------------------
 
 describe("WorktreeProvisioner.provisionWorktree (SV1-FILE-11 / RT-WORKTREE-11)", () => {
+  it("materializes the managed branch without deleting or reusing an existing branch", async () => {
+    await withTempRoot(async (root) => {
+      const repo = await makeRepo(join(root, "repo"));
+      const target = join(root, "wt-managed");
+      const result = await new WorktreeProvisioner().provisionWorktree({
+        repository: await repoOf(repo.root),
+        baseCommitSha: repo.head,
+        targetPath: target,
+        branchName: "fleet/managed",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.worktree.branchName).toBe("fleet/managed");
+      expect(setupGit(["-C", target, "branch", "--show-current"], root)).toBe("fleet/managed");
+
+      const collision = await new WorktreeProvisioner().provisionWorktree({
+        repository: await repoOf(repo.root),
+        baseCommitSha: repo.head,
+        targetPath: join(root, "wt-collision"),
+        branchName: "fleet/managed",
+      });
+      expect(expectFailure(collision)).toMatchObject({
+        kind: "ProvisionFailed",
+        reason: "branch-collision",
+        leftover: "none",
+      });
+      expect(existsSync(join(root, "wt-collision"))).toBe(false);
+      expect(setupGit(["show-ref", "--verify", "refs/heads/fleet/managed"], repo.root)).toContain(
+        repo.head,
+      );
+    });
+  });
+
   it("materializes a clean repository at the confirmed SHA", async () => {
     await withTempRoot(async (root) => {
       const repo = await makeRepo(join(root, "repo"));

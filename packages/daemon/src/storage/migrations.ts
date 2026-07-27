@@ -12,6 +12,7 @@ import { ENVIRONMENT_SNAPSHOT_MIGRATIONS } from "./environment-snapshot-store.js
 import { IdempotencyStore } from "./idempotency.js";
 import { REPOSITORY_TRUST_MIGRATIONS } from "./repository-trust-store.js";
 import { TASK_MIGRATIONS } from "./task-store.js";
+import { WORKTREE_MIGRATIONS } from "./worktree-store.js";
 
 export const ALL_MIGRATIONS: readonly Migration[] = (() => {
   const all = [
@@ -21,6 +22,7 @@ export const ALL_MIGRATIONS: readonly Migration[] = (() => {
     ...PersistentChallengeIssuer.migrations,
     ...AGENT_PROFILE_MIGRATIONS,
     ...ENVIRONMENT_SNAPSHOT_MIGRATIONS,
+    ...WORKTREE_MIGRATIONS,
   ].sort((a, b) => a.version - b.version);
   const versions = all.map((m) => m.version);
   if (new Set(versions).size !== versions.length) {

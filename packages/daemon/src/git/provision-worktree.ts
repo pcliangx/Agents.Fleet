@@ -60,6 +60,11 @@ export interface ProvisionRequest {
   readonly baseCommitSha: string;
   /** Planned canonical Worktree path. Must not exist; never created on failure. */
   readonly targetPath: string;
+  /**
+   * R1 managed branch. Omit only for the R0 detached-checkout fixture.
+   * `git worktree add -b` fails on collision and never reuses/deletes a branch.
+   */
+  readonly branchName?: string;
 }
 
 export interface FilterFinding {
@@ -88,6 +93,7 @@ export type ProvisionFailure =
         | "invalid-request"
         | "identity-drift"
         | "target-exists"
+        | "branch-collision"
         | "not-a-repository"
         | "git-failed"
         | "git-timeout"
@@ -104,7 +110,8 @@ export interface ProvisionedWorktree {
   readonly worktreePath: string;
   readonly filesystemIdentity: FilesystemIdentity;
   readonly headCommitSha: string;
-  readonly materializedBy: "git-worktree-add";
+  readonly branchName: string | null;
+  readonly materializedBy: "git-worktree-add" | "reconciled";
   /** Number of tree paths the preflight filter scan covered. */
   readonly scannedPaths: number;
   readonly gitVersion: string;
@@ -197,17 +204,118 @@ export class WorktreeProvisioner {
     this.env = buildProvisionGitEnv();
   }
 
+  /**
+   * RT-WORKTREE-06 — observe the exact target left by a crash after
+   * `git worktree add` but before the Ready transaction. This never creates,
+   * rewrites or removes anything. Only an exact path / Repository / branch /
+   * HEAD match is returned as complete; every mismatch remains unowned.
+   */
+  async inspectExistingWorktree(request: ProvisionRequest): Promise<ProvisionResult> {
+    const { repository, baseCommitSha, targetPath, branchName } = request;
+    if (!SHA_RE.test(baseCommitSha) || branchName === undefined || branchName.length === 0) {
+      return failed("invalid-request", "reconciliation requires full managed plan facts");
+    }
+    try {
+      const canonicalRepository = await realpath(repository.workingTreeRoot);
+      const repositoryStat = await lstat(repository.workingTreeRoot);
+      if (
+        canonicalRepository !== repository.workingTreeRoot ||
+        !repositoryStat.isDirectory() ||
+        repositoryStat.dev !== repository.filesystemIdentity.dev ||
+        repositoryStat.ino !== repository.filesystemIdentity.ino
+      ) {
+        return failed("identity-drift", "repository identity changed", "unknown");
+      }
+      const canonicalTarget = await realpath(targetPath);
+      const targetStat = await lstat(targetPath);
+      if (canonicalTarget !== targetPath || !targetStat.isDirectory()) {
+        return failed("identity-drift", "planned target identity cannot be proven", "unknown");
+      }
+
+      const version = await this.runGit(["--version"], this.neutralCwd);
+      if (!version.ok) return withUnknownLeftover(version);
+      const rootCommon = await this.runGit(
+        ["-C", repository.workingTreeRoot, "rev-parse", "--git-common-dir"],
+        repository.workingTreeRoot,
+      );
+      if (!rootCommon.ok) return withUnknownLeftover(rootCommon);
+      const targetCommon = await this.runGit(
+        ["-C", targetPath, "rev-parse", "--git-common-dir"],
+        repository.workingTreeRoot,
+      );
+      if (!targetCommon.ok) return withUnknownLeftover(targetCommon);
+      const rootCommonPath = await realpath(
+        resolveGitPath(repository.workingTreeRoot, rootCommon.stdout.trim()),
+      );
+      const targetCommonPath = await realpath(
+        resolveGitPath(targetPath, targetCommon.stdout.trim()),
+      );
+      if (rootCommonPath !== targetCommonPath) {
+        return failed("identity-drift", "target belongs to another Repository", "unknown");
+      }
+
+      const toplevel = await this.runGit(
+        ["-C", targetPath, "rev-parse", "--show-toplevel"],
+        repository.workingTreeRoot,
+      );
+      if (!toplevel.ok) return withUnknownLeftover(toplevel);
+      const head = await this.runGit(
+        ["-C", targetPath, "rev-parse", "--verify", "HEAD^{commit}"],
+        repository.workingTreeRoot,
+      );
+      if (!head.ok) return withUnknownLeftover(head);
+      const branch = await this.runGit(
+        ["-C", targetPath, "symbolic-ref", "--short", "HEAD"],
+        repository.workingTreeRoot,
+      );
+      if (!branch.ok) return withUnknownLeftover(branch);
+      if (
+        toplevel.stdout.trim() !== targetPath ||
+        head.stdout.trim() !== baseCommitSha ||
+        branch.stdout.trim() !== branchName
+      ) {
+        return failed(
+          "output-unparseable",
+          "existing target does not match managed plan",
+          "unknown",
+        );
+      }
+      return {
+        ok: true,
+        worktree: {
+          worktreePath: targetPath,
+          filesystemIdentity: { dev: targetStat.dev, ino: targetStat.ino },
+          headCommitSha: baseCommitSha,
+          branchName,
+          materializedBy: "reconciled",
+          scannedPaths: 0,
+          gitVersion: version.stdout.trim(),
+          observedAt: new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      return failed(
+        "identity-drift",
+        `existing target cannot be reconciled: ${message(error)}`,
+        "unknown",
+      );
+    }
+  }
+
   // SV1-FILE-11 / RT-WORKTREE-11 — materialize a Fleet-managed Worktree at a
   // confirmed commit without executing any Repository- or user-config-declared
   // external program, or fail closed before creating anything.
   async provisionWorktree(request: ProvisionRequest): Promise<ProvisionResult> {
-    const { repository, baseCommitSha, targetPath } = request;
+    const { repository, baseCommitSha, targetPath, branchName } = request;
 
     if (!SHA_RE.test(baseCommitSha)) {
       return failed("invalid-request", `baseCommitSha is not a full commit SHA: ${baseCommitSha}`);
     }
     if (targetPath.includes("\0")) {
       return failed("invalid-request", "targetPath contains NUL");
+    }
+    if (branchName !== undefined && (branchName.length === 0 || branchName.includes("\0"))) {
+      return failed("invalid-request", "branchName is empty or contains NUL");
     }
 
     // SV1-FILE-10 — re-verify the declared Repository identity immediately
@@ -344,7 +452,9 @@ export class WorktreeProvisioner {
     // to /dev/null, no path carries a filter attribute (proven above),
     // fsmonitor/pager/diff/credential/submodule are pinned off.
     const add = await this.runGit(
-      ["-C", root, "worktree", "add", "--detach", targetPath, baseCommitSha],
+      branchName === undefined
+        ? ["-C", root, "worktree", "add", "--detach", targetPath, baseCommitSha]
+        : ["-C", root, "worktree", "add", "-b", branchName, targetPath, baseCommitSha],
       root,
     );
     if (!add.ok) {
@@ -398,6 +508,17 @@ export class WorktreeProvisioner {
         "unknown",
       );
     }
+    if (branchName !== undefined) {
+      const branch = await this.runGit(["-C", targetPath, "symbolic-ref", "--short", "HEAD"], root);
+      if (!branch.ok) return withUnknownLeftover(branch);
+      if (branch.stdout.trim() !== branchName) {
+        return failed(
+          "output-unparseable",
+          `materialized branch ${branch.stdout.trim()} != ${branchName}`,
+          "unknown",
+        );
+      }
+    }
 
     const st = await lstat(targetPath);
     return {
@@ -406,6 +527,7 @@ export class WorktreeProvisioner {
         worktreePath: targetPath,
         filesystemIdentity: { dev: st.dev, ino: st.ino },
         headCommitSha: baseCommitSha,
+        branchName: branchName ?? null,
         materializedBy: "git-worktree-add",
         scannedPaths: treeEntries.length,
         gitVersion,
@@ -458,6 +580,9 @@ export class WorktreeProvisioner {
       const stderr = String(err.stderr ?? err.message ?? "unknown git failure").trim();
       if (/not a git repository/i.test(stderr)) {
         return failed("not-a-repository", stderr.slice(0, 500));
+      }
+      if (/a branch named .* already exists|already checked out at/i.test(stderr)) {
+        return failed("branch-collision", stderr.slice(0, 500));
       }
       return failed("git-failed", stderr.slice(0, 500));
     }
@@ -525,6 +650,9 @@ const withUnknownLeftover = (result: { ok: false; failure: ProvisionFailure }): 
 };
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const resolveGitPath = (cwd: string, path: string): string =>
+  path.startsWith("/") ? path : `${cwd}/${path}`;
 
 // GitExecRequest re-exported for test-side exec seams (same shape as R0-05).
 export type { GitExecRequest };

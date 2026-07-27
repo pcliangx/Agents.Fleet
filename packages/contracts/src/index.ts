@@ -51,6 +51,28 @@ export type {
 } from "./modules/host-environment.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
 export type {
+  DisposeBlocker,
+  DisposeBlockerKind,
+  DisposePreview,
+  DisposePreviewResult,
+  DisposeWorktreeResult,
+  FingerprintBlocker,
+  FingerprintBlockerReason,
+  GitChange,
+  GitChangeStatus,
+  GitObservation,
+  InspectWorktreeResult,
+  IntegrationTarget,
+  ProvisionWorktreeResult,
+  UntrackedEntry,
+  WorktreeDiffView,
+  WorktreeEntryType,
+  WorktreeInspection,
+  WorktreeManager,
+  WorktreeManagerFailure,
+  WorktreeManagerFailureKind,
+} from "./modules/worktree-manager.js";
+export type {
   MinimumHardware,
   RendererPath,
   SupportedPlatformMatrix,
