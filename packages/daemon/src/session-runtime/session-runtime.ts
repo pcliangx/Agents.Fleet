@@ -60,6 +60,7 @@ interface SessionRuntimeOptions {
   readonly receiptTimeoutMs?: number;
   readonly agentTimeoutMs?: number;
   readonly processProbe?: (pid: number) => ProcessProbe;
+  readonly waitForExecBarrier?: (barrier: ExecBarrier, timeoutMs: number) => Promise<boolean>;
   readonly now?: () => number;
   /** RT-T-11 crash injection at protocol boundaries. */
   readonly onLaunchStep?: (step: LaunchStep) => void;
@@ -165,6 +166,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #receiptTimeoutMs: number;
   readonly #agentTimeoutMs: number;
   readonly #processProbe: (pid: number) => ProcessProbe;
+  readonly #waitForExecBarrier: (barrier: ExecBarrier, timeoutMs: number) => Promise<boolean>;
   readonly #now: () => number;
   readonly #onLaunchStep: ((step: LaunchStep) => void) | undefined;
   readonly #journal: ByteJournal;
@@ -187,6 +189,9 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#receiptTimeoutMs = options.receiptTimeoutMs ?? 3_000;
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 3_000;
     this.#processProbe = options.processProbe ?? probeProcess;
+    this.#waitForExecBarrier =
+      options.waitForExecBarrier ??
+      (async (barrier, timeoutMs) => await barrier.waitForClose(timeoutMs));
     this.#now = options.now ?? Date.now;
     this.#onLaunchStep = options.onLaunchStep;
     this.#journal = new ByteJournal({ storeDir: options.storeDir, db: options.db });
@@ -921,7 +926,7 @@ export class SessionRuntime implements SessionRuntimeContract {
     if (receipt === null) return null;
 
     const remainingMs = Math.max(0, deadline - Date.now());
-    if (!(await options.execBarrier.waitForClose(remainingMs))) return null;
+    await this.#waitForExecBarrier(options.execBarrier, Math.min(remainingMs, 100));
     const failureDeadline = Math.min(deadline, Date.now() + 100);
     while (Date.now() < failureDeadline) {
       if (existsSync(options.failurePath)) return null;
@@ -951,12 +956,14 @@ export class SessionRuntime implements SessionRuntimeContract {
     }
     if (existsSync(options.failurePath)) return null;
     if (this.#pendingExits.has(options.prepared.plannedSessionId)) return null;
+    if (!processIsAlive(receipt.pid)) return null;
 
-    // The authenticated socket was held by the inert bootstrap and is
-    // close-on-exec. EOF plus the absence of a durable exec failure proves the
-    // authorized image transition even when Host process enumeration is
-    // unavailable. Identity remains partial so restart Reconciliation will
-    // stay Probing rather than claim a full match.
+    // The durable receipt means the trusted bootstrap reached the authorized
+    // exec boundary. When close-on-exec EOF or Host process enumeration is not
+    // observable, the still-live PTY owner plus the absence of a durable exec
+    // failure/exit is enough for the current Daemon to create the Session with
+    // partial identity. Restart Reconciliation will remain Probing rather than
+    // claim a full match.
     return {
       ...receipt,
       pgid: receipt.pid,
@@ -1424,6 +1431,15 @@ const createExecBarrier = async (): Promise<ExecBarrier> => {
       await closeServer(server);
     },
   };
+};
+
+const processIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
+  }
 };
 
 const probeProcess = (pid: number): ProcessProbe => {

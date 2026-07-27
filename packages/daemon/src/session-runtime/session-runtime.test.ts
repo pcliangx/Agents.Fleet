@@ -302,6 +302,37 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     }
   });
 
+  it("observes the committed Agent when close-on-exec EOF is unavailable", async () => {
+    const { db, root, prepared, counterPath } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      processProbe: () => ({ kind: "unavailable" }),
+      waitForExecBarrier: async () => false,
+    });
+
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    try {
+      await waitFor(() => existsSync(counterPath));
+      const execReceipt = JSON.parse(
+        readFileSync(join(root, "launch", prepared.launchNonce, "exec-receipt.json"), "utf8"),
+      ) as { readonly pid: number };
+      const intent = db
+        .prepare("SELECT bootstrap_pid FROM launch_intents WHERE launch_nonce = ?")
+        .get(prepared.launchNonce) as { readonly bootstrap_pid: number };
+      expect(execReceipt.pid).toBe(intent.bootstrap_pid);
+      expect(launched).toMatchObject({
+        kind: "running",
+        attemptId: "attempt-1",
+        sessionId: prepared.plannedSessionId,
+      });
+      expect(readFileSync(counterPath, "utf8")).toBe("x");
+    } finally {
+      await runtime.terminate(prepared.plannedSessionId);
+    }
+  });
+
   it("exposes raw PTY bytes only through the durable Session frame reader", async () => {
     const { db, root, prepared } = await setupPreparedLaunch();
     const runtime = new SessionRuntime({
