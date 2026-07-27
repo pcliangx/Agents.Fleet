@@ -790,18 +790,27 @@ export class SessionRuntime implements SessionRuntimeContract {
     );
   }
 
-  issueTerminateSessionChallenge(lease: ControlLease): ConfirmationChallenge {
+  issueTerminateSessionChallenge(
+    lease: ControlLease,
+    targetCommandId?: string,
+  ): ConfirmationChallenge {
     this.#assertControlLease(lease);
-    return this.#requireConfirmations().issue(this.#terminateSessionPreview(lease));
+    return this.#requireConfirmations().issue(
+      this.#terminateSessionPreview(lease, targetCommandId),
+    );
+  }
+
+  authorizeTerminateSession(request: TerminateSessionRequest): void {
+    this.#consumeSideEffectConfirmation(
+      request.confirmationReceipt,
+      this.#terminateSessionPreview(request.lease, request.commandId),
+    );
+    this.#assertControlLease(request.lease);
   }
 
   async terminateSession(request: TerminateSessionRequest): Promise<void> {
-    this.#consumeSideEffectConfirmation(
-      request.confirmationReceipt,
-      this.#terminateSessionPreview(request.lease),
-    );
-    const process = this.#assertControlLease(request.lease);
-    await process.terminate();
+    this.authorizeTerminateSession(request);
+    await this.terminate(request.lease.sessionId);
   }
 
   readSessionDelta(attachmentId: string, fromSeq: number): SessionDeltaBatch {
@@ -1640,7 +1649,7 @@ export class SessionRuntime implements SessionRuntimeContract {
     return this.#confirmations;
   }
 
-  #terminateSessionPreview(lease: ControlLease): ChallengePreview {
+  #terminateSessionPreview(lease: ControlLease, targetCommandId?: string): ChallengePreview {
     const facts = this.#db
       .prepare(
         `SELECT sessions.generation AS session_generation, sessions.availability,
@@ -1671,10 +1680,27 @@ export class SessionRuntime implements SessionRuntimeContract {
     }
     return {
       kind: "side-effect",
+      commandType: "TerminateSession",
+      sideEffectClass: "destructive",
+      targetIdentities: [
+        {
+          targetType: "Session",
+          targetId: lease.sessionId,
+          generation: lease.generation,
+        },
+        {
+          targetType: "Attachment",
+          targetId: lease.attachmentId,
+          generation: lease.generation,
+          fencingToken: lease.fencingToken,
+        },
+      ],
+      expectedStateVersions: [],
       display: {
         title: "Terminate Session",
         fields: [
           { label: "Command", value: "TerminateSession" },
+          { label: "Side-effect Class", value: "destructive" },
           { label: "Session", value: lease.sessionId },
           { label: "Generation", value: String(lease.generation) },
           { label: "Attachment", value: lease.attachmentId },
@@ -1686,6 +1712,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       },
       payload: {
         commandType: "TerminateSession",
+        targetCommandId: targetCommandId ?? null,
         sessionId: lease.sessionId,
         generation: lease.generation,
       },
@@ -1728,10 +1755,32 @@ export class SessionRuntime implements SessionRuntimeContract {
   ): ChallengePreview {
     return {
       kind: "side-effect",
+      commandType: "TakeoverControl",
+      sideEffectClass: "destructive",
+      targetIdentities: [
+        {
+          targetType: "Session",
+          targetId: target.session_id,
+          generation: target.generation,
+        },
+        {
+          targetType: "Attachment",
+          targetId: confirmedHolder.attachmentId,
+          generation: confirmedHolder.generation,
+          fencingToken: confirmedHolder.fencingToken,
+        },
+        {
+          targetType: "Attachment",
+          targetId: attachmentId,
+          generation: target.generation,
+        },
+      ],
+      expectedStateVersions: [],
       display: {
         title: "Take Over Session Control",
         fields: [
           { label: "Command", value: "TakeoverControl" },
+          { label: "Side-effect Class", value: "destructive" },
           { label: "Session", value: target.session_id },
           { label: "Generation", value: String(target.generation) },
           { label: "Current holder", value: holder.attachment_id },
@@ -2136,13 +2185,18 @@ export class SessionRuntime implements SessionRuntimeContract {
       throw new StoreError("Conflict", `Attempt is ${from}, cannot become ${to}`);
     }
     if (to === "Waiting") {
-      this.#db.prepare("UPDATE attempts SET status = ? WHERE attempt_id = ?").run(to, attemptId);
+      this.#db
+        .prepare(
+          "UPDATE attempts SET status = ?, state_version = state_version + 1 WHERE attempt_id = ?",
+        )
+        .run(to, attemptId);
       return;
     }
     this.#db
       .prepare(
         `UPDATE attempts
-         SET status = ?, waiting_reason = NULL, resume_status = NULL
+         SET status = ?, waiting_reason = NULL, resume_status = NULL,
+             state_version = state_version + 1
          WHERE attempt_id = ?`,
       )
       .run(to, attemptId);

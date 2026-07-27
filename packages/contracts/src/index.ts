@@ -29,7 +29,12 @@ export * as TaskViewProjection from "./lifecycle/projection.js";
 export * as RepositoryTrust from "./lifecycle/repository-trust.js";
 export * as Session from "./lifecycle/session.js";
 export * as Task from "./lifecycle/task.js";
-export type { FilesystemIdentity } from "./lifecycle/worktree.js";
+export type {
+  ExistingWorktreeTargetBinding,
+  FilesystemIdentity,
+  PlannedWorktreeTargetBinding,
+  WorktreeTargetBinding,
+} from "./lifecycle/worktree.js";
 export * as Worktree from "./lifecycle/worktree.js";
 export { sameFilesystemIdentity } from "./lifecycle/worktree.js";
 export type {
@@ -72,6 +77,9 @@ export type {
 export type {
   PreparedLaunch,
   ScheduleNextResult,
+  StopCommandImpact,
+  StopCommandResult,
+  StopSessionImpact,
   TaskOrchestrator,
 } from "./modules/task-orchestrator.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";

@@ -80,6 +80,8 @@ export interface ResizeSessionRequest {
 }
 
 export interface TerminateSessionRequest {
+  /** RT-CMD-16 — present on the routed production path and bound by the challenge. */
+  readonly commandId?: string;
   readonly lease: ControlLease;
   readonly confirmationReceipt: ConfirmationReceipt;
 }
@@ -155,7 +157,11 @@ export interface SessionRuntime {
   writeSessionInput(request: WriteSessionInputRequest): Promise<InputIntent>;
   inspectInputIntent(commandId: string): InputIntent | null;
   resizeSession(request: ResizeSessionRequest): Promise<void>;
-  issueTerminateSessionChallenge(lease: ControlLease): ConfirmationChallenge;
+  issueTerminateSessionChallenge(
+    lease: ControlLease,
+    targetCommandId?: string,
+  ): ConfirmationChallenge;
+  authorizeTerminateSession(request: TerminateSessionRequest): void;
   terminateSession(request: TerminateSessionRequest): Promise<void>;
   readSessionDelta(attachmentId: string, fromSeq: number): SessionDeltaBatch;
   createSessionSnapshot(sessionId: string): Promise<Snapshot>;

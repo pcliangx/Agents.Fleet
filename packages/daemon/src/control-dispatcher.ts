@@ -4,8 +4,8 @@
 // computes daemonProof over the negotiation transcript (RT-HS-04); clientProof
 // is verified by the injected ProofVerifier. Any handshake failure closes the
 // socket immediately: no Attachment, no command executed (RT-HS-04 / RT-STREAM-03).
-// R1-02 routes the Repository Trust command chain via TrustCommandRouter;
-// every other kind stays on the not-implemented stub.
+// R1-07 routes the closed command vocabulary through an injected production
+// router while keeping handshake, envelope validation and error shaping here.
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -13,10 +13,12 @@ import type {
   ClientHello,
   CommandEnvelope,
   CommandId,
+  CommandKind,
   DaemonHello,
   ErrorCode,
   Nonce,
 } from "@agents-fleet/contracts";
+import { COMMAND_KINDS } from "@agents-fleet/contracts";
 import {
   buildProofTranscript,
   computeProof,
@@ -24,8 +26,10 @@ import {
   negotiate,
   type ProofTranscript,
 } from "@agents-fleet/transport";
+import { AgentAdapterError } from "./agent-adapters/claude-code-adapter.js";
 import type { ProofVerifier } from "./auth/proof-verifier.js";
-import { CommandError, type TrustCommandRouter } from "./repository-trust/trust-command-router.js";
+import { HostEnvironmentError } from "./host-environment/host-environment.js";
+import { CommandError } from "./repository-trust/trust-command-router.js";
 import { StoreError } from "./storage/task-store.js";
 
 export interface ConnectionSink {
@@ -35,6 +39,12 @@ export interface ConnectionSink {
 
 export type DispatcherState = "awaiting-hello" | "awaiting-auth" | "ready" | "closed";
 
+export interface CommandRouter {
+  /** Route ownership, not a promise that the current daemon mode permits execution. */
+  handles(kind: string): boolean;
+  execute(kind: CommandKind, env: CommandEnvelope): Promise<unknown>;
+}
+
 // RT-ERR-01 — stable code + user-readable message + retryability + commandId.
 // StoreError codes are already RT-ERR-02 codes and map straight through;
 // retryable is false for this slice's failures (ConfirmationRequired /
@@ -43,7 +53,12 @@ export type DispatcherState = "awaiting-hello" | "awaiting-auth" | "ready" | "cl
 // Unknown exceptions collapse to InternalFailure with a generic message — no
 // internal paths, env vars or secrets leak into the error (RT-ERR-01).
 const toErrorShape = (e: unknown, commandId: CommandId) => {
-  if (e instanceof StoreError || e instanceof CommandError) {
+  if (
+    e instanceof StoreError ||
+    e instanceof CommandError ||
+    e instanceof AgentAdapterError ||
+    e instanceof HostEnvironmentError
+  ) {
     return { code: e.code as ErrorCode, message: e.message, retryable: false, commandId };
   }
   return {
@@ -64,7 +79,7 @@ export class ControlDispatcher {
     private readonly verifier: ProofVerifier,
     private readonly sink: ConnectionSink,
     private readonly token: Uint8Array,
-    private readonly router?: TrustCommandRouter,
+    private readonly router?: CommandRouter,
   ) {}
 
   get currentState(): DispatcherState {
@@ -148,12 +163,17 @@ export class ControlDispatcher {
       );
       return;
     }
+    if (!(COMMAND_KINDS as readonly string[]).includes(kind)) {
+      this.sendError("InvalidRequest", `unknown command kind: ${kind}`, commandId as CommandId);
+      return;
+    }
 
-    // R1-02 — Repository Trust production chain. Kinds the router does not
-    // handle keep the #1 not-implemented stub until their tickets land.
+    // R1-02/R1-07 — authenticated command routing. Domain behavior remains
+    // behind the injected module router; the Dispatcher owns only the
+    // cross-cutting envelope/error boundary (RT-MOD-01/07).
     if (this.router?.handles(kind)) {
       try {
-        const result = await this.router.execute(kind as never, env);
+        const result = await this.router.execute(kind as CommandKind, env);
         this.sink.send({ commandId, result });
       } catch (e) {
         const err = toErrorShape(e, commandId as CommandId);
@@ -173,8 +193,11 @@ export class ControlDispatcher {
   }
 
   private daemonHello(): DaemonHello {
+    if (this.selectedProtocolVersion === undefined) {
+      throw new Error("handshake selected protocol version is missing");
+    }
     return {
-      selectedProtocolVersion: this.selectedProtocolVersion!,
+      selectedProtocolVersion: this.selectedProtocolVersion,
       daemonId: this.config.daemonId,
       daemonGeneration: this.config.daemonGeneration,
       platformMatrixVersion: this.config.platformMatrixVersion,

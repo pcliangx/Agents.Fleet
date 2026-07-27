@@ -93,6 +93,7 @@ export type RepositoryValidationFailure =
         | "corrupt"
         | "identity-drift"
         | "git-failed"
+        | "git-unavailable"
         | "git-timeout"
         | "output-unparseable";
       detail: string;
@@ -159,6 +160,19 @@ export interface RepositoryInspection {
 export type RepositoryInspectionResult =
   | { ok: true; inspection: RepositoryInspection }
   | { ok: false; failure: RepositoryValidationFailure };
+
+export type CommitObjectVerificationResult =
+  | { readonly ok: true; readonly commitSha: string }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "invalid-sha"
+        | "git-unavailable"
+        | "not-a-commit"
+        | "repository-identity-drift"
+        | "repository-validation-failed";
+      readonly detail: string;
+    };
 
 export interface GitExecRequest {
   readonly argv: readonly string[];
@@ -494,6 +508,98 @@ export class RestrictedGitRunner {
     };
   }
 
+  // RT-WORKTREE-01/04 — resolve a user-selected full SHA through the Active
+  // Repository's object database and require that the SHA names a commit
+  // object itself. Comparing the peeled result with the input rejects both
+  // non-commit objects and annotated-tag object IDs.
+  async verifyCommitObject(
+    candidate: RepositoryCandidate,
+    bound: {
+      readonly commonGitDir: string;
+      readonly commonGitDirIdentity: FilesystemIdentity;
+    },
+    commitSha: string,
+  ): Promise<CommitObjectVerificationResult> {
+    if (!SHA_RE.test(commitSha)) {
+      return { ok: false, reason: "invalid-sha", detail: "commit SHA must be full lowercase hex" };
+    }
+    const inspected = await this.inspectValidatedRepository(candidate, bound);
+    if (!inspected.ok) {
+      return {
+        ok: false,
+        reason:
+          inspected.failure.kind === "RepositoryInvalid" &&
+          inspected.failure.reason === "identity-drift"
+            ? "repository-identity-drift"
+            : inspected.failure.kind === "RepositoryInvalid" &&
+                inspected.failure.reason === "git-unavailable"
+              ? "git-unavailable"
+              : "repository-validation-failed",
+        detail: inspected.failure.detail,
+      };
+    }
+    const resolved = await this.runGit(
+      ["-C", candidate.canonicalRoot, "rev-parse", "--verify", `${commitSha}^{commit}`],
+      candidate.canonicalRoot,
+      buildRestrictedGitEnvironment(),
+    );
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        reason:
+          resolved.failure.kind === "RepositoryInvalid"
+            ? resolved.failure.reason === "git-failed"
+              ? "not-a-commit"
+              : resolved.failure.reason === "git-unavailable"
+                ? "git-unavailable"
+                : "repository-validation-failed"
+            : "repository-validation-failed",
+        detail:
+          resolved.failure.kind === "RepositoryInvalid" && resolved.failure.reason === "git-failed"
+            ? `SHA ${commitSha} is not a commit object in the Active Repository`
+            : resolved.failure.detail,
+      };
+    }
+    if (resolved.stdout.trim() !== commitSha) {
+      return {
+        ok: false,
+        reason: "not-a-commit",
+        detail: `SHA ${commitSha} is not a commit object in the Active Repository`,
+      };
+    }
+
+    const postDrift = await recheckCandidateIdentity(candidate);
+    if (postDrift !== null) {
+      return {
+        ok: false,
+        reason: "repository-identity-drift",
+        detail: postDrift.ok ? "Repository identity changed" : postDrift.failure.detail,
+      };
+    }
+    try {
+      const commonPath = await realpath(bound.commonGitDir);
+      const commonIdentity = await lstat(commonPath);
+      if (
+        commonPath !== bound.commonGitDir ||
+        commonIdentity.dev !== bound.commonGitDirIdentity.dev ||
+        commonIdentity.ino !== bound.commonGitDirIdentity.ino
+      ) {
+        return {
+          ok: false,
+          reason: "repository-identity-drift",
+          detail: "common Repository identity changed while verifying commit",
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "repository-identity-drift",
+        detail: `cannot re-stat common Git directory: ${message(error)}`,
+      };
+    }
+    return { ok: true, commitSha };
+  }
+
   private async runGit(
     args: readonly string[],
     cwd: string,
@@ -525,6 +631,16 @@ export class RestrictedGitRunner {
       }
       if (typeof err.code === "number" && opts.allowExitCodes?.includes(err.code)) {
         return { ok: true, stdout: String(err.stdout ?? "") };
+      }
+      if (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOEXEC") {
+        return {
+          ok: false,
+          failure: {
+            kind: "RepositoryInvalid",
+            reason: "git-unavailable",
+            detail: "restricted Git executable could not be started",
+          },
+        };
       }
       const stderr = String(err.stderr ?? err.message ?? "unknown git failure").trim();
       if (/not a git repository/i.test(stderr)) {

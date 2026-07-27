@@ -14,11 +14,14 @@ import { randomUUID } from "node:crypto";
 import {
   type ChallengeDisplay,
   type ConfirmationChallenge,
+  type ConfirmationExpectedStateVersion,
   type ConfirmationKind,
   type ConfirmationReceipt,
+  type ConfirmationTargetIdentity,
   type ConsumeResult,
   checkLimit,
   FROZEN_RUNTIME_LIMIT_PROFILE,
+  type SideEffectClass,
 } from "@agents-fleet/contracts";
 import { canonicalSha256Hex } from "../crypto/canonical-hash.js";
 import { StoreError } from "../storage/task-store.js";
@@ -26,6 +29,10 @@ import { validateConsume } from "./consume-validation.js";
 
 export interface ChallengePreview {
   readonly kind: ConfirmationKind;
+  readonly commandType?: string;
+  readonly sideEffectClass?: SideEffectClass;
+  readonly targetIdentities?: readonly ConfirmationTargetIdentity[];
+  readonly expectedStateVersions?: readonly ConfirmationExpectedStateVersion[];
   /** The only thing the dialog renders — structured, secret-free, inert text. */
   readonly display: ChallengeDisplay;
   /** Authoritative preview payload (canonicalized + hashed into payloadHash). */
@@ -46,6 +53,20 @@ export interface IssuerOptions {
 }
 
 export const hashPreviewFact = canonicalSha256Hex;
+
+export const challengeDescriptor = (
+  preview: ChallengePreview,
+): Pick<
+  ConfirmationChallenge,
+  "commandType" | "sideEffectClass" | "targetIdentities" | "expectedStateVersions"
+> => ({
+  ...(preview.commandType === undefined ? {} : { commandType: preview.commandType }),
+  ...(preview.sideEffectClass === undefined ? {} : { sideEffectClass: preview.sideEffectClass }),
+  ...(preview.targetIdentities === undefined ? {} : { targetIdentities: preview.targetIdentities }),
+  ...(preview.expectedStateVersions === undefined
+    ? {}
+    : { expectedStateVersions: preview.expectedStateVersions }),
+});
 
 // RT-LIMIT-02 — the challenge display is bounded by the frozen profile's
 // challengeBytes, measured as UTF-8 bytes of its JSON serialization BEFORE
@@ -88,6 +109,7 @@ export class ChallengeIssuer {
     const challenge: OpenChallenge = {
       challengeId: `ch_${randomUUID()}`,
       kind: preview.kind,
+      ...challengeDescriptor(preview),
       display: preview.display,
       payloadHash: hashPreviewFact(preview.payload),
       bindingHashes: preview.bindingFacts.map(hashPreviewFact),
