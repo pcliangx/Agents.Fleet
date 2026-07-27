@@ -601,6 +601,12 @@ export class LaunchCommandCoordinator {
         "baseCommitSha must name a commit object in the Active Repository",
       );
     }
+    if (verified.reason === "git-unavailable") {
+      throw new StoreError(
+        "CapabilityUnavailable",
+        "Restricted Git is unavailable while verifying baseCommitSha",
+      );
+    }
     throw new StoreError(
       "Conflict",
       verified.reason === "repository-identity-drift"

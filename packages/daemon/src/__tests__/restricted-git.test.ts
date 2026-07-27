@@ -320,6 +320,47 @@ describe("RestrictedGitRunner.validateRepository (RT-REPO-02)", () => {
   });
 });
 
+describe("RestrictedGitRunner.verifyCommitObject (RT-WORKTREE-01/04)", () => {
+  it("distinguishes an unavailable Git executable from an invalid commit", async () => {
+    await withTempRoot(async (root) => {
+      const repo = await makeRepo(join(root, "repo"));
+      let failCommitVerification = false;
+      const runner = new RestrictedGitRunner({
+        exec: async (request) => {
+          if (
+            failCommitVerification &&
+            request.argv.some((argument) => argument === `${repo.head}^{commit}`)
+          ) {
+            throw Object.assign(new Error("restricted Git executable is unavailable"), {
+              code: "ENOENT",
+            });
+          }
+          return await defaultGitExec(request);
+        },
+      });
+      const candidate = await candidateOf(repo.root);
+      const validated = await runner.validateRepository(candidate);
+      expect(validated.ok).toBe(true);
+      if (!validated.ok) return;
+
+      failCommitVerification = true;
+      const verified = await runner.verifyCommitObject(
+        candidate,
+        {
+          commonGitDir: validated.repository.commonGitDir,
+          commonGitDirIdentity: validated.repository.commonGitDirIdentity,
+        },
+        repo.head,
+      );
+
+      expect(verified).toMatchObject({
+        ok: false,
+        reason: "git-unavailable",
+      });
+    });
+  });
+});
+
 describe("corrupt repository classification (RT-REPO-02 / RT-T-36)", () => {
   it("bad .git/config is corrupt, not git-failed", async () => {
     await withTempRoot(async (root) => {

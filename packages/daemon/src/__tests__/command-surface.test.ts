@@ -38,7 +38,7 @@ import { ClaudeCodeAdapter } from "../agent-adapters/claude-code-adapter.js";
 import { DevProofVerifier } from "../auth/dev-proof-verifier.js";
 import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import { type ConnectionSink, ControlDispatcher } from "../control-dispatcher.js";
-import { RestrictedGitRunner } from "../git/restricted-git.js";
+import { defaultGitExec, RestrictedGitRunner } from "../git/restricted-git.js";
 import {
   type ExecutableRunner,
   HostEnvironmentError,
@@ -118,6 +118,7 @@ const wire = async (
     readonly launch?: boolean;
     readonly resumeCapability?: boolean;
     readonly autoLaunch?: boolean;
+    readonly gitUnavailableOnCommitVerification?: boolean;
     readonly launchProbeFailure?: boolean;
     readonly launchModel?: string;
   } = {},
@@ -129,6 +130,7 @@ const wire = async (
   readonly tasks: TaskStore;
   readonly worktreeStore: WorktreeStore;
   readonly observedWorktreeIds: readonly string[];
+  readonly worktreeInspectionControl: { fail: boolean };
   readonly launch: LaunchFixture | null;
   readonly sessions: SessionRuntime;
 }> => {
@@ -173,7 +175,19 @@ const wire = async (
     };
   }
   const challenges = new PersistentChallengeIssuer({ db: opened.db, token: TOKEN });
-  const restrictedGit = new RestrictedGitRunner();
+  const restrictedGit = new RestrictedGitRunner({
+    exec: async (request) => {
+      if (
+        options.gitUnavailableOnCommitVerification === true &&
+        request.argv.some((argument) => /^[0-9a-f]{40,64}\^\{commit\}$/.test(argument))
+      ) {
+        throw Object.assign(new Error("restricted Git executable is unavailable"), {
+          code: "ENOENT",
+        });
+      }
+      return await defaultGitExec(request);
+    },
+  });
   const sessions = new SessionRuntime({
     db: opened.db,
     storeDir: join(root, "runtime"),
@@ -188,10 +202,20 @@ const wire = async (
     idempotency: new IdempotencyStore(opened.db),
   });
   const observedWorktreeIds: string[] = [];
+  const worktreeInspectionControl = { fail: false };
   const worktrees: WorktreeManager = {
     provision: async (input) => await worktreeManager.provision(input),
     inspect: async (input) => {
       observedWorktreeIds.push(input.worktreeId);
+      if (worktreeInspectionControl.fail) {
+        return {
+          ok: false,
+          failure: {
+            kind: "GitFailure",
+            detail: "injected Worktree Git observation failure",
+          },
+        };
+      }
       return await worktreeManager.inspect(input);
     },
     previewDispose: async (input) => await worktreeManager.previewDispose(input),
@@ -364,6 +388,7 @@ const wire = async (
     tasks,
     worktreeStore,
     observedWorktreeIds,
+    worktreeInspectionControl,
     launch,
     sessions,
   };
@@ -1010,6 +1035,40 @@ describe("R1-07 Control Dispatcher command routing", () => {
     expect(fixture.worktreeStore.listForTask(launch.taskId)).toHaveLength(0);
   });
 
+  it("reports a Git executable failure as CapabilityUnavailable during commit verification", async () => {
+    const fixture = await wire({
+      launch: true,
+      gitUnavailableOnCommitVerification: true,
+    });
+    const launch = required(fixture.launch, "launch fixture");
+
+    await fixture.dispatcher.onMessage(
+      envelope(
+        "IssueLaunchConfirmationChallenge",
+        {
+          commandType: "Start",
+          targetCommandId: "cmd-start-without-git",
+          command: {
+            userIdentity: "uid:501",
+            profileId: launch.profileId,
+            worktreeMode: "CreateFromBase",
+            baseCommitSha: launch.headSha,
+          },
+        },
+        { taskId: launch.taskId },
+      ),
+    );
+
+    expect(errorCode(last(fixture.sink))).toBe("CapabilityUnavailable");
+    expect(
+      (
+        fixture.db.prepare("SELECT COUNT(*) AS count FROM confirmation_challenges").get() as {
+          readonly count: number;
+        }
+      ).count,
+    ).toBe(0);
+  });
+
   it("can replace an expired Launch Confirmation for the same target command", async () => {
     const fixture = await wire({ launch: true });
     const launch = required(fixture.launch, "launch fixture");
@@ -1315,6 +1374,7 @@ describe("R1-07 Control Dispatcher command routing", () => {
       commandId: "cmd-terminate-one",
       confirmationReceipt: sign(challenge),
     } as CommandEnvelope;
+    fixture.worktreeInspectionControl.fail = true;
     await fixture.dispatcher.onMessage(terminateCommand);
 
     expect(resultOf(last(fixture.sink))).toEqual({

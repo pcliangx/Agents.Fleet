@@ -93,6 +93,7 @@ export type RepositoryValidationFailure =
         | "corrupt"
         | "identity-drift"
         | "git-failed"
+        | "git-unavailable"
         | "git-timeout"
         | "output-unparseable";
       detail: string;
@@ -166,6 +167,7 @@ export type CommitObjectVerificationResult =
       readonly ok: false;
       readonly reason:
         | "invalid-sha"
+        | "git-unavailable"
         | "not-a-commit"
         | "repository-identity-drift"
         | "repository-validation-failed";
@@ -529,7 +531,10 @@ export class RestrictedGitRunner {
           inspected.failure.kind === "RepositoryInvalid" &&
           inspected.failure.reason === "identity-drift"
             ? "repository-identity-drift"
-            : "repository-validation-failed",
+            : inspected.failure.kind === "RepositoryInvalid" &&
+                inspected.failure.reason === "git-unavailable"
+              ? "git-unavailable"
+              : "repository-validation-failed",
         detail: inspected.failure.detail,
       };
     }
@@ -542,8 +547,12 @@ export class RestrictedGitRunner {
       return {
         ok: false,
         reason:
-          resolved.failure.kind === "RepositoryInvalid" && resolved.failure.reason === "git-failed"
-            ? "not-a-commit"
+          resolved.failure.kind === "RepositoryInvalid"
+            ? resolved.failure.reason === "git-failed"
+              ? "not-a-commit"
+              : resolved.failure.reason === "git-unavailable"
+                ? "git-unavailable"
+                : "repository-validation-failed"
             : "repository-validation-failed",
         detail:
           resolved.failure.kind === "RepositoryInvalid" && resolved.failure.reason === "git-failed"
@@ -622,6 +631,16 @@ export class RestrictedGitRunner {
       }
       if (typeof err.code === "number" && opts.allowExitCodes?.includes(err.code)) {
         return { ok: true, stdout: String(err.stdout ?? "") };
+      }
+      if (err.code === "ENOENT" || err.code === "EACCES" || err.code === "ENOEXEC") {
+        return {
+          ok: false,
+          failure: {
+            kind: "RepositoryInvalid",
+            reason: "git-unavailable",
+            detail: "restricted Git executable could not be started",
+          },
+        };
       }
       const stderr = String(err.stderr ?? err.message ?? "unknown git failure").trim();
       if (/not a git repository/i.test(stderr)) {

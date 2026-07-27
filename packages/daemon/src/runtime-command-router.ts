@@ -480,18 +480,18 @@ export class RuntimeCommandRouter implements CommandRouter {
       .prepare("SELECT worktree_id FROM attempt_worktree_bindings WHERE attempt_id = ?")
       .get(attemptId) as { readonly worktree_id: string } | undefined;
     if (binding === undefined) return;
+    // RT-CMD-02/03 + ADR-0005 — the lifecycle transition and original
+    // idempotent result are already authoritative. This post-commit,
+    // best-effort RT-CMD-15 observation must not turn an applied stop into
+    // a failure or make the stored result unreachable on replay. The stop
+    // result makes no claim that Git state was saved, reverted, or lost.
     try {
       const observed = await this.#worktrees.inspect({
         worktreeId: worktreeIdFromWire(binding.worktree_id),
       });
-      if (!observed.ok) {
-        throw new Error(observed.failure.detail);
-      }
+      if (!observed.ok) return;
     } catch {
-      throw new StoreError(
-        "Conflict",
-        "process stop was applied but Worktree Git state could not be re-observed",
-      );
+      return;
     }
   }
 
