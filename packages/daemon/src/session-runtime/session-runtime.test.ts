@@ -114,7 +114,11 @@ const createRealProcessSupervisor = async (): Promise<ProcessSupervisor> => {
 };
 
 const setupPreparedLaunch = async (
-  options: { readonly keepAlive?: boolean; readonly missingExecutable?: boolean } = {},
+  options: {
+    readonly keepAlive?: boolean;
+    readonly missingExecutable?: boolean;
+    readonly wrapperExecutable?: boolean;
+  } = {},
 ): Promise<{
   readonly db: DatabaseSync;
   readonly root: string;
@@ -178,9 +182,24 @@ const setupPreparedLaunch = async (
       ? ["setTimeout(() => {}, 300);"]
       : ["setInterval(() => {}, 1000);"]),
   ].join("");
+  const wrapperPath = join(root, "agent-wrapper");
+  if (options.wrapperExecutable === true) {
+    writeFileSync(
+      wrapperPath,
+      '#!/bin/sh\nagent_executable="$1"\nshift\nexec "$agent_executable" "$@"\n',
+      { mode: 0o755 },
+    );
+  }
   const spec: LaunchSpec = {
-    executablePath: options.missingExecutable ? join(root, "missing-agent") : process.execPath,
-    argv: ["-e", script, counterPath],
+    executablePath: options.missingExecutable
+      ? join(root, "missing-agent")
+      : options.wrapperExecutable === true
+        ? wrapperPath
+        : process.execPath,
+    argv:
+      options.wrapperExecutable === true
+        ? [process.execPath, "-e", script, counterPath]
+        : ["-e", script, counterPath],
     cwd: worktreePath,
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     channel: "interactive-pty",
@@ -231,6 +250,56 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     expect(readFileSync(counterPath, "utf8")).toBe("x");
 
     if (first.kind === "running") await runtime.terminate(first.sessionId);
+  });
+
+  it("observes an Agent launched through an executable wrapper", async () => {
+    const { db, root, prepared, counterPath } = await setupPreparedLaunch({
+      wrapperExecutable: true,
+    });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    try {
+      expect(launched).toMatchObject({
+        kind: "running",
+        attemptId: "attempt-1",
+        sessionId: prepared.plannedSessionId,
+      });
+      await waitFor(() => existsSync(counterPath));
+      expect(readFileSync(counterPath, "utf8")).toBe("x");
+    } finally {
+      await runtime.terminate(prepared.plannedSessionId);
+    }
+  });
+
+  it("observes the committed Agent when bootstrap ps stalls and Daemon ps is unavailable", async () => {
+    const { db, root, prepared, counterPath } = await setupPreparedLaunch();
+    const stalledProbePath = join(root, "stalled-ps");
+    writeFileSync(stalledProbePath, "#!/bin/sh\nexec /bin/sleep 10\n", { mode: 0o755 });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      bootstrapProcessProbePath: stalledProbePath,
+      processProbe: () => ({ kind: "unavailable" }),
+    });
+
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    try {
+      expect(launched).toMatchObject({
+        kind: "running",
+        attemptId: "attempt-1",
+        sessionId: prepared.plannedSessionId,
+      });
+      await waitFor(() => existsSync(counterPath));
+      expect(readFileSync(counterPath, "utf8")).toBe("x");
+    } finally {
+      await runtime.terminate(prepared.plannedSessionId);
+    }
   });
 
   it("exposes raw PTY bytes only through the durable Session frame reader", async () => {

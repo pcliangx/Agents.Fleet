@@ -6,7 +6,9 @@
 // original Session without spawning a second bootstrap or Agent.
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -53,9 +55,11 @@ interface SessionRuntimeOptions {
   readonly storeDir: string;
   readonly processSupervisor: ProcessSupervisor;
   readonly bootstrapPath?: string;
+  readonly bootstrapProcessProbePath?: string;
   readonly bootstrapTimeoutMs?: number;
   readonly receiptTimeoutMs?: number;
   readonly agentTimeoutMs?: number;
+  readonly processProbe?: (pid: number) => ProcessProbe;
   readonly now?: () => number;
   /** RT-T-11 crash injection at protocol boundaries. */
   readonly onLaunchStep?: (step: LaunchStep) => void;
@@ -86,6 +90,18 @@ interface ProcessReceipt {
   readonly pgid: number;
   readonly lstart: string;
   readonly command?: string;
+  readonly identityCoverage?: "full" | "pid-pgid";
+}
+
+interface ExecBarrier {
+  readonly config: {
+    readonly host: string;
+    readonly port: number;
+    readonly token: string;
+  };
+  waitForAuthentication(timeoutMs: number): Promise<boolean>;
+  waitForClose(timeoutMs: number): Promise<boolean>;
+  close(): Promise<void>;
 }
 
 interface OutputCaptureState {
@@ -127,7 +143,13 @@ const readReceipt = (path: string): ProcessReceipt | null => {
     ) {
       return null;
     }
-    return value as ProcessReceipt;
+    const identityCoverage =
+      value.identityCoverage === "full" || value.identityCoverage === "pid-pgid"
+        ? value.identityCoverage
+        : value.pgid === value.pid && value.lstart.length > 0
+          ? "full"
+          : "pid-pgid";
+    return { ...(value as ProcessReceipt), identityCoverage };
   } catch {
     return null;
   }
@@ -138,9 +160,11 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #storeDir: string;
   readonly #processSupervisor: ProcessSupervisor;
   readonly #bootstrapPath: string;
+  readonly #bootstrapProcessProbePath: string;
   readonly #bootstrapTimeoutMs: number;
   readonly #receiptTimeoutMs: number;
   readonly #agentTimeoutMs: number;
+  readonly #processProbe: (pid: number) => ProcessProbe;
   readonly #now: () => number;
   readonly #onLaunchStep: ((step: LaunchStep) => void) | undefined;
   readonly #journal: ByteJournal;
@@ -150,6 +174,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   readonly #outputCaptures = new Map<string, OutputCaptureState>();
   readonly #exitSubscriptions = new Map<string, () => void>();
   readonly #exitPromises = new Map<string, Promise<void>>();
+  readonly #pendingExits = new Map<string, PtyExitEvent>();
   readonly #streamFailures = new Map<string, unknown>();
 
   constructor(options: SessionRuntimeOptions) {
@@ -157,9 +182,11 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#storeDir = options.storeDir;
     this.#processSupervisor = options.processSupervisor;
     this.#bootstrapPath = options.bootstrapPath ?? DEFAULT_BOOTSTRAP;
+    this.#bootstrapProcessProbePath = options.bootstrapProcessProbePath ?? "/bin/ps";
     this.#bootstrapTimeoutMs = options.bootstrapTimeoutMs ?? 10_000;
     this.#receiptTimeoutMs = options.receiptTimeoutMs ?? 3_000;
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 3_000;
+    this.#processProbe = options.processProbe ?? probeProcess;
     this.#now = options.now ?? Date.now;
     this.#onLaunchStep = options.onLaunchStep;
     this.#journal = new ByteJournal({ storeDir: options.storeDir, db: options.db });
@@ -402,7 +429,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       const probe =
         row.process_pid === null
           ? ({ kind: "unavailable" } as const)
-          : probeProcess(row.process_pid);
+          : this.#processProbe(row.process_pid);
       const identityMatches =
         probe.kind === "observed" &&
         row.process_pgid !== null &&
@@ -411,6 +438,10 @@ export class SessionRuntime implements SessionRuntimeContract {
         probe.identity.pgid === row.process_pgid &&
         probe.identity.lstart === row.process_started_at &&
         probe.identity.command === row.process_command;
+      const recordedIdentityIsFull =
+        row.process_pgid !== null &&
+        row.process_started_at !== null &&
+        row.process_command !== null;
       const resolution:
         | {
             readonly status: "Uncertain";
@@ -433,12 +464,20 @@ export class SessionRuntime implements SessionRuntimeContract {
               disposition: "Probing",
               reason: "process-identity-unavailable",
             }
-          : {
-              status: "Interrupted",
-              disposition: "ConfirmedAbsent",
-              reason:
-                probe.kind === "absent" ? "process-confirmed-absent" : "process-identity-mismatch",
-            };
+          : probe.kind === "observed" && !recordedIdentityIsFull
+            ? {
+                status: "Uncertain",
+                disposition: "Probing",
+                reason: "recorded-process-identity-incomplete",
+              }
+            : {
+                status: "Interrupted",
+                disposition: "ConfirmedAbsent",
+                reason:
+                  probe.kind === "absent"
+                    ? "process-confirmed-absent"
+                    : "process-identity-mismatch",
+              };
 
       transact(
         this.#db,
@@ -539,17 +578,20 @@ export class SessionRuntime implements SessionRuntimeContract {
           join(this.#storeDir, "launch", row.launch_nonce, "exec-receipt.json"),
         );
         const probe =
-          receipt === null ? ({ kind: "unavailable" } as const) : probeProcess(receipt.pid);
-        const disposition =
+          receipt === null ? ({ kind: "unavailable" } as const) : this.#processProbe(receipt.pid);
+        const identityMatches =
           receipt !== null &&
+          receipt.identityCoverage === "full" &&
           probe.kind === "observed" &&
           probe.identity.pgid === receipt.pgid &&
           probe.identity.lstart === receipt.lstart &&
-          commandMatchesExecutable(probe.identity.command, launch.launchSpec.executablePath)
-            ? "OrphanFound"
-            : probe.kind === "unavailable"
-              ? "Probing"
-              : "ConfirmedAbsent";
+          commandMatchesExecutable(probe.identity.command, launch.launchSpec.executablePath);
+        const disposition = identityMatches
+          ? "OrphanFound"
+          : probe.kind === "unavailable" ||
+              (probe.kind === "observed" && receipt?.identityCoverage !== "full")
+            ? "Probing"
+            : "ConfirmedAbsent";
         this.#markUncertain(launch, "commit-delivery-unknown-after-restart", disposition);
         actions.push({
           action: "marked-uncertain",
@@ -590,12 +632,27 @@ export class SessionRuntime implements SessionRuntimeContract {
     prepared: PreparedLaunch,
     validation: LaunchValidation,
   ): Promise<LaunchSessionResult> {
+    const execBarrier = await createExecBarrier();
+    try {
+      return await this.#launchWithExecBarrier(prepared, validation, execBarrier);
+    } finally {
+      await execBarrier.close();
+    }
+  }
+
+  async #launchWithExecBarrier(
+    prepared: PreparedLaunch,
+    validation: LaunchValidation,
+    execBarrier: ExecBarrier,
+  ): Promise<LaunchSessionResult> {
     const launchDir = join("launch", prepared.launchNonce);
     const config = {
       launchNonce: prepared.launchNonce,
       argvHash: this.#intent(prepared.launchNonce).argv_hash,
       timeoutMs: this.#bootstrapTimeoutMs,
       launchSpec: prepared.launchSpec,
+      execBarrier: execBarrier.config,
+      processProbePath: this.#bootstrapProcessProbePath,
     };
     const written = durableWriteContentObject({
       storeDir: this.#storeDir,
@@ -620,8 +677,10 @@ export class SessionRuntime implements SessionRuntimeContract {
       join(this.#storeDir, launchDir, "bootstrap-receipt.json"),
       this.#receiptTimeoutMs,
     );
+    const barrierAuthenticated = await execBarrier.waitForAuthentication(this.#receiptTimeoutMs);
     if (
       receipt === null ||
+      !barrierAuthenticated ||
       receipt.nonce !== prepared.launchNonce ||
       receipt.argvHash !== config.argvHash ||
       receipt.pid !== bootstrapProcess.pid
@@ -657,11 +716,13 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#recordCommitSent(prepared.launchNonce);
     this.#onLaunchStep?.("afterCommitSent");
 
-    const agent = await this.#waitForAgent(
-      join(this.#storeDir, launchDir, "exec-receipt.json"),
-      this.#agentTimeoutMs,
+    const agent = await this.#waitForAgent({
+      receiptPath: join(this.#storeDir, launchDir, "exec-receipt.json"),
+      failurePath: join(this.#storeDir, launchDir, "exec-failure.json"),
+      timeoutMs: this.#agentTimeoutMs,
       prepared,
-    );
+      execBarrier,
+    });
     if (
       agent === null ||
       agent.nonce !== prepared.launchNonce ||
@@ -673,6 +734,7 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#onLaunchStep?.("afterAgentObserved");
     const result = this.#finalizeRunning(prepared, agent);
     this.#activateOutputCapture(prepared.plannedSessionId);
+    this.#flushPendingExit(prepared);
     return result;
   }
 
@@ -760,6 +822,10 @@ export class SessionRuntime implements SessionRuntimeContract {
   }
 
   #recordExit(prepared: PreparedLaunch, event: PtyExitEvent): void {
+    if (this.inspectSession(prepared.plannedSessionId) === null) {
+      this.#pendingExits.set(prepared.plannedSessionId, event);
+      return;
+    }
     transact(
       this.#db,
       () => {
@@ -784,12 +850,20 @@ export class SessionRuntime implements SessionRuntimeContract {
     this.#forgetProcess(prepared.plannedSessionId);
   }
 
+  #flushPendingExit(prepared: PreparedLaunch): void {
+    const event = this.#pendingExits.get(prepared.plannedSessionId);
+    if (event === undefined) return;
+    this.#pendingExits.delete(prepared.plannedSessionId);
+    this.#recordExit(prepared, event);
+  }
+
   #forgetProcess(sessionId: string): void {
     this.#discardOutputCapture(sessionId);
     this.#exitSubscriptions.get(sessionId)?.();
     this.#exitSubscriptions.delete(sessionId);
     this.#exitPromises.delete(sessionId);
     this.#processes.delete(sessionId);
+    this.#pendingExits.delete(sessionId);
   }
 
   #intent(launchNonce: string): LaunchIntentRow {
@@ -824,32 +898,71 @@ export class SessionRuntime implements SessionRuntimeContract {
     return null;
   }
 
-  async #waitForAgent(
-    receiptPath: string,
-    timeoutMs: number,
-    prepared: PreparedLaunch,
-  ): Promise<ProcessReceipt | null> {
-    const deadline = Date.now() + timeoutMs;
+  async #waitForAgent(options: {
+    readonly receiptPath: string;
+    readonly failurePath: string;
+    readonly timeoutMs: number;
+    readonly prepared: PreparedLaunch;
+    readonly execBarrier: ExecBarrier;
+  }): Promise<ProcessReceipt | null> {
+    const deadline = Date.now() + options.timeoutMs;
+    let receipt: ProcessReceipt | null = null;
     while (Date.now() < deadline) {
-      const receipt = readReceipt(receiptPath);
+      receipt = readReceipt(options.receiptPath);
       if (
         receipt !== null &&
-        receipt.nonce === prepared.launchNonce &&
-        receipt.pid === this.#processes.get(prepared.plannedSessionId)?.pid
+        receipt.nonce === options.prepared.launchNonce &&
+        receipt.pid === this.#processes.get(options.prepared.plannedSessionId)?.pid
       ) {
-        const observed = probeProcess(receipt.pid);
-        if (
-          observed.kind === "observed" &&
-          observed.identity.pgid === receipt.pgid &&
-          observed.identity.lstart === receipt.lstart &&
-          commandMatchesExecutable(observed.identity.command, prepared.launchSpec.executablePath)
-        ) {
-          return { ...receipt, command: observed.identity.command };
-        }
+        break;
       }
       await sleep(50);
     }
-    return null;
+    if (receipt === null) return null;
+
+    const remainingMs = Math.max(0, deadline - Date.now());
+    if (!(await options.execBarrier.waitForClose(remainingMs))) return null;
+    const failureDeadline = Math.min(deadline, Date.now() + 100);
+    while (Date.now() < failureDeadline) {
+      if (existsSync(options.failurePath)) return null;
+      const observed = this.#processProbe(receipt.pid);
+      if (observed.kind === "observed") {
+        if (
+          observed.identity.pgid !== receipt.pgid ||
+          (receipt.identityCoverage === "full" && observed.identity.lstart !== receipt.lstart)
+        ) {
+          return null;
+        }
+        if (
+          commandMatchesExecutable(
+            observed.identity.command,
+            options.prepared.launchSpec.executablePath,
+          )
+        ) {
+          return {
+            ...receipt,
+            lstart: observed.identity.lstart,
+            command: observed.identity.command,
+            identityCoverage: "full",
+          };
+        }
+      }
+      await sleep(10);
+    }
+    if (existsSync(options.failurePath)) return null;
+    if (this.#pendingExits.has(options.prepared.plannedSessionId)) return null;
+
+    // The authenticated socket was held by the inert bootstrap and is
+    // close-on-exec. EOF plus the absence of a durable exec failure proves the
+    // authorized image transition even when Host process enumeration is
+    // unavailable. Identity remains partial so restart Reconciliation will
+    // stay Probing rather than claim a full match.
+    return {
+      ...receipt,
+      pgid: receipt.pid,
+      lstart: "",
+      identityCoverage: "pid-pgid",
+    };
   }
 
   #authorize(prepared: PreparedLaunch, receipt: ProcessReceipt): void {
@@ -870,7 +983,7 @@ export class SessionRuntime implements SessionRuntimeContract {
           .run(
             receipt.pid,
             receipt.pgid,
-            receipt.lstart,
+            receipt.identityCoverage === "full" ? receipt.lstart : null,
             new Date(this.#now()).toISOString(),
             prepared.launchNonce,
           );
@@ -898,10 +1011,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   }
 
   #finalizeRunning(prepared: PreparedLaunch, agent: ProcessReceipt): LaunchSessionResult {
-    if (agent.command === undefined) {
-      throw new StoreError("DataIntegrityFailure", "observed Agent command is missing");
-    }
-    const processCommand = agent.command;
+    const hasFullIdentity = agent.identityCoverage === "full" && agent.command !== undefined;
     const result: LaunchSessionResult = {
       kind: "running",
       attemptId: prepared.attemptId,
@@ -925,8 +1035,8 @@ export class SessionRuntime implements SessionRuntimeContract {
             prepared.attemptId,
             agent.pid,
             agent.pgid,
-            agent.lstart,
-            processCommand,
+            hasFullIdentity ? agent.lstart : null,
+            hasFullIdentity ? agent.command : null,
             now,
             now,
           );
@@ -1232,6 +1342,89 @@ const preparedLaunchFromRow = (
 
 const isResumableAttemptStatus = (status: string | null): status is ResumableAttemptStatus =>
   status === "Starting" || status === "Running" || status === "Stopping";
+
+const resolvesWithin = async (promise: Promise<void>, timeoutMs: number): Promise<boolean> =>
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    void promise.then(() => finish(true));
+  });
+
+const closeServer = async (server: Server): Promise<void> => {
+  if (!server.listening) return;
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  });
+};
+
+const createExecBarrier = async (): Promise<ExecBarrier> => {
+  const host = "127.0.0.1";
+  const token = randomBytes(32).toString("hex");
+  let resolveAuthentication: (() => void) | undefined;
+  let resolveClose: (() => void) | undefined;
+  const authenticated = new Promise<void>((resolve) => {
+    resolveAuthentication = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    resolveClose = resolve;
+  });
+  let authenticatedSocket: Socket | undefined;
+  const server = createServer((socket) => {
+    if (authenticatedSocket !== undefined) {
+      socket.destroy();
+      return;
+    }
+    socket.setEncoding("utf8");
+    let received = "";
+    socket.on("error", () => {});
+    socket.on("data", (chunk: string) => {
+      received += chunk;
+      if (!token.startsWith(received)) {
+        socket.destroy();
+        return;
+      }
+      if (received !== token) return;
+      authenticatedSocket = socket;
+      socket.removeAllListeners("data");
+      socket.once("close", () => resolveClose?.());
+      resolveAuthentication?.();
+      server.close();
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    server.once("error", onError);
+    server.listen({ host, port: 0, exclusive: true }, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  server.on("error", () => {});
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    await closeServer(server);
+    throw new Error("exec barrier did not bind a TCP port");
+  }
+  return {
+    config: { host, port: address.port, token },
+    async waitForAuthentication(timeoutMs) {
+      return await resolvesWithin(authenticated, timeoutMs);
+    },
+    async waitForClose(timeoutMs) {
+      return await resolvesWithin(closed, timeoutMs);
+    },
+    async close() {
+      authenticatedSocket?.destroy();
+      await closeServer(server);
+    },
+  };
+};
 
 const probeProcess = (pid: number): ProcessProbe => {
   const result = spawnSync("/bin/ps", ["-o", "pid=,pgid=,lstart=,command=", "-p", String(pid)], {
