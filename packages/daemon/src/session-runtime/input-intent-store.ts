@@ -8,9 +8,9 @@
 // 已有 Dispatched 时返回原结果，不重复写 PTY（RT-INPUT-04）。
 
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { PtySink } from "@agents-fleet/contracts";
+import type { InputSource, PtySink } from "@agents-fleet/contracts";
 import { DataIntegrityFailure } from "./byte-journal.js";
 import {
   type ContentObjectStep,
@@ -33,6 +33,9 @@ export interface DispatchCommand {
   readonly commandId: string;
   readonly sessionId: string;
   readonly generation: number;
+  readonly attachmentId: string;
+  readonly fencingToken: number;
+  readonly source: InputSource;
   readonly bytes: Uint8Array;
 }
 
@@ -44,6 +47,11 @@ export type DispatchResult =
 
 interface IntentRow {
   readonly input_intent_id: string;
+  readonly session_id: string;
+  readonly generation: number;
+  readonly attachment_id: string;
+  readonly fencing_token: number;
+  readonly source: InputSource;
   readonly content_ref: string;
   readonly sha256: string;
   readonly byte_length: number;
@@ -52,24 +60,27 @@ interface IntentRow {
 }
 
 export const contentObjectRelativePath = (commandId: string): string =>
-  join("input-intents", `${commandId}.bin`);
+  join("input-intents", `${sha256Hex(Buffer.from(commandId, "utf8"))}.bin`);
 
 export class InputIntentStore {
   private readonly storeDir: string;
   private readonly db: DatabaseSync;
-  private readonly ptySink: PtySink;
+  private readonly ptySink: Pick<PtySink, "write">;
+  private readonly now: () => number;
   private readonly onStep: ((step: InputIntentStep, commandId: string) => void) | undefined;
 
   constructor(opts: {
     readonly storeDir: string;
     readonly db: DatabaseSync;
-    readonly ptySink: PtySink;
+    readonly ptySink: Pick<PtySink, "write">;
+    readonly now?: () => number;
     /** 崩溃注入 seam（RT-T-24）：在每个协议边界同步回调。 */
     readonly onStep?: (step: InputIntentStep, commandId: string) => void;
   }) {
     this.storeDir = opts.storeDir;
     this.db = opts.db;
     this.ptySink = opts.ptySink;
+    this.now = opts.now ?? Date.now;
     this.onStep = opts.onStep;
   }
 
@@ -77,7 +88,12 @@ export class InputIntentStore {
     const sha256 = sha256Hex(cmd.bytes);
     const existing = this.intentRow(cmd.commandId);
     if (existing) {
-      if (existing.sha256 !== sha256) {
+      if (
+        existing.sha256 !== sha256 ||
+        existing.session_id !== cmd.sessionId ||
+        existing.generation !== cmd.generation ||
+        existing.source !== cmd.source
+      ) {
         return { status: "IdempotencyConflict", commandId: cmd.commandId };
       }
       // 已有 record：绝不重放 bytes。结果只能是原成功 / Uncertain / 明确失败。
@@ -108,26 +124,34 @@ export class InputIntentStore {
     const written = durableWriteContentObject({
       storeDir: this.storeDir,
       relativeDir: "input-intents",
-      finalName: `${cmd.commandId}.bin`,
+      finalName: basename(contentObjectRelativePath(cmd.commandId)),
       bytes: cmd.bytes,
       onStep: (step) => this.onStep?.(step, cmd.commandId),
     });
 
-    const inputIntentId = `ii-${cmd.commandId}`;
+    const inputIntentId = `ii-${sha256Hex(Buffer.from(cmd.commandId, "utf8")).slice(0, 32)}`;
     withTx(this.db, () => {
       this.db
         .prepare(
-          "INSERT INTO input_intents (input_intent_id, command_id, session_id, generation, content_ref, sha256, byte_length, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'Prepared', ?)",
+          `INSERT INTO input_intents
+             (input_intent_id, command_id, session_id, generation, attachment_id,
+              fencing_token, source, content_ref, sha256, byte_length, redacted_preview,
+              status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Prepared', ?)`,
         )
         .run(
           inputIntentId,
           cmd.commandId,
           cmd.sessionId,
           cmd.generation,
+          cmd.attachmentId,
+          cmd.fencingToken,
+          cmd.source,
           written.relativePath,
           written.sha256,
           written.byteLength,
-          new Date().toISOString(),
+          `[input ${written.byteLength} bytes]`,
+          new Date(this.now()).toISOString(),
         );
     });
     this.onStep?.("afterPreparedTx", cmd.commandId);
@@ -142,7 +166,7 @@ export class InputIntentStore {
         .prepare(
           "UPDATE input_intents SET status = 'Dispatched', dispatched_at = ? WHERE input_intent_id = ?",
         )
-        .run(new Date().toISOString(), inputIntentId);
+        .run(new Date(this.now()).toISOString(), inputIntentId);
     });
     this.onStep?.("afterDispatchedTx", cmd.commandId);
 
@@ -159,13 +183,16 @@ export class InputIntentStore {
         `Input Intent content ${verification.reason} for ${commandId}`,
       );
     }
-    return verification.bytes;
+    return new Uint8Array(verification.bytes);
   };
 
   private readonly intentRow = (commandId: string): IntentRow | undefined =>
     this.db
       .prepare(
-        "SELECT input_intent_id, content_ref, sha256, byte_length, status, data_gap FROM input_intents WHERE command_id = ?",
+        `SELECT input_intent_id, session_id, generation, attachment_id, fencing_token,
+                source, content_ref, sha256, byte_length, status, data_gap
+         FROM input_intents
+         WHERE command_id = ?`,
       )
       .get(commandId) as IntentRow | undefined;
 }
@@ -221,11 +248,11 @@ export const reconcileInputIntents = (
   if (existsSync(intentsDir)) {
     for (const file of readdirSync(intentsDir)) {
       const isTemp = file.startsWith(".tmp-");
-      const commandId = isTemp ? null : file.replace(/\.bin$/, "");
       const hasRecord =
-        commandId !== null &&
-        db.prepare("SELECT 1 AS x FROM input_intents WHERE command_id = ?").get(commandId) !==
-          undefined;
+        !isTemp &&
+        db
+          .prepare("SELECT 1 AS x FROM input_intents WHERE content_ref = ?")
+          .get(join("input-intents", file)) !== undefined;
       if (hasRecord) continue;
       isolatedOrphans.push(
         quarantineFile({

@@ -52,17 +52,22 @@ export type {
   HostEnvironment,
 } from "./modules/host-environment.js";
 export type {
+  AttachmentRuntimeRecord,
   DurableFrameRef,
   LaunchFailedReason,
   LaunchSessionResult,
   LaunchUncertainReason,
   LaunchValidation,
+  ResizeSessionRequest,
   RestartReconciliationAction,
   RestartReconciliationReport,
   ResumableAttemptStatus,
   SessionRuntime,
   SessionRuntimeRecord,
   StoragePressureWait,
+  TakeoverControlRequest,
+  TerminateSessionRequest,
+  WriteSessionInputRequest,
 } from "./modules/session-runtime.js";
 export type {
   PreparedLaunch,

@@ -40,6 +40,9 @@ const main = async (): Promise<void> => {
     commandId: config.commandId,
     sessionId: config.sessionId,
     generation: config.generation,
+    attachmentId: "r0-fixture-attachment",
+    fencingToken: 1,
+    source: "Automation",
     bytes: new Uint8Array(Buffer.from(config.bytesHex, "hex")),
   });
   writeFileSync(join(config.workDir, "writer-outcome.json"), JSON.stringify({ result }));

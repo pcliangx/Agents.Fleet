@@ -11,12 +11,21 @@ import { join } from "node:path";
 import { FakePty } from "@agents-fleet/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DataIntegrityFailure } from "./byte-journal.js";
-import { InputIntentStore, reconcileInputIntents } from "./input-intent-store.js";
+import {
+  contentObjectRelativePath,
+  InputIntentStore,
+  reconcileInputIntents,
+} from "./input-intent-store.js";
 import { openSessionStoreDb } from "./store-schema.js";
 
 const INPUT_BYTES = new Uint8Array([0x6c, 0x73, 0x20, 0x2d, 0x6c, 0x0d, 0x00, 0xff]); // "ls -l\r" + NUL + invalid
 const SESSION = "ses-1";
 const GENERATION = 1;
+const PROVENANCE = {
+  attachmentId: "r0-fixture-attachment",
+  fencingToken: 1,
+  source: "Automation",
+} as const;
 
 describe("InputIntentStore (R0-14 Seam 3)", () => {
   let storeDir: string;
@@ -40,6 +49,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(result.status).toBe("Dispatched");
@@ -56,12 +66,14 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     const second = await store.dispatch({
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(second).toEqual(first);
@@ -74,12 +86,14 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     const conflict = await store.dispatch({
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: new Uint8Array([0x01, 0x02]),
     });
     expect(conflict.status).toBe("IdempotencyConflict");
@@ -101,6 +115,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow("simulated daemon crash");
@@ -113,6 +128,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(retry.status).toBe("Uncertain");
@@ -133,11 +149,12 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow();
     // 磁盘损坏：content object 丢失。
-    unlinkSync(join(storeDir, "input-intents", "cmd-1.bin"));
+    unlinkSync(join(storeDir, contentObjectRelativePath("cmd-1")));
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.dataGaps).toEqual(["cmd-1"]);
@@ -147,6 +164,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(retry.status).toBe("DataGap");
@@ -159,9 +177,10 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
-    writeFileSync(join(storeDir, "input-intents", "cmd-1.bin"), new Uint8Array([0x00]));
+    writeFileSync(join(storeDir, contentObjectRelativePath("cmd-1")), new Uint8Array([0x00]));
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.dataGaps).toEqual(["cmd-1"]);
@@ -182,13 +201,14 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
         commandId: "cmd-1",
         sessionId: SESSION,
         generation: GENERATION,
+        ...PROVENANCE,
         bytes: INPUT_BYTES,
       }),
     ).rejects.toThrow();
 
     const report = reconcileInputIntents(storeDir, db);
     expect(report.isolatedOrphans).toHaveLength(1);
-    expect(report.isolatedOrphans[0]?.originalPath).toContain("cmd-1.bin");
+    expect(report.isolatedOrphans[0]?.originalPath).toContain(contentObjectRelativePath("cmd-1"));
 
     // object 被隔离后，同 commandId 作为全新命令正常 dispatch（此前从未有 record）。
     const store = new InputIntentStore({ storeDir, db, ptySink: sink });
@@ -196,6 +216,7 @@ describe("InputIntentStore (R0-14 Seam 3)", () => {
       commandId: "cmd-1",
       sessionId: SESSION,
       generation: GENERATION,
+      ...PROVENANCE,
       bytes: INPUT_BYTES,
     });
     expect(result.status).toBe("Dispatched");
