@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { appendFile, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import type { ConfirmationChallenge, ConfirmationReceipt } from "@agents-fleet/contracts";
 import { signConfirmation as sign } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,6 +30,7 @@ import { openDatabase } from "../storage/database.js";
 import { IdempotencyStore } from "../storage/idempotency.js";
 import { ALL_MIGRATIONS } from "../storage/migrations.js";
 import { RepositoryTrustStore, type WorkspaceRecord } from "../storage/repository-trust-store.js";
+import { TaskStore } from "../storage/task-store.js";
 
 const GIT = "/usr/bin/git";
 const TOKEN = new TextEncoder().encode("r1-02-trust-service-token");
@@ -77,6 +79,7 @@ interface Wired {
   readonly service: TrustService;
   readonly challenges: PersistentChallengeIssuer;
   readonly store: RepositoryTrustStore;
+  readonly db: DatabaseSync;
   readonly gitCalls: GitExecRequest[];
   setNow: (ms: number) => void;
 }
@@ -104,6 +107,7 @@ const wire = async (dbDir: string): Promise<Wired> => {
     service,
     challenges,
     store: new RepositoryTrustStore(db, () => now),
+    db,
     gitCalls,
     setNow: (ms) => {
       now = ms;
@@ -462,13 +466,19 @@ describe("revokeTrust / inspectRepository (RT-REPO-04/05, SV1-TRUST-05)", () => 
     const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
 
     const revoked = w.service.revokeTrust(cmd("revoke"), trust.trustId);
-    expect(revoked.state).toBe("Revoked");
+    expect(revoked.trust.state).toBe("Revoked");
+    expect(revoked.affectedAttempts).toEqual([]);
+    expect(revoked.processChoice).toBeNull();
     const view = w.service.getWorkspaceWithTrust(mustWorkspace(activated).workspaceId);
     expect(view.trust.state).toBe("Revoked"); // workspace row kept, trust revoked
+    // the runnable gate joins the trust state: no new Attempts (SV1-TRUST-05)
+    expect(() => w.service.assertWorkspaceRunnable(view.workspace.workspaceId)).toThrowError(
+      expect.objectContaining({ code: "Conflict" }),
+    );
 
     const again = w.service.revokeTrust(cmd("revoke2"), trust.trustId);
-    expect(again.state).toBe("Revoked");
-    expect(again.trustVersion).toBe(revoked.trustVersion);
+    expect(again.trust.state).toBe("Revoked");
+    expect(again.trust.trustVersion).toBe(revoked.trust.trustVersion);
   });
 
   it("revoke of a PendingValidation Trust is Revoked and terminal", async () => {
@@ -477,7 +487,7 @@ describe("revokeTrust / inspectRepository (RT-REPO-04/05, SV1-TRUST-05)", () => 
     const w = await wire(root);
     const { trust } = await grantPendingTrust(w, repo.root);
     const revoked = w.service.revokeTrust(cmd("revoke"), trust.trustId);
-    expect(revoked.state).toBe("Revoked");
+    expect(revoked.trust.state).toBe("Revoked");
     await expect(
       w.service.validateAndActivate(cmd("validate"), trust.trustId),
     ).rejects.toThrowError(expect.objectContaining({ code: "Conflict" }));
@@ -496,10 +506,14 @@ describe("revokeTrust / inspectRepository (RT-REPO-04/05, SV1-TRUST-05)", () => 
     expect(inspection.currentBranch).toBe("main");
     expect(inspection.defaultBaseRef).toBeNull(); // never guessed
     expect(inspection.commonGitDir).toBe(join(repo.root, ".git"));
+    // RT-REPO-04 — every ref resolved to a SHA
+    expect(inspection.refs).toContainEqual({ name: "refs/heads/main", sha: repo.head });
+    expect(inspection.refsTruncated).toBe(false);
+    expect(inspection.commonGitDirIdentity.dev).toBeTypeOf("number");
     expect(inspection.observedAt).toBeTypeOf("string");
   });
 
-  it("inspectRepository refuses a revoked Trust and reports drift as a stable error without changing state", async () => {
+  it("identity drift revokes the Active Trust (RT-REPO-05); the Workspace is kept but not runnable", async () => {
     const root = await tempRoot();
     const repo = await makeRepo(join(root, "repo"));
     const w = await wire(root);
@@ -507,18 +521,49 @@ describe("revokeTrust / inspectRepository (RT-REPO-04/05, SV1-TRUST-05)", () => 
     const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
     const workspaceId = mustWorkspace(activated).workspaceId;
 
-    // identity drift: stable error, trust state untouched
+    // the confirmed directory is replaced (new inode) after activation
     await rm(repo.root, { recursive: true, force: true });
     await makeRepo(repo.root);
     await expect(w.service.inspectRepository(workspaceId)).rejects.toThrowError(
       expect.objectContaining({ code: "Conflict" }),
     );
-    expect(w.service.getTrust(trust.trustId).state).toBe("Active"); // no silent state change
+    // RT-REPO-05 — bound-identity drift turns Active into Revoked
+    expect(w.service.getTrust(trust.trustId).state).toBe("Revoked");
+    const view = w.service.getWorkspaceWithTrust(workspaceId);
+    expect(view.workspace.workspaceId).toBe(workspaceId); // workspace row kept
+    expect(() => w.service.assertWorkspaceRunnable(workspaceId)).toThrowError(
+      expect.objectContaining({ code: "Conflict" }),
+    );
 
-    w.service.revokeTrust(cmd("revoke"), trust.trustId);
+    // inspection on a revoked Trust is refused before any Git runs
+    const callsBefore = w.gitCalls.length;
     await expect(w.service.inspectRepository(workspaceId)).rejects.toThrowError(
       expect.objectContaining({ code: "Conflict" }),
     );
+    expect(w.gitCalls.length).toBe(callsBefore);
+  });
+
+  it("a replaced .git at the same path is common-identity drift and revokes (SV1-FILE-10)", async () => {
+    const root = await tempRoot();
+    const repo = await makeRepo(join(root, "repo"));
+    const w = await wire(root);
+    const { trust } = await grantPendingTrust(w, repo.root);
+    const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
+    const workspaceId = mustWorkspace(activated).workspaceId;
+    expect(mustWorkspace(activated).commonGitDirIdentity.dev).toBeTypeOf("number");
+
+    // the working tree keeps its inode, but .git is replaced — a different
+    // Repository must not inherit the old Active Trust (SV1-FILE-10)
+    await rm(join(repo.root, ".git"), { recursive: true, force: true });
+    setupGit(["init", "--initial-branch=main"], repo.root);
+    writeFileSync(join(repo.root, "README.md"), "lookalike\n");
+    setupGit([...IDENTITY, "add", "README.md"], repo.root);
+    setupGit([...IDENTITY, "commit", "-m", "lookalike"], repo.root);
+
+    await expect(w.service.inspectRepository(workspaceId)).rejects.toThrowError(
+      expect.objectContaining({ code: "Conflict" }),
+    );
+    expect(w.service.getTrust(trust.trustId).state).toBe("Revoked"); // RT-REPO-05
   });
 });
 
@@ -584,6 +629,131 @@ describe("command idempotency (RT-CMD-02/03)", () => {
       expect.objectContaining({ code: "NotFound" }),
     );
     expect(w.gitCalls).toEqual([]);
+  });
+});
+
+// --- revoke process disposition + runnable gate (SV1-TRUST-05) -----------------
+
+describe("revoke process disposition (SV1-TRUST-05)", () => {
+  it("non-terminal Attempts require the explicit stop-or-keep choice; the choice and affected Attempts are the outcome", async () => {
+    const root = await tempRoot();
+    const repo = await makeRepo(join(root, "repo"));
+    const w = await wire(root);
+    const { trust } = await grantPendingTrust(w, repo.root);
+    const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
+    const workspaceId = mustWorkspace(activated).workspaceId;
+
+    // a Queued (non-terminal) Attempt exists on this Trust's Workspace
+    const tasks = new TaskStore(w.db);
+    const task = tasks.createTask({ workspaceId, spec: { goal: "long running work" } });
+    tasks.startTask(task.taskId);
+
+    // missing choice -> ConfirmationRequired, nothing is written
+    expect(() => w.service.revokeTrust(cmd("revoke"), trust.trustId)).toThrowError(
+      expect.objectContaining({ code: "ConfirmationRequired" }),
+    );
+    expect(w.service.getTrust(trust.trustId).state).toBe("Active");
+
+    // keep -> revoked, the affected Attempt is reported, the choice persists
+    const outcome = w.service.revokeTrust(cmd("revoke2"), trust.trustId, "keep");
+    expect(outcome.trust.state).toBe("Revoked");
+    expect(outcome.processChoice).toBe("keep");
+    expect(outcome.affectedAttempts).toHaveLength(1);
+    expect(outcome.affectedAttempts[0]).toMatchObject({ taskId: task.taskId, status: "Queued" });
+    expect(w.service.getTrust(trust.trustId).revocationProcessChoice).toBe("keep");
+
+    // revocation blocks new Attempts via the runnable gate
+    expect(() => w.service.assertWorkspaceRunnable(workspaceId)).toThrowError(
+      expect.objectContaining({ code: "Conflict" }),
+    );
+  });
+
+  it("'stop' is accepted and persisted; actual process termination is R1-05's job", async () => {
+    const root = await tempRoot();
+    const repo = await makeRepo(join(root, "repo"));
+    const w = await wire(root);
+    const { trust } = await grantPendingTrust(w, repo.root);
+    const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
+    const tasks = new TaskStore(w.db);
+    const task = tasks.createTask({
+      workspaceId: mustWorkspace(activated).workspaceId,
+      spec: { goal: "work" },
+    });
+    tasks.startTask(task.taskId);
+
+    const outcome = w.service.revokeTrust(cmd("revoke"), trust.trustId, "stop");
+    expect(outcome.trust.state).toBe("Revoked");
+    expect(outcome.processChoice).toBe("stop");
+    expect(w.service.getTrust(trust.trustId).revocationProcessChoice).toBe("stop");
+  });
+});
+
+// --- workspace defaults (RT-OWN-01) ---------------------------------------------
+
+describe("workspace defaults (RT-OWN-01)", () => {
+  it("derived at activation, patched idempotently, enum-validated, Active-only", async () => {
+    const root = await tempRoot();
+    const repo = await makeRepo(join(root, "repo"));
+    const w = await wire(root);
+    const { trust } = await grantPendingTrust(w, repo.root);
+    const activated = await w.service.validateAndActivate(cmd("validate"), trust.trustId);
+    const ws = mustWorkspace(activated);
+    expect(ws.defaults).toEqual({ agentId: null, baseBranch: "main", permissionMode: "Balanced" });
+
+    const updateCmd = cmd("defaults");
+    const patch = { agentId: "claude-code", permissionMode: "Manual" as const };
+    const patched = w.service.updateWorkspaceDefaults(updateCmd, ws.workspaceId, patch);
+    expect(patched.defaults).toEqual({
+      agentId: "claude-code",
+      baseBranch: "main", // untouched fields merge over the stored defaults
+      permissionMode: "Manual",
+    });
+    // replay returns the original result without re-writing (RT-CMD-02)
+    expect(w.service.updateWorkspaceDefaults(updateCmd, ws.workspaceId, patch)).toEqual(patched);
+
+    expect(() =>
+      w.service.updateWorkspaceDefaults(cmd("d2"), ws.workspaceId, {
+        permissionMode: "Root",
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: "InvalidRequest" }));
+    expect(() =>
+      w.service.updateWorkspaceDefaults(cmd("d3"), ws.workspaceId, { shell: "zsh" } as never),
+    ).toThrowError(expect.objectContaining({ code: "InvalidRequest" }));
+
+    // only an Active Trust's Workspace is editable
+    w.service.revokeTrust(cmd("revoke"), trust.trustId);
+    expect(() =>
+      w.service.updateWorkspaceDefaults(cmd("d4"), ws.workspaceId, { agentId: "x" }),
+    ).toThrowError(expect.objectContaining({ code: "Conflict" }));
+  });
+});
+
+// --- concurrent validation is serialized (SV1-TRUST-08) --------------------------
+
+describe("concurrent validateAndActivate (SV1-TRUST-08)", () => {
+  it("two concurrent calls with the same commandId run one Git plan and share the original result", async () => {
+    const root = await tempRoot();
+    const repo = await makeRepo(join(root, "repo"));
+    const w = await wire(root);
+    const { trust } = await grantPendingTrust(w, repo.root);
+
+    const validateCmd = cmd("validate");
+    const [a, b] = await Promise.all([
+      w.service.validateAndActivate(validateCmd, trust.trustId),
+      w.service.validateAndActivate(validateCmd, trust.trustId),
+    ]);
+    expect(a.trust.state).toBe("Active");
+    expect(b).toEqual(a); // the later caller gets the first finisher's result
+    const concurrentCalls = w.gitCalls.length;
+
+    // a sequential validation of another candidate costs a full plan: the
+    // concurrent pair must have cost exactly one
+    const repo2 = await makeRepo(join(root, "repo2"));
+    const second = await grantPendingTrust(w, repo2.root);
+    await w.service.validateAndActivate(cmd("validate2"), second.trust.trustId);
+    const singlePlanCalls = w.gitCalls.length - concurrentCalls;
+    expect(concurrentCalls).toBe(singlePlanCalls);
+    expect(singlePlanCalls).toBeGreaterThan(0);
   });
 });
 

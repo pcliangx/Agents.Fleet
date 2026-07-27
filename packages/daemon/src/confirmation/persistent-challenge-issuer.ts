@@ -14,21 +14,29 @@
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  type ChallengeDisplay,
-  type ConfirmationChallenge,
-  type ConfirmationKind,
-  type ConfirmationReceipt,
-  type ConsumeResult,
-  isChallengeExpired,
+import type {
+  ChallengeDisplay,
+  ConfirmationChallenge,
+  ConfirmationKind,
+  ConfirmationReceipt,
+  ConsumeResult,
 } from "@agents-fleet/contracts";
-import { verifyConfirmation } from "@agents-fleet/transport";
 import type { Migration } from "../storage/database.js";
-import { type ChallengePreview, hashPreviewFact, type IssuerOptions } from "./challenge-issuer.js";
+import {
+  assertChallengeDisplayBounded,
+  type ChallengePreview,
+  hashPreviewFact,
+  type IssuerOptions,
+} from "./challenge-issuer.js";
+import { validateConsume } from "./consume-validation.js";
 
 export interface PersistentIssuerOptions extends IssuerOptions {
   readonly db: DatabaseSync;
 }
+
+// Consumed challenges are retained 30 days as replay evidence — the same
+// retention discipline as idempotency tombstones (RT-CMD-07).
+const CONSUMED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface ChallengeRow {
   readonly challenge_id: string;
@@ -90,6 +98,25 @@ export class PersistentChallengeIssuer {
     this.#maxOpen = options.maxOpen ?? 64;
   }
 
+  // RT-LIMIT-02 — bounded history retention, applied on each issue:
+  // - expired-and-unconsumed rows are dead weight: consume fails closed on
+  //     them ("expired"), so they are purged outright;
+  // - consumed rows are kept 30 days as replay evidence, mirroring the
+  //   idempotency tombstone retention discipline (RT-CMD-07), then purged.
+  // maxOpen keeps its semantics: only unconsumed AND unexpired rows count as
+  // open challenges.
+  #purgeHistory(): void {
+    const nowIso = new Date(this.#now()).toISOString();
+    const consumedCutoff = new Date(this.#now() - CONSUMED_RETENTION_MS).toISOString();
+    this.#db
+      .prepare(
+        `DELETE FROM confirmation_challenges
+         WHERE (consumed_at IS NULL AND expires_at <= ?)
+            OR (consumed_at IS NOT NULL AND consumed_at < ?)`,
+      )
+      .run(nowIso, consumedCutoff);
+  }
+
   #row(challengeId: string): ChallengeRow | undefined {
     return this.#db
       .prepare("SELECT * FROM confirmation_challenges WHERE challenge_id = ?")
@@ -97,6 +124,10 @@ export class PersistentChallengeIssuer {
   }
 
   issue(preview: ChallengePreview): ConfirmationChallenge {
+    // RT-LIMIT-02 — the display is measured against the frozen challengeBytes
+    // limit BEFORE any row is produced; a violation yields no row at all.
+    assertChallengeDisplayBounded(preview.display);
+    this.#purgeHistory();
     const openRow = this.#db
       .prepare(
         "SELECT COUNT(*) AS n FROM confirmation_challenges WHERE consumed_at IS NULL AND expires_at > ?",
@@ -144,10 +175,14 @@ export class PersistentChallengeIssuer {
   /**
    * One-time consume. `current` carries the hashes recomputed from the
    * authoritative facts at execution time (RT-CMD-08/16): any drift since
-   * issue fails closed instead of acting on a stale confirmation. The checks
-   * run in the same fail-closed order as the R0 issuer; the consume mark only
-   * lands if the UPDATE claims the row (unconsumed), and persists across
-   * restarts because it is a database write, not process memory.
+   * issue fails closed instead of acting on a stale confirmation. The
+   * expiry / kind / binding / proof checks are the shared validateConsume
+   * (same fail-closed order as the R0 issuer); only the one-time claim is
+   * issuer-specific: a conditional UPDATE (WHERE consumed_at IS NULL), so
+   * when it runs inside a caller's command transaction (RT-STO-01) a later
+   * failure rolls the mark back together with every other write — a
+   * challenge is burned exactly when the command it authorizes commits, and
+   * the mark persists across restarts because it is a database write.
    */
   consume(
     receipt: ConfirmationReceipt,
@@ -162,22 +197,15 @@ export class PersistentChallengeIssuer {
     const row = this.#row(receipt.challengeId);
     if (row === undefined) return { ok: false, reason: "unknown-challenge" };
     if (row.consumed_at !== null) return { ok: false, reason: "already-consumed" };
-    const challenge = toChallenge(row);
-    if (isChallengeExpired(challenge, atMs ?? this.#now())) {
-      return { ok: false, reason: "expired" };
-    }
-    if (challenge.kind !== expectedKind) return { ok: false, reason: "kind-mismatch" };
-    if (
-      challenge.payloadHash !== current.payloadHash ||
-      challenge.impactSummaryHash !== current.impactSummaryHash ||
-      challenge.bindingHashes.length !== current.bindingHashes.length ||
-      challenge.bindingHashes.some((h, i) => h !== current.bindingHashes[i])
-    ) {
-      return { ok: false, reason: "binding-drift" };
-    }
-    if (!verifyConfirmation(challenge, receipt.confirmedAt, receipt.proof, this.#token)) {
-      return { ok: false, reason: "invalid-proof" };
-    }
+    const checked = validateConsume({
+      challenge: toChallenge(row),
+      expectedKind,
+      current,
+      receipt,
+      token: this.#token,
+      nowMs: atMs ?? this.#now(),
+    });
+    if (!checked.ok) return checked;
     const consumed = this.#db
       .prepare(
         "UPDATE confirmation_challenges SET consumed_at = ? WHERE challenge_id = ? AND consumed_at IS NULL",

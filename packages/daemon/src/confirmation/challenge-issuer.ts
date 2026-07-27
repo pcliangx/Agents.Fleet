@@ -17,9 +17,11 @@ import {
   type ConfirmationKind,
   type ConfirmationReceipt,
   type ConsumeResult,
-  isChallengeExpired,
+  checkLimit,
+  FROZEN_RUNTIME_LIMIT_PROFILE,
 } from "@agents-fleet/contracts";
-import { verifyConfirmation } from "@agents-fleet/transport";
+import { StoreError } from "../storage/task-store.js";
+import { validateConsume } from "./consume-validation.js";
 
 export interface ChallengePreview {
   readonly kind: ConfirmationKind;
@@ -63,6 +65,21 @@ const sha256Hex = (canonical: string): string =>
 
 export const hashPreviewFact = (fact: unknown): string => sha256Hex(canonicalize(fact));
 
+// RT-LIMIT-02 — the challenge display is bounded by the frozen profile's
+// challengeBytes, measured as UTF-8 bytes of its JSON serialization BEFORE
+// any row or Map entry is produced. Shared by both issuers so the persistent
+// and in-memory paths enforce the same bound.
+export const assertChallengeDisplayBounded = (display: ChallengeDisplay): void => {
+  const bytes = Buffer.byteLength(JSON.stringify(display), "utf8");
+  const within = checkLimit(FROZEN_RUNTIME_LIMIT_PROFILE, "challengeBytes", bytes);
+  if (!within.ok) {
+    throw new StoreError(
+      "InvalidRequest",
+      `challenge display is ${bytes} bytes, limit ${within.allowed}`,
+    );
+  }
+};
+
 type OpenChallenge = ConfirmationChallenge & { consumed: boolean };
 
 export class ChallengeIssuer {
@@ -80,6 +97,7 @@ export class ChallengeIssuer {
   }
 
   issue(preview: ChallengePreview): ConfirmationChallenge {
+    assertChallengeDisplayBounded(preview.display);
     const openCount = [...this.#open.values()].filter((c) => !c.consumed).length;
     if (openCount >= this.#maxOpen) {
       throw new Error("confirmation-challenge-capacity: too many open challenges");
@@ -112,7 +130,9 @@ export class ChallengeIssuer {
   /**
    * One-time consume. `current` carries the hashes recomputed from the
    * authoritative facts at execution time (RT-CMD-08/16): any drift since
-   * issue fails closed instead of launching on a stale confirmation.
+   * issue fails closed instead of launching on a stale confirmation. The
+   * expiry / kind / binding / proof checks are the shared validateConsume;
+   * only the one-time claim (the in-memory flag) is issuer-specific.
    */
   consume(
     receipt: ConfirmationReceipt,
@@ -127,21 +147,15 @@ export class ChallengeIssuer {
     const challenge = this.#open.get(receipt.challengeId);
     if (challenge === undefined) return { ok: false, reason: "unknown-challenge" };
     if (challenge.consumed) return { ok: false, reason: "already-consumed" };
-    if (isChallengeExpired(challenge, atMs ?? this.#now())) {
-      return { ok: false, reason: "expired" };
-    }
-    if (challenge.kind !== expectedKind) return { ok: false, reason: "kind-mismatch" };
-    if (
-      challenge.payloadHash !== current.payloadHash ||
-      challenge.impactSummaryHash !== current.impactSummaryHash ||
-      challenge.bindingHashes.length !== current.bindingHashes.length ||
-      challenge.bindingHashes.some((h, i) => h !== current.bindingHashes[i])
-    ) {
-      return { ok: false, reason: "binding-drift" };
-    }
-    if (!verifyConfirmation(challenge, receipt.confirmedAt, receipt.proof, this.#token)) {
-      return { ok: false, reason: "invalid-proof" };
-    }
+    const checked = validateConsume({
+      challenge,
+      expectedKind,
+      current,
+      receipt,
+      token: this.#token,
+      nowMs: atMs ?? this.#now(),
+    });
+    if (!checked.ok) return checked;
     challenge.consumed = true;
     return { ok: true };
   }

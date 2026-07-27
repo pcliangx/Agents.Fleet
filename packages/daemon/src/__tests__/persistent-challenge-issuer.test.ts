@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConfirmationChallenge, ConfirmationReceipt } from "@agents-fleet/contracts";
+import { FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
 import { signConfirmation as sign } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
 import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
@@ -80,6 +81,73 @@ describe("PersistentChallengeIssuer.issue (RT-CMD-17)", () => {
     const { issuer } = openIssuer({ maxOpen: 1 });
     issuer.issue(preview);
     expect(() => issuer.issue(preview)).toThrow(/capacity/);
+  });
+
+  it("expired challenges do not count as open (maxOpen counts unconsumed AND unexpired)", () => {
+    let t = NOW;
+    const { issuer } = openIssuer({ maxOpen: 1, now: () => t });
+    issuer.issue(preview);
+    t = NOW + 61_000; // past the 60 s TTL
+    expect(() => issuer.issue(preview)).not.toThrow();
+  });
+});
+
+describe("challenge display byte guard (RT-LIMIT-02)", () => {
+  const displayFor = (valueLen: number) => ({
+    title: "t",
+    fields: [{ label: "l", value: "x".repeat(valueLen) }],
+  });
+  const OVERHEAD = Buffer.byteLength(JSON.stringify(displayFor(0)), "utf8");
+
+  it("display at the challengeBytes limit is accepted; limit + 1 is InvalidRequest and produces no row", () => {
+    const { issuer, db } = openIssuer();
+    const limit = FROZEN_RUNTIME_LIMIT_PROFILE.challengeBytes;
+    issuer.issue({ ...preview, display: displayFor(limit - OVERHEAD) });
+    expect(() =>
+      issuer.issue({ ...preview, display: displayFor(limit - OVERHEAD + 1) }),
+    ).toThrowError(expect.objectContaining({ code: "InvalidRequest" }));
+    const rows = db.prepare("SELECT COUNT(*) AS n FROM confirmation_challenges").get() as {
+      n: number;
+    };
+    expect(rows.n).toBe(1); // the over-limit issue produced no row
+  });
+});
+
+describe("bounded history retention (RT-LIMIT-02)", () => {
+  it("expired-and-unconsumed rows are purged on the next issue", () => {
+    let t = NOW;
+    const { issuer, db } = openIssuer({ now: () => t });
+    const stale = issuer.issue(preview);
+    t = NOW + 61_000; // past the 60 s TTL — consume would fail closed on it
+    issuer.issue(preview);
+    expect(issuer.getChallenge(stale.challengeId)).toBeUndefined();
+    const rows = db.prepare("SELECT COUNT(*) AS n FROM confirmation_challenges").get() as {
+      n: number;
+    };
+    expect(rows.n).toBe(1);
+  });
+
+  it("consumed rows are kept 30 days as replay evidence (RT-CMD-07 discipline), then purged", () => {
+    let t = NOW;
+    const { issuer } = openIssuer({ now: () => t });
+    const challenge = issuer.issue(preview);
+    const receipt = signFor(challenge);
+    expect(issuer.consume(receipt, "repository-trust", currentFactsOf(challenge))).toEqual({
+      ok: true,
+    });
+
+    t = NOW + 29 * 24 * 60 * 60 * 1000;
+    issuer.issue(preview);
+    expect(issuer.getChallenge(challenge.challengeId)).toBeDefined(); // retained evidence
+    // ...and the receipt is still refused while the row exists
+    expect(issuer.consume(receipt, "repository-trust", currentFactsOf(challenge))).toEqual({
+      ok: false,
+      reason: "already-consumed",
+    });
+
+    t = NOW + 31 * 24 * 60 * 60 * 1000;
+    issuer.issue(preview);
+    expect(issuer.getChallenge(challenge.challengeId)).toBeUndefined(); // purged
   });
 });
 

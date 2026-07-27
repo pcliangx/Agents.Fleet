@@ -24,7 +24,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { RepositoryTrust } from "@agents-fleet/contracts";
+import { type PermissionMode, RepositoryTrust } from "@agents-fleet/contracts";
 import type {
   FilesystemIdentity,
   RepositoryCandidate,
@@ -32,7 +32,7 @@ import type {
   ValidatedRepository,
 } from "../git/restricted-git.js";
 import { type Migration, transact } from "./database.js";
-import { StoreError } from "./task-store.js";
+import { type AttemptStatus, StoreError } from "./task-store.js";
 
 export const REPOSITORY_TRUST_MIGRATIONS: readonly Migration[] = [
   {
@@ -51,6 +51,7 @@ export const REPOSITORY_TRUST_MIGRATIONS: readonly Migration[] = [
           challenge_id TEXT NOT NULL,
           validation_failure_json TEXT,
           validated_repository_json TEXT,
+          revocation_process_choice TEXT CHECK (revocation_process_choice IS NULL OR revocation_process_choice IN ('stop','keep')),
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -61,11 +62,14 @@ export const REPOSITORY_TRUST_MIGRATIONS: readonly Migration[] = [
           trust_id TEXT NOT NULL REFERENCES repository_trusts(trust_id),
           canonical_root TEXT NOT NULL,
           common_git_dir TEXT NOT NULL,
+          common_git_dev INTEGER NOT NULL,
+          common_git_ino INTEGER NOT NULL,
           head_commit_sha TEXT NOT NULL,
           current_branch TEXT,
           default_base_ref TEXT,
           default_base_ref_sha TEXT,
           git_version TEXT NOT NULL,
+          defaults_json TEXT NOT NULL,
           observed_at TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
@@ -91,21 +95,49 @@ export interface RepositoryTrustRecord {
   readonly validationFailure: RepositoryValidationFailure | null;
   /** Frozen at Active; the Workspace binding mirrors it (RT-REPO-03). */
   readonly validatedRepository: ValidatedRepository | null;
+  /**
+   * The user's stop-or-keep choice for still-running processes at revocation
+   * (SV1-TRUST-05); null when not revoked or no choice was required.
+   */
+  readonly revocationProcessChoice: "stop" | "keep" | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
-/** RT-OWN-01 — a Workspace binds one Repository (commonGitDir is the common Repository identity). */
+/**
+ * RT-OWN-01 — the default selections bound to a Workspace: default Agent,
+ * base branch and permission mode (CONTEXT.md project scope).
+ */
+export interface WorkspaceDefaults {
+  readonly agentId: string | null;
+  readonly baseBranch: string | null;
+  readonly permissionMode: PermissionMode;
+}
+
+/** SV1-TRUST-05 — an Attempt whose processes may still be running (non-terminal status). */
+export interface NonTerminalAttempt {
+  readonly attemptId: string;
+  readonly taskId: string;
+  readonly status: Extract<
+    AttemptStatus,
+    "Queued" | "Starting" | "Running" | "Waiting" | "Stopping"
+  >;
+}
+
+/** RT-OWN-01 — a Workspace binds one Repository (commonGitDir + its dev/ino is the common Repository identity). */
 export interface WorkspaceRecord {
   readonly workspaceId: string;
   readonly trustId: string;
   readonly canonicalRoot: string;
   readonly commonGitDir: string;
+  /** dev/ino of the realpath'd commonGitDir, frozen at Active (SV1-FILE-10). */
+  readonly commonGitDirIdentity: FilesystemIdentity;
   readonly headCommitSha: string;
   readonly currentBranch: string | null;
   readonly defaultBaseRef: string | null;
   readonly defaultBaseRefSha: string | null;
   readonly gitVersion: string;
+  readonly defaults: WorkspaceDefaults;
   readonly observedAt: string;
   readonly createdAt: string;
 }
@@ -121,6 +153,7 @@ interface TrustRow {
   readonly challenge_id: string;
   readonly validation_failure_json: string | null;
   readonly validated_repository_json: string | null;
+  readonly revocation_process_choice: "stop" | "keep" | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -130,11 +163,14 @@ interface WorkspaceRow {
   readonly trust_id: string;
   readonly canonical_root: string;
   readonly common_git_dir: string;
+  readonly common_git_dev: number;
+  readonly common_git_ino: number;
   readonly head_commit_sha: string;
   readonly current_branch: string | null;
   readonly default_base_ref: string | null;
   readonly default_base_ref_sha: string | null;
   readonly git_version: string;
+  readonly defaults_json: string;
   readonly observed_at: string;
   readonly created_at: string;
 }
@@ -155,6 +191,7 @@ const trustRecord = (row: TrustRow): RepositoryTrustRecord => ({
     row.validated_repository_json === null
       ? null
       : (JSON.parse(row.validated_repository_json) as ValidatedRepository),
+  revocationProcessChoice: row.revocation_process_choice,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -164,11 +201,13 @@ const workspaceRecord = (row: WorkspaceRow): WorkspaceRecord => ({
   trustId: row.trust_id,
   canonicalRoot: row.canonical_root,
   commonGitDir: row.common_git_dir,
+  commonGitDirIdentity: { dev: row.common_git_dev, ino: row.common_git_ino },
   headCommitSha: row.head_commit_sha,
   currentBranch: row.current_branch,
   defaultBaseRef: row.default_base_ref,
   defaultBaseRefSha: row.default_base_ref_sha,
   gitVersion: row.git_version,
+  defaults: JSON.parse(row.defaults_json) as WorkspaceDefaults,
   observedAt: row.observed_at,
   createdAt: row.created_at,
 });
@@ -300,7 +339,12 @@ export class RepositoryTrustStore {
 
   // RT-REPO-03 — the only path to Active: the Trust flip, the Workspace and
   // the Repository binding commit in this one transaction, so a crash can
-  // never leave an Active Trust without its Workspace (or vice versa).
+  // never leave an Active Trust without its Workspace (or vice versa). The
+  // common Git directory's dev/ino is frozen alongside its path (SV1-FILE-10),
+  // and the Workspace's initial default selections are derived from the
+  // validated Repository (RT-OWN-01): baseBranch comes from the current
+  // branch, falling back to the clone-recorded default base ref, else null —
+  // never guessed.
   activateWithWorkspace(
     trustId: string,
     validated: ValidatedRepository,
@@ -317,22 +361,30 @@ export class RepositoryTrustStore {
           )
           .run(JSON.stringify(validated), now, trustId);
         const workspaceId = `ws_${randomUUID()}`;
+        const initialDefaults: WorkspaceDefaults = {
+          agentId: null,
+          baseBranch: validated.currentBranch ?? validated.defaultBaseRef ?? null,
+          permissionMode: "Balanced",
+        };
         this.#db
           .prepare(
             `INSERT INTO workspaces
-             (workspace_id, trust_id, canonical_root, common_git_dir, head_commit_sha, current_branch, default_base_ref, default_base_ref_sha, git_version, observed_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (workspace_id, trust_id, canonical_root, common_git_dir, common_git_dev, common_git_ino, head_commit_sha, current_branch, default_base_ref, default_base_ref_sha, git_version, defaults_json, observed_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             workspaceId,
             trustId,
             validated.workingTreeRoot,
             validated.commonGitDir,
+            validated.commonGitDirIdentity.dev,
+            validated.commonGitDirIdentity.ino,
             validated.headCommitSha,
             validated.currentBranch,
             validated.defaultBaseRef,
             validated.defaultBaseRefSha,
             validated.gitVersion,
+            JSON.stringify(initialDefaults),
             validated.observedAt,
             now,
           );
@@ -347,7 +399,14 @@ export class RepositoryTrustStore {
 
   // RT-REPO-05 — PendingValidation|Active -> Revoked; Revoked is terminal for
   // this trust_version. `cause` records why (user revoke or identity drift).
-  markRevoked(trustId: string, cause?: RepositoryValidationFailure): RepositoryTrustRecord {
+  // `processChoice` persists the user's stop-or-keep decision for still
+  // potentially running processes (SV1-TRUST-05); executing a "stop" is the
+  // Session runtime's job (R1-05) — this slice only records the choice.
+  markRevoked(
+    trustId: string,
+    cause?: RepositoryValidationFailure,
+    processChoice?: "stop" | "keep",
+  ): RepositoryTrustRecord {
     return transact(
       this.#db,
       () => {
@@ -355,10 +414,11 @@ export class RepositoryTrustStore {
         assertTransition(row.state, "Revoked");
         this.#db
           .prepare(
-            "UPDATE repository_trusts SET state = 'Revoked', validation_failure_json = COALESCE(?, validation_failure_json), updated_at = ? WHERE trust_id = ?",
+            "UPDATE repository_trusts SET state = 'Revoked', validation_failure_json = COALESCE(?, validation_failure_json), revocation_process_choice = COALESCE(?, revocation_process_choice), updated_at = ? WHERE trust_id = ?",
           )
           .run(
             cause === undefined ? null : JSON.stringify(cause),
+            processChoice ?? null,
             new Date(this.#now()).toISOString(),
             trustId,
           );
@@ -366,6 +426,29 @@ export class RepositoryTrustStore {
       },
       this.#now,
     );
+  }
+
+  // SV1-TRUST-05 — Attempts of this Trust's Workspaces that may still have
+  // running processes (non-terminal status). Used by revoke to require the
+  // explicit stop-or-keep choice. Alive Sessions are not queryable yet — the
+  // Session runtime lands in R1-05; when it does, revoke must surface them
+  // here too.
+  listNonTerminalAttemptsForTrust(trustId: string): readonly NonTerminalAttempt[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT a.attempt_id AS attempt_id, a.task_id AS task_id, a.status AS status
+         FROM attempts a
+         JOIN tasks t ON t.task_id = a.task_id
+         JOIN workspaces w ON w.workspace_id = t.workspace_id
+         WHERE w.trust_id = ? AND a.status IN ('Queued','Starting','Running','Waiting','Stopping')
+         ORDER BY a.created_seq`,
+      )
+      .all(trustId) as unknown as { attempt_id: string; task_id: string; status: string }[];
+    return rows.map((r) => ({
+      attemptId: r.attempt_id,
+      taskId: r.task_id,
+      status: r.status as NonTerminalAttempt["status"],
+    }));
   }
 
   #workspaceRow(workspaceId: string): WorkspaceRow {
@@ -384,5 +467,16 @@ export class RepositoryTrustStore {
   } {
     const row = this.#workspaceRow(workspaceId);
     return { workspace: workspaceRecord(row), trust: this.getTrust(row.trust_id) };
+  }
+
+  // RT-OWN-01 — replace a Workspace's default selections. The caller
+  // (TrustService.updateWorkspaceDefaults) validates the shape, merges the
+  // patch and gates on an Active Trust; this is the single persisted write.
+  updateWorkspaceDefaults(workspaceId: string, defaults: WorkspaceDefaults): WorkspaceRecord {
+    this.#workspaceRow(workspaceId); // NotFound before any write
+    this.#db
+      .prepare("UPDATE workspaces SET defaults_json = ? WHERE workspace_id = ?")
+      .run(JSON.stringify(defaults), workspaceId);
+    return workspaceRecord(this.#workspaceRow(workspaceId));
   }
 }

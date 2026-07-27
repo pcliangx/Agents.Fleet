@@ -31,10 +31,16 @@ const VALIDATED: ValidatedRepository = {
   workingTreeRoot: "/repo/a",
   gitDir: "/repo/a/.git",
   commonGitDir: "/repo/a/.git",
+  commonGitDirIdentity: { dev: 16777233, ino: 42_777 },
   headCommitSha: "a".repeat(40),
   currentBranch: "main",
   defaultBaseRef: "refs/remotes/origin/main",
   defaultBaseRefSha: "b".repeat(40),
+  refs: [
+    { name: "refs/heads/main", sha: "a".repeat(40) },
+    { name: "refs/remotes/origin/main", sha: "b".repeat(40) },
+  ],
+  refsTruncated: false,
   gitVersion: "git version 2.50.1",
   observedAt: new Date(T0).toISOString(),
 };
@@ -83,12 +89,34 @@ describe("RepositoryTrustStore state machine (RT-REPO-05)", () => {
     expect(workspace.trustId).toBe(trust.trustId);
     expect(workspace.canonicalRoot).toBe(VALIDATED.workingTreeRoot);
     expect(workspace.commonGitDir).toBe(VALIDATED.commonGitDir);
+    // the common Repository identity is path AND dev/ino (SV1-FILE-10)
+    expect(workspace.commonGitDirIdentity).toEqual(VALIDATED.commonGitDirIdentity);
     expect(workspace.headCommitSha).toBe(VALIDATED.headCommitSha);
     expect(workspace.currentBranch).toBe("main");
     expect(workspace.defaultBaseRef).toBe("refs/remotes/origin/main");
     expect(workspace.defaultBaseRefSha).toBe(VALIDATED.defaultBaseRefSha);
     expect(workspace.gitVersion).toBe(VALIDATED.gitVersion);
+    // RT-OWN-01 — initial default selections derived from the validated Repository
+    expect(workspace.defaults).toEqual({
+      agentId: null,
+      baseBranch: "main",
+      permissionMode: "Balanced",
+    });
     expect(store.getWorkspaceWithTrust(workspace.workspaceId).trust.state).toBe("Active");
+  });
+
+  it("derives the initial baseBranch from defaultBaseRef when HEAD is detached, else null (RT-OWN-01)", () => {
+    const store = makeStore();
+    const detached = store.activateWithWorkspace(createPending(store).trustId, {
+      ...VALIDATED,
+      currentBranch: null,
+    });
+    expect(detached.workspace.defaults.baseBranch).toBe("refs/remotes/origin/main");
+
+    const store2 = makeStore();
+    const noBase: ValidatedRepository = { ...VALIDATED, currentBranch: null, defaultBaseRef: null };
+    const plain = store2.activateWithWorkspace(createPending(store2).trustId, noBase);
+    expect(plain.workspace.defaults.baseBranch).toBeNull();
   });
 
   it("illegal transitions are Conflict: Active cannot re-activate, Revoked is terminal", () => {
@@ -154,6 +182,37 @@ describe("RepositoryTrustStore state machine (RT-REPO-05)", () => {
     const view = store.getWorkspaceWithTrust(workspace.workspaceId);
     expect(view.workspace.workspaceId).toBe(workspace.workspaceId); // row retained
     expect(view.trust.state).toBe("Revoked");
+  });
+
+  it("persists the stop-or-keep process choice on the revoked trust row (SV1-TRUST-05)", () => {
+    const store = makeStore();
+    const trust = createPending(store);
+    expect(trust.revocationProcessChoice).toBeNull();
+    const revoked = store.markRevoked(trust.trustId, undefined, "keep");
+    expect(revoked.revocationProcessChoice).toBe("keep");
+    expect(store.getTrust(trust.trustId).revocationProcessChoice).toBe("keep");
+  });
+
+  it("updateWorkspaceDefaults replaces the stored defaults (RT-OWN-01)", () => {
+    const store = makeStore();
+    const trust = createPending(store);
+    const { workspace } = store.activateWithWorkspace(trust.trustId, VALIDATED);
+    const updated = store.updateWorkspaceDefaults(workspace.workspaceId, {
+      agentId: "claude-code",
+      baseBranch: "refs/remotes/origin/main",
+      permissionMode: "Manual",
+    });
+    expect(updated.defaults).toEqual({
+      agentId: "claude-code",
+      baseBranch: "refs/remotes/origin/main",
+      permissionMode: "Manual",
+    });
+    expect(store.getWorkspaceWithTrust(workspace.workspaceId).workspace.defaults).toEqual(
+      updated.defaults,
+    );
+    expect(() => store.updateWorkspaceDefaults("ws_missing", updated.defaults)).toThrowError(
+      expect.objectContaining({ code: "NotFound" }),
+    );
   });
 
   it("unknown ids are NotFound", () => {

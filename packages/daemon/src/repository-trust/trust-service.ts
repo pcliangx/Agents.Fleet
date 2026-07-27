@@ -24,10 +24,18 @@
 //   revokeTrust             PendingValidation|Active -> Revoked; Revoked is
 //                           terminal, repeat revoke is an idempotent no-op.
 //                           The Workspace row is kept; its joined Trust state
-//                           shows it is not runnable (SV1-TRUST-05).
+//                           shows it is not runnable. Revocation never
+//                           silently terminates non-terminal Attempts or
+//                           their Alive Sessions: it blocks new Attempts (the
+//                           runnable gate below) and requires the caller's
+//                           explicit stop-or-keep choice, which is persisted
+//                           on the trust row (SV1-TRUST-05). Executing a
+//                           "stop" is the Session runtime's job (R1-05).
 //   inspectRepository       RT-REPO-04 — Active-only, declared read-only
-//                           queries (SV1-FILE-06); drift is a stable error,
-//                           never a silent state change.
+//                           queries (SV1-FILE-06). Root or commonGitDir
+//                           identity drift revokes the Trust in one
+//                           transaction (RT-REPO-05) and surfaces as a
+//                           stable error; other failures change no state.
 //
 // Every mutating method is idempotent by commandId (RT-CMD-02): a replayed
 // commandId with the same payload returns the original result without
@@ -35,11 +43,20 @@
 // with a different payload is IdempotencyConflict (RT-CMD-03). The idempotency
 // lookup runs BEFORE any side effect, and the state writes, the challenge
 // consume mark and the idempotency record commit in one transaction
-// (RT-STO-01).
+// (RT-STO-01). Methods that await between the lookup and the transaction
+// (validateAndActivate's Git run) are additionally serialized per target by
+// an in-process keyed mutex, and re-check the idempotency record and the
+// state assertion after entering the critical section — a concurrent same
+// -commandId request gets the first finisher's original result and never
+// re-runs Git (SV1-TRUST-08: one bounded, idempotent validation).
 
 import { lstatSync, realpathSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { ConfirmationChallenge, ConfirmationReceipt } from "@agents-fleet/contracts";
+import type {
+  ConfirmationChallenge,
+  ConfirmationReceipt,
+  PermissionMode,
+} from "@agents-fleet/contracts";
 import { hashPreviewFact } from "../confirmation/challenge-issuer.js";
 import type { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
 import {
@@ -56,8 +73,10 @@ import {
   type IdempotencyStore,
 } from "../storage/idempotency.js";
 import {
+  type NonTerminalAttempt,
   type RepositoryTrustRecord,
   RepositoryTrustStore,
+  type WorkspaceDefaults,
   type WorkspaceRecord,
 } from "../storage/repository-trust-store.js";
 import { StoreError } from "../storage/task-store.js";
@@ -89,7 +108,44 @@ export interface ValidationOutcome {
   readonly failure: RepositoryValidationFailure | null;
 }
 
+/** SV1-TRUST-05 — the user's choice for processes that may still be running at revocation. */
+export type RunningProcessChoice = "stop" | "keep";
+
+export interface RevocationOutcome {
+  readonly trust: RepositoryTrustRecord;
+  /** Non-terminal Attempts of the Trust's Workspaces at revocation time (SV1-TRUST-05). */
+  readonly affectedAttempts: readonly NonTerminalAttempt[];
+  /** The stop-or-keep choice the revocation carried; null when none was required. */
+  readonly processChoice: RunningProcessChoice | null;
+}
+
 const IDEM_TARGET_TYPE = "repository-trust";
+
+// SV1-TRUST-08 — in-process keyed async mutex. It serializes the whole
+// "idempotency lookup -> await Git -> command transaction" flow per target,
+// so two concurrent requests for the same target cannot both run the bounded
+// Git plan: the later one enters the critical section after the first
+// commits and short-circuits on the idempotency record. Cross-process
+// serialization is the database's job (unique indexes + transactions).
+class KeyedAsyncMutex {
+  readonly #tails = new Map<string, Promise<unknown>>();
+
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const tail = this.#tails.get(key) ?? Promise.resolve();
+    const result = tail.then(fn);
+    // The chain must survive a rejected critical section, and the map entry
+    // is dropped once it is the settled tail, keeping the map bounded.
+    const next = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#tails.set(key, next);
+    void next.then(() => {
+      if (this.#tails.get(key) === next) this.#tails.delete(key);
+    });
+    return await result;
+  }
+}
 
 // The facts the RT-REPO-06 challenge binds. Everything here is recomputable
 // from (candidate, userIdentity) alone, so confirmTrust can re-derive the
@@ -169,6 +225,7 @@ export class TrustService {
   readonly #idem: IdempotencyStore;
   readonly #runner: RestrictedGitRunner;
   readonly #store: RepositoryTrustStore;
+  readonly #mutex = new KeyedAsyncMutex();
 
   constructor(options: TrustServiceOptions) {
     this.#db = options.db;
@@ -309,76 +366,176 @@ export class TrustService {
 
   // RT-REPO-02/03/05 — run the restricted validation plan and settle the
   // outcome in one transaction. A replayed commandId returns the original
-  // outcome WITHOUT re-running Git (RT-CMD-02).
+  // outcome WITHOUT re-running Git (RT-CMD-02). The whole flow is serialized
+  // per trustId (SV1-TRUST-08): after entering the critical section the
+  // idempotency record and the PendingValidation assertion are re-checked, so
+  // a concurrent same-commandId request gets the first finisher's original
+  // result and never runs a second Git plan.
   async validateAndActivate(commandId: string, trustId: string): Promise<ValidationOutcome> {
-    const payload = { trustId };
-    const hit = this.#idem.lookup(commandId, hashCommandPayload(payload));
-    if (hit !== null) return hit as ValidationOutcome;
-    const trust = this.#store.getTrust(trustId);
-    if (trust.state !== "PendingValidation") {
-      throw new StoreError("Conflict", `cannot validate a ${trust.state} Repository Trust`);
-    }
-    const result = await this.#runner.validateRepository({
-      canonicalRoot: trust.candidateCanonicalRoot,
-      filesystemIdentity: trust.filesystemIdentity,
+    return await this.#mutex.run(`validate:${trustId}`, async () => {
+      const payload = { trustId };
+      const hit = this.#idem.lookup(commandId, hashCommandPayload(payload));
+      if (hit !== null) return hit as ValidationOutcome;
+      const trust = this.#store.getTrust(trustId);
+      if (trust.state !== "PendingValidation") {
+        throw new StoreError("Conflict", `cannot validate a ${trust.state} Repository Trust`);
+      }
+      const result = await this.#runner.validateRepository({
+        canonicalRoot: trust.candidateCanonicalRoot,
+        filesystemIdentity: trust.filesystemIdentity,
+      });
+      return executeIdempotent(
+        this.#db,
+        this.#idem,
+        { commandId, payload, target: { type: IDEM_TARGET_TYPE, id: trustId } },
+        () => {
+          // Re-assert inside the command transaction: nothing between the Git
+          // run and the commit may have moved the Trust off PendingValidation.
+          const current = this.#store.getTrust(trustId);
+          if (current.state !== "PendingValidation") {
+            throw new StoreError("Conflict", `cannot validate a ${current.state} Repository Trust`);
+          }
+          if (result.ok) {
+            const { trust: active, workspace } = this.#store.activateWithWorkspace(
+              trustId,
+              result.repository,
+            );
+            return { trust: active, workspace, failure: null };
+          }
+          const failure = result.failure;
+          // RT-REPO-05 / SV1-TRUST-08 — root-mismatch or confirmed-identity
+          // drift revokes this trust version (no Workspace is created);
+          // anything else keeps PendingValidation for an idempotent retry.
+          if (failure.reason === "root-mismatch" || failure.reason === "identity-drift") {
+            return { trust: this.#store.markRevoked(trustId, failure), workspace: null, failure };
+          }
+          return {
+            trust: this.#store.recordValidationFailure(trustId, failure),
+            workspace: null,
+            failure,
+          };
+        },
+      );
     });
-    return executeIdempotent(
-      this.#db,
-      this.#idem,
-      { commandId, payload, target: { type: IDEM_TARGET_TYPE, id: trustId } },
-      () => {
-        // Re-assert inside the command transaction: nothing between the Git
-        // run and the commit may have moved the Trust off PendingValidation.
-        const current = this.#store.getTrust(trustId);
-        if (current.state !== "PendingValidation") {
-          throw new StoreError("Conflict", `cannot validate a ${current.state} Repository Trust`);
-        }
-        if (result.ok) {
-          const { trust: active, workspace } = this.#store.activateWithWorkspace(
-            trustId,
-            result.repository,
-          );
-          return { trust: active, workspace, failure: null };
-        }
-        const failure = result.failure;
-        // RT-REPO-05 / SV1-TRUST-08 — root-mismatch or confirmed-identity
-        // drift revokes this trust version (no Workspace is created);
-        // anything else keeps PendingValidation for an idempotent retry.
-        if (failure.reason === "root-mismatch" || failure.reason === "identity-drift") {
-          return { trust: this.#store.markRevoked(trustId, failure), workspace: null, failure };
-        }
-        return {
-          trust: this.#store.recordValidationFailure(trustId, failure),
-          workspace: null,
-          failure,
-        };
-      },
-    );
   }
 
   // RT-REPO-05 / SV1-TRUST-05 — user revoke. Revoked is terminal; repeating
   // the revoke is an idempotent no-op that returns the revoked record. The
-  // Workspace row is deliberately kept.
-  revokeTrust(commandId: string, trustId: string): RepositoryTrustRecord {
+  // Workspace row is deliberately kept, and revocation never silently
+  // terminates non-terminal Attempts or their Alive Sessions: when any exist,
+  // the caller MUST pass the user's explicit stop-or-keep choice (missing
+  // choice -> ConfirmationRequired, nothing is written). The choice and the
+  // affected Attempt list are the revocation outcome; the choice is also
+  // persisted on the trust row. This slice performs no actual process
+  // termination — the Session runtime (R1-05) executes a persisted "stop";
+  // Alive Sessions are likewise not queryable until R1-05.
+  revokeTrust(
+    commandId: string,
+    trustId: string,
+    runningProcessChoice?: RunningProcessChoice,
+  ): RevocationOutcome {
     return executeIdempotent(
       this.#db,
       this.#idem,
       {
         commandId,
-        payload: { trustId },
+        payload: { trustId, runningProcessChoice: runningProcessChoice ?? null },
         target: { type: IDEM_TARGET_TYPE, id: trustId },
       },
       () => {
         const trust = this.#store.getTrust(trustId);
-        if (trust.state === "Revoked") return trust;
-        return this.#store.markRevoked(trustId);
+        if (trust.state === "Revoked") {
+          return {
+            trust,
+            affectedAttempts: [],
+            processChoice: trust.revocationProcessChoice,
+          };
+        }
+        const affected = this.#store.listNonTerminalAttemptsForTrust(trustId);
+        if (affected.length > 0 && runningProcessChoice === undefined) {
+          throw new StoreError(
+            "ConfirmationRequired",
+            `revoking this Repository Trust leaves ${affected.length} non-terminal Attempt(s) that may still be running; an explicit stop-or-keep choice is required (SV1-TRUST-05)`,
+          );
+        }
+        const revoked = this.#store.markRevoked(trustId, undefined, runningProcessChoice);
+        return {
+          trust: revoked,
+          affectedAttempts: affected,
+          processChoice: revoked.revocationProcessChoice,
+        };
+      },
+    );
+  }
+
+  // SV1-TRUST-05 — the new-Attempt gate: a Workspace is runnable exactly when
+  // its bound Repository Trust is Active. The R1-07 start-command path must
+  // call this before creating any Attempt for the Workspace; TaskStore stays
+  // deliberately trust-agnostic, so the gate lives here at the trust layer.
+  assertWorkspaceRunnable(workspaceId: string): void {
+    const { trust } = this.#store.getWorkspaceWithTrust(workspaceId);
+    if (trust.state !== "Active") {
+      throw new StoreError(
+        "Conflict",
+        `workspace ${workspaceId} is not runnable: Repository Trust is ${trust.state}`,
+      );
+    }
+  }
+
+  // RT-OWN-01 — update a Workspace's default selections (default Agent, base
+  // branch, permission mode). Idempotent by commandId, merge-patched over the
+  // stored defaults, permission mode restricted to the contracts enum, and
+  // allowed only while the bound Trust is Active.
+  updateWorkspaceDefaults(
+    commandId: string,
+    workspaceId: string,
+    patch: Partial<WorkspaceDefaults>,
+  ): WorkspaceRecord {
+    const PERMISSION_MODES: readonly PermissionMode[] = ["Manual", "Balanced", "YOLO"];
+    for (const key of Object.keys(patch)) {
+      if (!["agentId", "baseBranch", "permissionMode"].includes(key)) {
+        throw new StoreError("InvalidRequest", `unknown workspace defaults field: ${key}`);
+      }
+    }
+    if (patch.permissionMode !== undefined && !PERMISSION_MODES.includes(patch.permissionMode)) {
+      throw new StoreError(
+        "InvalidRequest",
+        `unknown permission mode: ${patch.permissionMode as string}`,
+      );
+    }
+    return executeIdempotent(
+      this.#db,
+      this.#idem,
+      {
+        commandId,
+        payload: { workspaceId, patch },
+        target: { type: "workspace", id: workspaceId },
+      },
+      () => {
+        const { workspace, trust } = this.#store.getWorkspaceWithTrust(workspaceId);
+        if (trust.state !== "Active") {
+          throw new StoreError(
+            "Conflict",
+            `cannot update defaults of a workspace whose Repository Trust is ${trust.state}`,
+          );
+        }
+        return this.#store.updateWorkspaceDefaults(workspaceId, {
+          agentId: patch.agentId === undefined ? workspace.defaults.agentId : patch.agentId,
+          baseBranch:
+            patch.baseBranch === undefined ? workspace.defaults.baseBranch : patch.baseBranch,
+          permissionMode: patch.permissionMode ?? workspace.defaults.permissionMode,
+        });
       },
     );
   }
 
   // RT-REPO-04 — inspection is allowed only while the bound Trust is Active
-  // and runs only the declared read-only queries (SV1-FILE-06). A drifted
-  // live identity is a stable error; inspection never changes Trust state.
+  // and runs only the declared read-only queries (SV1-FILE-06). Root or
+  // commonGitDir identity drift revokes the Trust in one transaction
+  // (RT-REPO-05: bound-identity drift turns Active into Revoked) and
+  // surfaces as a stable error; the Workspace row is kept and, joined with
+  // the now-Revoked Trust, is not runnable. Ordinary inspection failures
+  // change no state.
   async inspectRepository(workspaceId: string): Promise<RepositoryInspection> {
     const { workspace, trust } = this.#store.getWorkspaceWithTrust(workspaceId);
     if (trust.state !== "Active") {
@@ -387,20 +544,26 @@ export class TrustService {
         `repository inspection requires an Active Repository Trust, got ${trust.state}`,
       );
     }
-    const result = await this.#runner.inspectValidatedRepository({
-      canonicalRoot: trust.candidateCanonicalRoot,
-      filesystemIdentity: trust.filesystemIdentity,
-    });
+    const result = await this.#runner.inspectValidatedRepository(
+      {
+        canonicalRoot: trust.candidateCanonicalRoot,
+        filesystemIdentity: trust.filesystemIdentity,
+      },
+      {
+        commonGitDir: workspace.commonGitDir,
+        commonGitDirIdentity: workspace.commonGitDirIdentity,
+      },
+    );
     if (!result.ok) {
+      const failure = result.failure;
+      // RT-REPO-05 — bound-identity drift revokes; anything else is a stable
+      // error with no state change.
+      if (failure.reason === "identity-drift" || failure.reason === "root-mismatch") {
+        this.#store.markRevoked(trust.trustId, failure);
+      }
       throw new StoreError(
         "Conflict",
-        `repository inspection failed: ${result.failure.kind}/${result.failure.reason}: ${result.failure.detail}`,
-      );
-    }
-    if (result.inspection.commonGitDir !== workspace.commonGitDir) {
-      throw new StoreError(
-        "Conflict",
-        "common Repository identity drifted since the Trust went Active",
+        `repository inspection failed: ${failure.kind}/${failure.reason}: ${failure.detail}`,
       );
     }
     return result.inspection;

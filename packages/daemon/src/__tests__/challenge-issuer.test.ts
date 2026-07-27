@@ -2,6 +2,7 @@
 // (RT-REPO-06 / RT-CMD-16/17/18, SV1-TRUST-09/10).
 
 import type { ConfirmationChallenge, ConfirmationReceipt } from "@agents-fleet/contracts";
+import { FROZEN_RUNTIME_LIMIT_PROFILE } from "@agents-fleet/contracts";
 import { signConfirmation as sign } from "@agents-fleet/transport";
 import { describe, expect, it } from "vitest";
 import { ChallengeIssuer } from "../confirmation/challenge-issuer.js";
@@ -60,6 +61,16 @@ describe("ChallengeIssuer.issue (RT-CMD-17)", () => {
     const issuer = new ChallengeIssuer({ token: TOKEN, now: () => NOW, maxOpen: 1 });
     issuer.issue(preview);
     expect(() => issuer.issue(preview)).toThrow(/capacity/);
+  });
+
+  it("enforces the frozen challengeBytes display limit (RT-LIMIT-02), same as the persistent issuer", () => {
+    const display = {
+      title: "t",
+      fields: [{ label: "l", value: "x".repeat(FROZEN_RUNTIME_LIMIT_PROFILE.challengeBytes) }],
+    };
+    expect(() => makeIssuer().issue({ ...preview, display })).toThrowError(
+      expect.objectContaining({ code: "InvalidRequest" }),
+    );
   });
 });
 

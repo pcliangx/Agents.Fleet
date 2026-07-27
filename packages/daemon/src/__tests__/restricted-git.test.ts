@@ -13,6 +13,7 @@ import {
   defaultGitExec,
   type GitExec,
   type GitExecRequest,
+  MAX_ENUMERATED_REFS,
   type RepositoryCandidate,
   type RepositoryValidationFailure,
   type RepositoryValidationResult,
@@ -154,6 +155,12 @@ describe("RestrictedGitRunner.validateRepository (RT-REPO-02)", () => {
       expect(result.repository.currentBranch).toBe("main");
       expect(result.repository.gitDir).toBe(join(repo.root, ".git"));
       expect(result.repository.commonGitDir).toBe(join(repo.root, ".git"));
+      // the common Repository identity is path AND dev/ino (SV1-FILE-10)
+      expect(result.repository.commonGitDirIdentity.dev).toBeTypeOf("number");
+      expect(result.repository.commonGitDirIdentity.ino).toBeTypeOf("number");
+      // RT-REPO-04 — every ref resolved to a SHA
+      expect(result.repository.refs).toContainEqual({ name: "refs/heads/main", sha: repo.head });
+      expect(result.repository.refsTruncated).toBe(false);
       // no clone-recorded origin/HEAD — never guessed (RT-REPO-04)
       expect(result.repository.defaultBaseRef).toBeNull();
       expect(result.repository.defaultBaseRefSha).toBeNull();
@@ -377,6 +384,59 @@ describe("corrupt repository classification (RT-REPO-02 / RT-T-36)", () => {
   });
 });
 
+describe("ref enumeration (RT-REPO-04, bounded per RT-LIMIT-02)", () => {
+  // Canned responses for the whole frozen plan; only the for-each-ref output
+  // varies per test. Identity checks still run against the real fixture repo.
+  const stubExec = (root: string, refsStdout: string): GitExec => {
+    return async ({ argv }) => {
+      const cmd = argv.join(" ");
+      if (cmd.includes("--version")) return { stdout: "git version 2.50.1\n", stderr: "" };
+      if (cmd.includes("--is-bare-repository")) return { stdout: "false\n", stderr: "" };
+      if (cmd.includes("--show-toplevel")) return { stdout: `${root}\n`, stderr: "" };
+      if (cmd.includes("--absolute-git-dir")) return { stdout: `${root}/.git\n`, stderr: "" };
+      if (cmd.includes("--git-common-dir")) return { stdout: `${root}/.git\n`, stderr: "" };
+      if (cmd.includes("symbolic-ref -q HEAD")) return { stdout: "refs/heads/main\n", stderr: "" };
+      if (cmd.includes("HEAD^{commit}")) return { stdout: `${"a".repeat(40)}\n`, stderr: "" };
+      if (cmd.includes("for-each-ref")) return { stdout: refsStdout, stderr: "" };
+      if (cmd.includes("origin/HEAD")) {
+        // mirrors execFile's exit-code error shape (allowExitCodes: [1])
+        return Promise.reject({ code: 1, stdout: "", stderr: "" });
+      }
+      throw new Error(`unexpected argv: ${cmd}`);
+    };
+  };
+
+  it("truncates a ref list beyond MAX_ENUMERATED_REFS with an explicit marker", async () => {
+    await withTempRoot(async (root) => {
+      const repo = await makeRepo(join(root, "repo"));
+      const manyRefs = Array.from(
+        { length: MAX_ENUMERATED_REFS + 1 },
+        (_, i) => `refs/heads/b${i} ${"b".repeat(40)}`,
+      ).join("\n");
+      const result = await new RestrictedGitRunner({
+        exec: stubExec(repo.root, `${manyRefs}\n`),
+      }).validateRepository(await candidateOf(repo.root));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.repository.refs).toHaveLength(MAX_ENUMERATED_REFS);
+      expect(result.repository.refsTruncated).toBe(true);
+    });
+  });
+
+  it("a malformed for-each-ref line is output-unparseable", async () => {
+    await withTempRoot(async (root) => {
+      const repo = await makeRepo(join(root, "repo"));
+      const result = await new RestrictedGitRunner({
+        exec: stubExec(repo.root, `refs/heads/main ${"a".repeat(40)}\ntotal garbage\n`),
+      }).validateRepository(await candidateOf(repo.root));
+      expect(expectFailure(result)).toMatchObject({
+        kind: "RepositoryInvalid",
+        reason: "output-unparseable",
+      });
+    });
+  });
+});
+
 describe("no-execution boundary (SV1-FILE-06 / RT-T-29 / RT-T-36)", () => {
   it("runs only the frozen plan: explicit binary, structured argv, scrubbed env", async () => {
     await withTempRoot(async (root) => {
@@ -413,6 +473,7 @@ describe("no-execution boundary (SV1-FILE-06 / RT-T-29 / RT-T-36)", () => {
         "rev-parse",
         "symbolic-ref",
         "rev-parse",
+        "for-each-ref",
         "symbolic-ref",
       ]);
       // version probe runs from the app-owned neutral cwd, not the repository

@@ -29,9 +29,17 @@ beforeEach(() => {
   broker = new FileBroker();
 });
 
-afterEach(() => {
-  for (const a of attackers.splice(0)) a.kill();
-  rmSync(base, { recursive: true, force: true });
+afterEach(async () => {
+  for (const a of attackers.splice(0)) {
+    if (a.exitCode === null && a.signalCode === null) {
+      const exited = new Promise((resolve) => a.once("exit", resolve));
+      a.kill();
+      // wait for the attacker to actually die before removing the tree it
+      // keeps swapping, else rmSync races it into ENOTEMPTY
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    }
+  }
+  rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 const setupRoot = (name: string): { dir: string; root: RegisteredRoot } => {
