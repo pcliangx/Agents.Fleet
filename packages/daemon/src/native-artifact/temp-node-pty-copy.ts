@@ -15,7 +15,7 @@ export interface NativePtyProcess {
   resize(cols: number, rows: number): void;
   kill(): void;
   onData(listener: (data: unknown) => void): { dispose(): void };
-  onExit(listener: () => void): { dispose(): void };
+  onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
 }
 
 export interface NativePtySpawnOptions {

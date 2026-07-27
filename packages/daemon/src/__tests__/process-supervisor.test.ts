@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createProcessSupervisor,
   type PtyDriverProcess,
+  type PtyExitEvent,
   type SupervisedPtyProcess,
 } from "../session-runtime/process-supervisor.js";
 
@@ -11,6 +12,7 @@ class FakeDriverProcess implements PtyDriverProcess {
   readonly sizes: Array<{ cols: number; rows: number }> = [];
   killed = false;
   private outputListener: ((data: Uint8Array) => void) | undefined;
+  private exitListener: ((event: PtyExitEvent) => void) | undefined;
 
   write(data: Uint8Array): void {
     this.written.push(data);
@@ -33,12 +35,25 @@ class FakeDriverProcess implements PtyDriverProcess {
     };
   }
 
+  onExit(listener: (event: PtyExitEvent) => void): { dispose(): void } {
+    this.exitListener = listener;
+    return {
+      dispose: () => {
+        this.exitListener = undefined;
+      },
+    };
+  }
+
   emit(data: Uint8Array): void {
     this.outputListener?.(data);
   }
 
   emitUnsafe(data: unknown): void {
     this.outputListener?.(data as Uint8Array);
+  }
+
+  emitExit(event: PtyExitEvent): void {
+    this.exitListener?.(event);
   }
 }
 
@@ -120,5 +135,15 @@ describe("ProcessSupervisor", () => {
     await process.terminate();
 
     expect(driverProcess.killed).toBe(true);
+  });
+
+  it("reports the owned PTY process exit", () => {
+    const { driverProcess, process } = spawnFakeProcess();
+    const exits: PtyExitEvent[] = [];
+    process.onExit((event) => exits.push(event));
+
+    driverProcess.emitExit({ exitCode: 7, signal: 0 });
+
+    expect(exits).toEqual([{ exitCode: 7, signal: 0 }]);
   });
 });

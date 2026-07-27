@@ -51,6 +51,20 @@ export type {
   ExecutableProbeInput,
   HostEnvironment,
 } from "./modules/host-environment.js";
+export type {
+  DurableFrameRef,
+  LaunchSessionResult,
+  LaunchValidation,
+  RestartReconciliationAction,
+  RestartReconciliationReport,
+  SessionRuntime,
+  SessionRuntimeRecord,
+} from "./modules/session-runtime.js";
+export type {
+  PreparedLaunch,
+  ScheduleNextResult,
+  TaskOrchestrator,
+} from "./modules/task-orchestrator.js";
 export type { CellCursor, TerminalSurface } from "./modules/terminal-surface.js";
 export type {
   DisposeBlocker,

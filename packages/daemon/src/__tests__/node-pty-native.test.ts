@@ -57,6 +57,10 @@ describe("node-pty native raw-byte boundary", () => {
               resize: (cols, rows) => nativeProcess.resize(cols, rows),
               kill: () => nativeProcess.kill(),
               onData: (listener) => nativeProcess.onData((data) => listener(data as Uint8Array)),
+              onExit: (listener) =>
+                nativeProcess.onExit((event) =>
+                  listener({ exitCode: event.exitCode, signal: event.signal ?? 0 }),
+                ),
             };
           },
         };

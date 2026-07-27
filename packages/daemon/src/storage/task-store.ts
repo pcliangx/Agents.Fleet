@@ -378,7 +378,14 @@ export class TaskStore {
         this.#db
           .prepare("UPDATE tasks SET lifecycle = 'Cancelled', updated_at = ? WHERE task_id = ?")
           .run(new Date(this.#now()).toISOString(), taskId);
-        this.#appendEvent(taskId, "task-cancelled", {});
+        const cancelled = this.#db
+          .prepare(
+            "UPDATE attempts SET status = 'Cancelled' WHERE task_id = ? AND status = 'Queued'",
+          )
+          .run(taskId);
+        this.#appendEvent(taskId, "task-cancelled", {
+          cancelledQueuedAttempts: Number(cancelled.changes),
+        });
         return this.#record(this.#taskRow(taskId));
       },
       this.#now,

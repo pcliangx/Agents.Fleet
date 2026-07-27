@@ -23,6 +23,12 @@ export interface PtyDriverProcess {
   resize(cols: number, rows: number): void;
   kill(): void;
   onData(listener: (data: Uint8Array) => void): { dispose(): void };
+  onExit(listener: (event: PtyExitEvent) => void): { dispose(): void };
+}
+
+export interface PtyExitEvent {
+  readonly exitCode: number;
+  readonly signal: number;
 }
 
 export interface PtyDriver {
@@ -39,6 +45,7 @@ export interface SupervisedPtyProcess {
   resize(cols: number, rows: number): Promise<void>;
   terminate(): Promise<void>;
   onOutput(listener: (bytes: Uint8Array) => void): () => void;
+  onExit(listener: (event: PtyExitEvent) => void): () => void;
 }
 
 export interface ProcessSupervisor {
@@ -77,6 +84,10 @@ export const createProcessSupervisor = (driver: PtyDriver): ProcessSupervisor =>
           }
           listener(data);
         });
+        return () => subscription.dispose();
+      },
+      onExit(listener) {
+        const subscription = process.onExit(listener);
         return () => subscription.dispose();
       },
     };
