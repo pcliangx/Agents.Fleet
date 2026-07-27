@@ -13,6 +13,7 @@ import type {
   TaskId,
   WorkspaceId,
 } from "../identity.js";
+import type { ConfirmationReceipt } from "./confirmation.js";
 
 export interface CommandEnvelope<P = unknown> {
   readonly commandId: CommandId;
@@ -26,7 +27,9 @@ export interface CommandEnvelope<P = unknown> {
   readonly attachmentId: AttachmentId | undefined;
   readonly fencingToken: FencingToken | undefined;
   readonly confirmationReceipt: Receipt | undefined;
-  readonly repositoryTrustReceipt: Receipt | undefined;
+  // RT-REPO-06 — the Main-signed one-time repository-trust receipt is a
+  // structured object (challengeId + proof + confirmedAt), not a bare string.
+  readonly repositoryTrustReceipt: ConfirmationReceipt | undefined;
   readonly launchConfirmationReceipt: Receipt | undefined;
   readonly payload: P;
 }
@@ -43,7 +46,15 @@ export type CommandKind =
   | "ResizeSession"
   | "AcquireControl"
   | "Attach"
-  | "DisposeWorktree";
+  | "DisposeWorktree"
+  // R1-02 — Repository Trust production chain (RT-REPO-01..06).
+  | "PrepareTrustCandidate"
+  | "IssueRepositoryTrustChallenge"
+  | "ConfirmRepositoryTrust"
+  | "ValidateAndActivateTrust"
+  | "RevokeRepositoryTrust"
+  | "InspectRepositoryTrust"
+  | "GetConfirmationChallenge";
 
 // Minimal payload shapes for the commands #1 needs to route. Later tickets
 // expand each. WriteSessionInput/ResizeSession/TerminateSession require the
@@ -64,6 +75,64 @@ export interface AttachPayload {
 
 export type EmptyPayload = Record<string, never>;
 
+// R1-02 — Repository Trust payloads (RT-REPO-01..06). On the wire the payload
+// object additionally carries the CommandKind as a `kind` discriminator (the
+// Control Dispatcher routes on `payload.kind`); the types below are the
+// command-specific fields only.
+//
+// RT-REPO-01 — the pre-Trust candidate identity: canonical path + filesystem
+// identity (dev/ino). Structurally identical to the daemon's
+// RepositoryCandidate; duplicated here because contracts is dependency-free.
+export interface RepositoryCandidatePayload {
+  readonly canonicalRoot: string;
+  readonly filesystemIdentity: { readonly dev: number; readonly ino: number };
+}
+
+export interface PrepareTrustCandidatePayload {
+  readonly path: string;
+}
+
+// RT-REPO-06 — issue the one-time Trust challenge. The plannedAgent /
+// dataLocation / hostPermissionUpperBound fields are display-only dialog text
+// (SV1-TRUST-02); the receipt binds candidate identity + user identity + the
+// frozen validation plan.
+export interface IssueRepositoryTrustChallengePayload {
+  readonly candidate: RepositoryCandidatePayload;
+  readonly userIdentity: string;
+  readonly plannedAgent: string;
+  readonly dataLocation: string;
+  readonly hostPermissionUpperBound: string;
+}
+
+// RT-REPO-06 — consumes the Main-signed receipt carried on the envelope's
+// `repositoryTrustReceipt` field and enters PendingValidation.
+export interface ConfirmRepositoryTrustPayload {
+  readonly candidate: RepositoryCandidatePayload;
+  readonly userIdentity: string;
+}
+
+export interface ValidateAndActivateTrustPayload {
+  readonly trustId: string;
+}
+
+// SV1-TRUST-05 — when non-terminal Attempts exist the user's explicit
+// stop-or-keep choice is required.
+export interface RevokeRepositoryTrustPayload {
+  readonly trustId: string;
+  readonly runningProcessChoice?: "stop" | "keep";
+}
+
+// RT-REPO-04 — Active-only declared read-only inspection (SV1-FILE-06).
+export interface InspectRepositoryTrustPayload {
+  readonly workspaceId: string;
+}
+
+// SV1-AUTH-10 — Main fetches an already-issued challenge to render its fixed
+// display fields; the Renderer can only name the challenge ID.
+export interface GetConfirmationChallengePayload {
+  readonly challengeId: string;
+}
+
 // Maps a CommandKind to its payload type. Unspecified kinds use EmptyPayload.
 export interface CommandPayloadMap {
   readonly Start: unknown;
@@ -77,6 +146,13 @@ export interface CommandPayloadMap {
   readonly AcquireControl: EmptyPayload;
   readonly Attach: AttachPayload;
   readonly DisposeWorktree: EmptyPayload;
+  readonly PrepareTrustCandidate: PrepareTrustCandidatePayload;
+  readonly IssueRepositoryTrustChallenge: IssueRepositoryTrustChallengePayload;
+  readonly ConfirmRepositoryTrust: ConfirmRepositoryTrustPayload;
+  readonly ValidateAndActivateTrust: ValidateAndActivateTrustPayload;
+  readonly RevokeRepositoryTrust: RevokeRepositoryTrustPayload;
+  readonly InspectRepositoryTrust: InspectRepositoryTrustPayload;
+  readonly GetConfirmationChallenge: GetConfirmationChallengePayload;
 }
 
 export type PayloadFor<K extends CommandKind> = CommandPayloadMap[K];

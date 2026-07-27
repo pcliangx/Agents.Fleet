@@ -8,12 +8,15 @@ import { join } from "node:path";
 import { type DaemonHandshakeConfig, NdjsonDecoder } from "@agents-fleet/transport";
 import type { ProofVerifier } from "./auth/proof-verifier.js";
 import { type ConnectionSink, ControlDispatcher } from "./control-dispatcher.js";
+import type { TrustCommandRouter } from "./repository-trust/trust-command-router.js";
 
 export interface StartServerOptions {
   readonly socketDir: string;
   readonly config: DaemonHandshakeConfig;
   readonly verifier: ProofVerifier;
   readonly token: Uint8Array;
+  /** R1-02 — production command router; omitted in handshake-only tests. */
+  readonly router?: TrustCommandRouter;
 }
 
 export interface StartedServer {
@@ -32,7 +35,13 @@ export const startServer = async (opts: StartServerOptions): Promise<StartedServ
       send: (m) => sock.write(`${JSON.stringify(m)}\n`),
       close: () => sock.destroy(),
     };
-    const dispatcher = new ControlDispatcher(opts.config, opts.verifier, sink, opts.token);
+    const dispatcher = new ControlDispatcher(
+      opts.config,
+      opts.verifier,
+      sink,
+      opts.token,
+      opts.router,
+    );
     sock.on("data", (chunk: Buffer) => {
       decoder.feed(chunk);
       for (const obj of decoder.drain()) dispatcher.onMessage(obj);
