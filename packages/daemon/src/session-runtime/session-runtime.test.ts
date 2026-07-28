@@ -22,15 +22,19 @@ import {
 import { signConfirmation } from "@agents-fleet/transport";
 import { afterEach, describe, expect, it } from "vitest";
 import { PersistentChallengeIssuer } from "../confirmation/persistent-challenge-issuer.js";
+import { FleetProjection } from "../fleet-projection/fleet-projection.js";
 import {
   copyNodePtyWithHelperMode,
   type TempNodePtyCopy,
 } from "../native-artifact/temp-node-pty-copy.js";
 import { resolveTsxLoader } from "../prototypes/r0-07-at-most-once-launch/driver.js";
+import { runStartupReconciliation } from "../startup-reconciliation.js";
 import { openDatabase } from "../storage/database.js";
 import { ALL_MIGRATIONS } from "../storage/migrations.js";
+import { TaskStore } from "../storage/task-store.js";
 import { WorktreeStore } from "../storage/worktree-store.js";
 import { TaskOrchestrator } from "../task-orchestrator/task-orchestrator.js";
+import { ByteJournal, chunkRelativePath } from "./byte-journal.js";
 import {
   createProcessSupervisor,
   type ProcessSupervisor,
@@ -165,6 +169,7 @@ const createControllableProcessSupervisor = async (): Promise<{
 const setupPreparedLaunch = async (
   options: {
     readonly keepAlive?: boolean;
+    readonly exitCode?: number;
     readonly missingExecutable?: boolean;
     readonly wrapperExecutable?: boolean;
     readonly outputBytes?: readonly number[];
@@ -229,7 +234,7 @@ const setupPreparedLaunch = async (
     "fs.appendFileSync(process.argv[1], 'x');",
     `process.stdout.write(Buffer.from(${JSON.stringify(options.outputBytes ?? [0x41, 0xff, 0x42])}));`,
     ...(options.keepAlive === false
-      ? ["setTimeout(() => {}, 300);"]
+      ? [`setTimeout(() => process.exit(${options.exitCode ?? 0}), 300);`]
       : ["setInterval(() => {}, 1000);"]),
   ].join("");
   const wrapperPath = join(root, "agent-wrapper");
@@ -436,6 +441,133 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
       generation: 1,
       availability: "Exited",
     });
+    expect(
+      db
+        .prepare(
+          `SELECT status, failure_reason, primary_outcome,
+                  primary_exit_code, primary_exit_signal
+           FROM attempts WHERE attempt_id = ?`,
+        )
+        .get(launched.attemptId),
+    ).toEqual({
+      status: "Succeeded",
+      failure_reason: null,
+      primary_outcome: "Succeeded",
+      primary_exit_code: 0,
+      primary_exit_signal: 0,
+    });
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({ released_at: expect.any(String) });
+  });
+
+  it("records an observed non-zero Agent exit as a Failed primary outcome", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch({
+      keepAlive: false,
+      exitCode: 7,
+    });
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    await waitFor(
+      () => runtime.inspectSession(launched.sessionId)?.availability === "Exited",
+      5_000,
+    );
+
+    expect(
+      db
+        .prepare(
+          `SELECT status, failure_reason, primary_outcome,
+                  primary_exit_code, primary_exit_signal
+           FROM attempts WHERE attempt_id = ?`,
+        )
+        .get(launched.attemptId),
+    ).toEqual({
+      status: "Failed",
+      failure_reason: "AgentExited",
+      primary_outcome: "Failed",
+      primary_exit_code: 7,
+      primary_exit_signal: 0,
+    });
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({ released_at: expect.any(String) });
+  });
+
+  it("does not let a non-primary Session exit overwrite the primary outcome", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    const now = new Date(T0).toISOString();
+    db.prepare(
+      `UPDATE sessions
+       SET role = 'TestRunner', completion_policy = 'DoesNotBlockAttemptCompletion'
+       WHERE session_id = ?`,
+    ).run(launched.sessionId);
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, generation,
+        created_at, updated_at)
+       VALUES ('session-primary-still-alive', ?, 'Alive', 'PrimaryAgent',
+               'BlocksAttemptCompletion', 1, ?, ?)`,
+    ).run(launched.attemptId, now, now);
+
+    await runtime.terminate(launched.sessionId);
+
+    expect(
+      db
+        .prepare(
+          `SELECT status, primary_outcome, primary_exit_code, primary_exit_signal
+           FROM attempts WHERE attempt_id = ?`,
+        )
+        .get(launched.attemptId),
+    ).toEqual({
+      status: "Running",
+      primary_outcome: null,
+      primary_exit_code: null,
+      primary_exit_signal: null,
+    });
+  });
+
+  it("settles a Stopping race as Cancelled after the primary Session exits", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const runtime = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await runtime.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    db.prepare("UPDATE attempts SET status = 'Stopping' WHERE attempt_id = ?").run(
+      launched.attemptId,
+    );
+
+    await runtime.terminate(launched.sessionId);
+
+    expect(
+      db
+        .prepare("SELECT status, failure_reason FROM attempts WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({ status: "Cancelled", failure_reason: "StopRequested" });
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(launched.attemptId),
+    ).toEqual({ released_at: expect.any(String) });
   });
 
   it("marks a formerly Alive Session Lost after Runtime restart and never auto-launches a replacement", async () => {
@@ -501,6 +633,11 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
       attemptId: prepared.attemptId,
       reason: "launch-facts-unverifiable",
     });
+    expect(
+      db
+        .prepare("SELECT status, failure_reason FROM attempts WHERE attempt_id = ?")
+        .get(prepared.attemptId),
+    ).toEqual({ status: "Failed", failure_reason: "launch-facts-unverifiable" });
     expect(runtime.inspectSession(prepared.plannedSessionId)).toBeNull();
     expect(existsSync(counterPath)).toBe(false);
     await expect(runtime.launch(prepared, { revalidate: async () => true })).resolves.toEqual(
@@ -704,17 +841,35 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     const chunkName = readdirSync(chunkDir).find((name) => name.endsWith(".bin"));
     if (chunkName === undefined) throw new Error("durable chunk file missing");
     writeFileSync(join(chunkDir, chunkName), Buffer.from("corrupt"));
+    writeFileSync(
+      join(root, "snapshots", launched.sessionId, String(launched.generation), "snapshot-1.json"),
+      "corrupt",
+    );
 
     const restarted = new SessionRuntime({
       db,
       storeDir: root,
       processSupervisor: await createRealProcessSupervisor(),
     });
-    const report = restarted.reconcileAfterRestart();
+    const startup = await runStartupReconciliation({
+      sessions: restarted,
+      revalidateAcceptedAttempt: async () => true,
+    });
+    const report = startup.reconciliation;
 
     expect(report.dataIntegrity).toMatchObject({
       verifiedChunks: 0,
       dataGapCount: 1,
+    });
+    expect(startup.snapshotRebuild).toEqual({
+      rebuilt: [],
+      skippedForDataGap: [
+        {
+          attemptId: launched.attemptId,
+          sessionId: launched.sessionId,
+          generation: launched.generation,
+        },
+      ],
     });
     expect(() =>
       restarted.readDurableFrame({
@@ -723,6 +878,77 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
         seq: 1,
       }),
     ).toThrowError(expect.objectContaining({ name: "DataIntegrityFailure" }));
+    expect(new TaskStore(db).listEvents(prepared.taskId)).toContainEqual(
+      expect.objectContaining({
+        attemptId: launched.attemptId,
+        type: "data-gap-detected",
+        payload: {
+          kind: "chunk",
+          sessionId: launched.sessionId,
+          generation: launched.generation,
+          seq: 1,
+          reason: "checksum-mismatch",
+          missingByteCount: 3,
+        },
+      }),
+    );
+    expect(new FleetProjection(db).projectTask(prepared.taskId).dataGap).toBe(true);
+  });
+
+  it("uses Uncertain when a confirmed-absent process also has a durable data gap", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const now = new Date(T0).toISOString();
+    db.prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?").run(
+      prepared.attemptId,
+    );
+    db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, generation,
+        process_pid, process_pgid, process_started_at, process_command, created_at, updated_at)
+       VALUES (?, ?, 'Alive', 'PrimaryAgent', 'BlocksAttemptCompletion', 1,
+               999999, 999999, 'Mon Jan 1 00:00:00 2001', '/missing/agent', ?, ?)`,
+    ).run(prepared.plannedSessionId, prepared.attemptId, now, now);
+    new ByteJournal({ storeDir: root, db }).appendFrame({
+      sessionId: prepared.plannedSessionId,
+      generation: 1,
+      seq: 1,
+      bytes: new Uint8Array([0x41, 0x42, 0x43]),
+    });
+    writeFileSync(
+      join(root, chunkRelativePath(prepared.plannedSessionId, 1, 1)),
+      Buffer.from("corrupt"),
+    );
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      processProbe: () => ({ kind: "absent" }),
+    });
+
+    const report = restarted.reconcileAfterRestart();
+
+    expect(report.dataIntegrity.dataGapCount).toBe(1);
+    expect(
+      db
+        .prepare(
+          "SELECT status, failure_reason, primary_outcome FROM attempts WHERE attempt_id = ?",
+        )
+        .get(prepared.attemptId),
+    ).toEqual({
+      status: "Uncertain",
+      failure_reason: "evidence-gap-with-confirmed-absent",
+      primary_outcome: "Uncertain",
+    });
+    expect(
+      db
+        .prepare("SELECT disposition FROM process_dispositions WHERE attempt_id = ?")
+        .get(prepared.attemptId),
+    ).toEqual({ disposition: "ConfirmedAbsent" });
+    expect(
+      db
+        .prepare("SELECT released_at FROM slot_leases WHERE attempt_id = ?")
+        .get(prepared.attemptId),
+    ).toEqual({ released_at: expect.any(String) });
   });
 
   it("returns a durable failure when the bootstrap exits before publishing its receipt", async () => {
@@ -948,6 +1174,56 @@ describe("SessionRuntime.launch (RT-LAUNCH-02..05)", () => {
     expect(
       db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(prepared.attemptId),
     ).toEqual({ status: "Interrupted" });
+  });
+
+  it("reconciles every Alive Session before terminalizing a multi-Session Attempt", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const now = new Date(T0).toISOString();
+    db.prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?").run(
+      prepared.attemptId,
+    );
+    const insert = db.prepare(
+      `INSERT INTO sessions
+       (session_id, attempt_id, availability, role, completion_policy, generation,
+        process_pid, process_pgid, process_started_at, process_command, created_at, updated_at)
+       VALUES (?, ?, 'Alive', ?, 'BlocksAttemptCompletion', 1,
+               999999, 999999, 'Mon Jan 1 00:00:00 2001', '/missing/agent', ?, ?)`,
+    );
+    insert.run(prepared.plannedSessionId, prepared.attemptId, "PrimaryAgent", now, now);
+    insert.run("session-blocking-test", prepared.attemptId, "TestRunner", now, now);
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+      processProbe: () => ({ kind: "absent" }),
+    });
+
+    const report = restarted.reconcileAfterRestart();
+
+    expect(report.actions).toEqual(
+      expect.arrayContaining([
+        {
+          action: "marked-lost",
+          attemptId: prepared.attemptId,
+          sessionId: prepared.plannedSessionId,
+        },
+        {
+          action: "marked-lost",
+          attemptId: prepared.attemptId,
+          sessionId: "session-blocking-test",
+        },
+      ]),
+    );
+    expect(
+      db
+        .prepare("SELECT session_id FROM sessions WHERE availability = 'Lost' ORDER BY session_id")
+        .all(),
+    ).toHaveLength(2);
+    expect(
+      db
+        .prepare("SELECT status, primary_outcome FROM attempts WHERE attempt_id = ?")
+        .get(prepared.attemptId),
+    ).toEqual({ status: "Interrupted", primary_outcome: "Interrupted" });
   });
 
   it("reopens a stale released lease when an Uncertain disposition still holds the slot", async () => {
@@ -1654,6 +1930,127 @@ describe("SessionRuntime Attachment seam (RT-LEASE-09/10)", () => {
       ]);
     } finally {
       await runtime.terminate(launched.sessionId);
+    }
+  });
+
+  it("rebuilds a corrupt Snapshot cache during startup Reconciliation", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const original = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await original.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+    await waitFor(
+      () =>
+        original.readDurableFrame({
+          sessionId: launched.sessionId,
+          generation: launched.generation,
+          seq: 1,
+        }) !== null,
+    );
+    await original.terminate(launched.sessionId);
+
+    const snapshotPath = join(
+      root,
+      "snapshots",
+      launched.sessionId,
+      String(launched.generation),
+      "snapshot-1.json",
+    );
+    writeFileSync(snapshotPath, "corrupt");
+    const restarted = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+
+    const report = await runStartupReconciliation({
+      sessions: restarted,
+      revalidateAcceptedAttempt: async () => true,
+    });
+
+    expect(report.snapshotRebuild).toEqual({
+      rebuilt: [
+        {
+          attemptId: launched.attemptId,
+          sessionId: launched.sessionId,
+          generation: launched.generation,
+          coversThroughSeq: 1,
+        },
+      ],
+      skippedForDataGap: [],
+    });
+    expect(report.hasFindings).toBe(true);
+    expect(restarted.readSessionSnapshot(launched.sessionId).coversThroughSeq).toBe(1);
+    expect(new TaskStore(db).listEvents(prepared.taskId)).toContainEqual(
+      expect.objectContaining({
+        attemptId: launched.attemptId,
+        type: "snapshot-rebuilt-after-reconciliation",
+        payload: {
+          sessionId: launched.sessionId,
+          generation: launched.generation,
+          coversThroughSeq: 1,
+        },
+      }),
+    );
+  });
+
+  it("rebuilds a missing Snapshot row from durable chunks during Reconciliation", async () => {
+    const { db, root, prepared } = await setupPreparedLaunch();
+    const original = new SessionRuntime({
+      db,
+      storeDir: root,
+      processSupervisor: await createRealProcessSupervisor(),
+    });
+    const launched = await original.launch(prepared, { revalidate: async () => true });
+    if (launched.kind !== "running") throw new Error(`launch failed: ${launched.kind}`);
+
+    try {
+      await waitFor(
+        () =>
+          original.readDurableFrame({
+            sessionId: launched.sessionId,
+            generation: launched.generation,
+            seq: 1,
+          }) !== null,
+      );
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM session_snapshots WHERE session_id = ? AND generation = ?",
+          )
+          .get(launched.sessionId, launched.generation),
+      ).toEqual({ count: 0 });
+      const restarted = new SessionRuntime({
+        db,
+        storeDir: root,
+        processSupervisor: await createRealProcessSupervisor(),
+      });
+
+      const report = await restarted.rebuildInvalidSnapshotsAfterRestart();
+
+      expect(report).toEqual({
+        rebuilt: [
+          {
+            attemptId: launched.attemptId,
+            sessionId: launched.sessionId,
+            generation: launched.generation,
+            coversThroughSeq: 1,
+          },
+        ],
+        skippedForDataGap: [],
+      });
+      expect(restarted.readSessionSnapshot(launched.sessionId).coversThroughSeq).toBe(1);
+      expect(new TaskStore(db).listEvents(prepared.taskId)).toContainEqual(
+        expect.objectContaining({
+          attemptId: launched.attemptId,
+          type: "snapshot-rebuilt-after-reconciliation",
+        }),
+      );
+    } finally {
+      await original.terminate(launched.sessionId);
     }
   });
 

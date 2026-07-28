@@ -142,4 +142,16 @@ export const SESSION_RUNTIME_MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 13,
+    name: "attempt-primary-outcome",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE attempts ADD COLUMN primary_outcome TEXT
+          CHECK (primary_outcome IN ('Succeeded','Failed','Interrupted','Uncertain'));
+        ALTER TABLE attempts ADD COLUMN primary_exit_code INTEGER;
+        ALTER TABLE attempts ADD COLUMN primary_exit_signal INTEGER;
+      `);
+    },
+  },
 ];

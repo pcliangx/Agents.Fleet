@@ -35,6 +35,7 @@ import { ReadOnlyRecoveryCommandRouter, RuntimeCommandRouter } from "./runtime-c
 import { startServer } from "./server.js";
 import { createNodePtyProcessSupervisor } from "./session-runtime/process-supervisor.js";
 import { SessionRuntime } from "./session-runtime/session-runtime.js";
+import { runStartupReconciliation } from "./startup-reconciliation.js";
 import { AgentProfileStore } from "./storage/agent-profile-store.js";
 import { openDatabase } from "./storage/database.js";
 import { EnvironmentSnapshotStore } from "./storage/environment-snapshot-store.js";
@@ -140,6 +141,17 @@ if (opened.kind === "ready") {
     },
     managedWorktreeRoot: join(dirname(dbPath), "worktrees"),
   });
+  const startup = await runStartupReconciliation({
+    sessions,
+    revalidateAcceptedAttempt: async (attemptId) =>
+      await launches.revalidateAcceptedAttempt(attemptId),
+  });
+  const integrity = startup.reconciliation.dataIntegrity;
+  if (startup.hasFindings) {
+    process.stderr.write(
+      `<daemon reconciliation actions=${startup.reconciliation.actions.length} resumed=${startup.resumedLaunches.length} snapshotsRebuilt=${startup.snapshotRebuild.rebuilt.length} snapshotDataGaps=${startup.snapshotRebuild.skippedForDataGap.length} dataGaps=${integrity.dataGapCount + integrity.inputDataGapCount}>\n`,
+    );
+  }
   router = new RuntimeCommandRouter({
     db,
     idempotency: idem,

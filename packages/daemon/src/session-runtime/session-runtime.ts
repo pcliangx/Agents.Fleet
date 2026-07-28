@@ -36,6 +36,7 @@ import {
   ProcessDisposition,
   type ResizeSessionRequest,
   type RestartReconciliationReport,
+  type RestartSnapshotRebuildReport,
   type ResumableAttemptStatus,
   type Seq,
   type SessionDeltaBatch,
@@ -54,7 +55,7 @@ import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
 import { appendDomainEvent } from "../storage/domain-event-store.js";
 import { StoreError } from "../storage/task-store.js";
-import { ByteJournal } from "./byte-journal.js";
+import { ByteJournal, DataIntegrityFailure } from "./byte-journal.js";
 import { durableWriteContentObject } from "./content-object-io.js";
 import {
   type InputIntentStep,
@@ -67,7 +68,7 @@ import type {
   SupervisedPtyProcess,
 } from "./process-supervisor.js";
 import { SnapshotCoordinator } from "./snapshot-coordinator.js";
-import { reconcileStore } from "./store-reconciliation.js";
+import { reconcileStore, type StoreDataGap } from "./store-reconciliation.js";
 
 const DEFAULT_BOOTSTRAP = join(dirname(fileURLToPath(import.meta.url)), "bootstrap.mjs");
 const CONTROL_LEASE_TTL_MS = 15_000;
@@ -159,6 +160,136 @@ type ProcessProbe =
     }
   | { readonly kind: "absent" }
   | { readonly kind: "unavailable" };
+
+type PrimaryOutcome = "Succeeded" | "Failed" | "Interrupted" | "Uncertain";
+
+interface AttemptSettlement {
+  readonly status: PrimaryOutcome | "Cancelled";
+  readonly reason: string | null;
+  readonly eventType:
+    | "attempt-succeeded"
+    | "attempt-failed"
+    | "attempt-cancelled"
+    | "attempt-interrupted"
+    | "attempt-uncertain";
+}
+
+const PRIMARY_OUTCOME_SETTLEMENTS = {
+  Succeeded: {
+    status: "Succeeded",
+    reason: null,
+    eventType: "attempt-succeeded",
+  },
+  Failed: {
+    status: "Failed",
+    reason: "AgentExited",
+    eventType: "attempt-failed",
+  },
+  Interrupted: {
+    status: "Interrupted",
+    reason: "AgentInterrupted",
+    eventType: "attempt-interrupted",
+  },
+  Uncertain: {
+    status: "Uncertain",
+    reason: "AgentOutcomeUncertain",
+    eventType: "attempt-uncertain",
+  },
+} as const satisfies Record<PrimaryOutcome, AttemptSettlement>;
+
+const STOPPING_SETTLEMENT = {
+  status: "Cancelled",
+  reason: "StopRequested",
+  eventType: "attempt-cancelled",
+} as const satisfies AttemptSettlement;
+
+interface RestartAliveSessionRow {
+  readonly session_id: string;
+  readonly attempt_id: string;
+  readonly task_id: string;
+  readonly status: Attempt.AttemptStatus;
+  readonly generation: number;
+  readonly process_pid: number | null;
+  readonly process_pgid: number | null;
+  readonly process_started_at: string | null;
+  readonly process_command: string | null;
+}
+
+interface RestartSessionObservation {
+  readonly row: RestartAliveSessionRow;
+  readonly disposition: "OrphanFound" | "Probing" | "ConfirmedAbsent";
+  readonly reason: string;
+}
+
+interface RestartAttemptResolution {
+  readonly status: "Interrupted" | "Uncertain";
+  readonly disposition: "OrphanFound" | "Probing" | "ConfirmedAbsent";
+  readonly reason: string;
+}
+
+const classifyRestartSession = (
+  row: RestartAliveSessionRow,
+  probe: ProcessProbe,
+): RestartSessionObservation => {
+  const recordedIdentityIsFull =
+    row.process_pgid !== null && row.process_started_at !== null && row.process_command !== null;
+  const identityMatches =
+    probe.kind === "observed" &&
+    recordedIdentityIsFull &&
+    probe.identity.pgid === row.process_pgid &&
+    probe.identity.lstart === row.process_started_at &&
+    probe.identity.command === row.process_command;
+  if (identityMatches) {
+    return {
+      row,
+      disposition: "OrphanFound",
+      reason: "orphan-process-identity-matched",
+    };
+  }
+  if (probe.kind === "unavailable") {
+    return { row, disposition: "Probing", reason: "process-identity-unavailable" };
+  }
+  if (probe.kind === "observed" && !recordedIdentityIsFull) {
+    return {
+      row,
+      disposition: "Probing",
+      reason: "recorded-process-identity-incomplete",
+    };
+  }
+  return {
+    row,
+    disposition: "ConfirmedAbsent",
+    reason: probe.kind === "absent" ? "process-confirmed-absent" : "process-identity-mismatch",
+  };
+};
+
+const resolveRestartAttempt = (
+  observations: readonly RestartSessionObservation[],
+  hasDataGap: boolean,
+): RestartAttemptResolution => {
+  const orphan = observations.find(({ disposition }) => disposition === "OrphanFound");
+  if (orphan !== undefined) {
+    return { status: "Uncertain", disposition: "OrphanFound", reason: orphan.reason };
+  }
+  const probing = observations.find(({ disposition }) => disposition === "Probing");
+  if (probing !== undefined) {
+    return { status: "Uncertain", disposition: "Probing", reason: probing.reason };
+  }
+  if (hasDataGap) {
+    return {
+      status: "Uncertain",
+      disposition: "ConfirmedAbsent",
+      reason: "evidence-gap-with-confirmed-absent",
+    };
+  }
+  return {
+    status: "Interrupted",
+    disposition: "ConfirmedAbsent",
+    reason: observations.some(({ reason }) => reason === "process-identity-mismatch")
+      ? "process-identity-mismatch"
+      : "process-confirmed-absent",
+  };
+};
 
 const sleep = async (milliseconds: number): Promise<void> =>
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1107,27 +1238,20 @@ export class SessionRuntime implements SessionRuntimeContract {
   reconcileAfterRestart(): RestartReconciliationReport {
     const storage = reconcileStore(this.#storeDir, this.#db);
     const inputs = reconcileInputIntents(this.#storeDir, this.#db);
+    const attemptsWithDataGaps = this.#recordStorageDataGaps(storage.dataGaps);
     const alive = this.#db
       .prepare(
         `SELECT sessions.session_id, sessions.attempt_id, sessions.process_pid,
                 sessions.process_pgid, sessions.process_started_at, sessions.process_command,
-                attempts.task_id, attempts.status
+                sessions.generation, attempts.task_id, attempts.status
          FROM sessions
          JOIN attempts ON attempts.attempt_id = sessions.attempt_id
          WHERE sessions.availability = 'Alive'
          ORDER BY sessions.created_at, sessions.session_id`,
       )
-      .all() as unknown as {
-      readonly session_id: string;
-      readonly attempt_id: string;
-      readonly task_id: string;
-      readonly status: Attempt.AttemptStatus;
-      readonly process_pid: number | null;
-      readonly process_pgid: number | null;
-      readonly process_started_at: string | null;
-      readonly process_command: string | null;
-    }[];
+      .all() as unknown as RestartAliveSessionRow[];
     const actions: RestartReconciliationReport["actions"][number][] = [];
+    const observationsByAttempt = new Map<string, RestartSessionObservation[]>();
 
     for (const row of alive) {
       transact(
@@ -1157,66 +1281,51 @@ export class SessionRuntime implements SessionRuntimeContract {
         row.process_pid === null
           ? ({ kind: "unavailable" } as const)
           : this.#processProbe(row.process_pid);
-      const identityMatches =
-        probe.kind === "observed" &&
-        row.process_pgid !== null &&
-        row.process_started_at !== null &&
-        row.process_command !== null &&
-        probe.identity.pgid === row.process_pgid &&
-        probe.identity.lstart === row.process_started_at &&
-        probe.identity.command === row.process_command;
-      const recordedIdentityIsFull =
-        row.process_pgid !== null &&
-        row.process_started_at !== null &&
-        row.process_command !== null;
-      const resolution:
-        | {
-            readonly status: "Uncertain";
-            readonly disposition: "OrphanFound" | "Probing";
-            readonly reason: string;
-          }
-        | {
-            readonly status: "Interrupted";
-            readonly disposition: "ConfirmedAbsent";
-            readonly reason: string;
-          } = identityMatches
-        ? {
-            status: "Uncertain",
-            disposition: "OrphanFound",
-            reason: "orphan-process-identity-matched",
-          }
-        : probe.kind === "unavailable"
-          ? {
-              status: "Uncertain",
-              disposition: "Probing",
-              reason: "process-identity-unavailable",
-            }
-          : probe.kind === "observed" && !recordedIdentityIsFull
-            ? {
-                status: "Uncertain",
-                disposition: "Probing",
-                reason: "recorded-process-identity-incomplete",
-              }
-            : {
-                status: "Interrupted",
-                disposition: "ConfirmedAbsent",
-                reason:
-                  probe.kind === "absent"
-                    ? "process-confirmed-absent"
-                    : "process-identity-mismatch",
-              };
+      const observation = classifyRestartSession(row, probe);
+      const attemptObservations = observationsByAttempt.get(row.attempt_id) ?? [];
+      attemptObservations.push(observation);
+      observationsByAttempt.set(row.attempt_id, attemptObservations);
+    }
 
+    for (const [attemptId, observations] of observationsByAttempt) {
+      const first = observations[0];
+      if (first === undefined) continue;
+      const resolution = resolveRestartAttempt(observations, attemptsWithDataGaps.has(attemptId));
       transact(
         this.#db,
         () => {
           const now = new Date(this.#now()).toISOString();
-          this.#db
-            .prepare(
-              "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
-            )
-            .run(now, row.session_id);
-          this.#db.prepare("DELETE FROM control_leases WHERE session_id = ?").run(row.session_id);
-          this.#transitionAttempt(row.attempt_id, resolution.status);
+          for (const observation of observations) {
+            this.#db
+              .prepare(
+                "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
+              )
+              .run(now, observation.row.session_id);
+            this.#db
+              .prepare("DELETE FROM control_leases WHERE session_id = ?")
+              .run(observation.row.session_id);
+            this.#appendLifecycleEvent({
+              taskId: observation.row.task_id,
+              attemptId,
+              sessionId: observation.row.session_id,
+              type: "session-lost",
+              payload: {
+                reason: observation.reason,
+                processDisposition: observation.disposition,
+              },
+            });
+          }
+          if (!Attempt.isTerminalAttempt(first.row.status)) {
+            this.#transitionAttempt(attemptId, resolution.status);
+            this.#setAttemptTerminalReason(attemptId, resolution.reason);
+            this.#db
+              .prepare(
+                `UPDATE attempts
+                 SET primary_outcome = COALESCE(primary_outcome, ?)
+                 WHERE attempt_id = ?`,
+              )
+              .run(resolution.status, attemptId);
+          }
           this.#db
             .prepare(
               `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
@@ -1224,28 +1333,20 @@ export class SessionRuntime implements SessionRuntimeContract {
                ON CONFLICT (attempt_id) DO UPDATE
                SET disposition = excluded.disposition, updated_at = excluded.updated_at`,
             )
-            .run(row.attempt_id, resolution.disposition, now);
+            .run(attemptId, resolution.disposition, now);
           if (!ProcessDisposition.dispositionHoldsSlot(resolution.disposition)) {
-            this.#releaseSlot(row.attempt_id, now);
+            this.#releaseSlot(attemptId, now);
           }
-          this.#appendLifecycleEvent({
-            taskId: row.task_id,
-            attemptId: row.attempt_id,
-            sessionId: row.session_id,
-            type: "session-lost",
-            payload: {
-              reason: resolution.reason,
-              processDisposition: resolution.disposition,
-            },
-          });
         },
         this.#now,
       );
-      actions.push({
-        action: "marked-lost",
-        attemptId: row.attempt_id,
-        sessionId: row.session_id,
-      });
+      for (const observation of observations) {
+        actions.push({
+          action: "marked-lost",
+          attemptId,
+          sessionId: observation.row.session_id,
+        });
+      }
     }
 
     const prepared = this.#db
@@ -1351,6 +1452,81 @@ export class SessionRuntime implements SessionRuntimeContract {
         isolatedInputOrphanCount: inputs.isolatedOrphans.length,
       },
     };
+  }
+
+  async rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRebuildReport> {
+    const rows = this.#db
+      .prepare(
+        `SELECT sessions.session_id, sessions.attempt_id, sessions.generation,
+                attempts.task_id
+         FROM sessions
+         JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+         ORDER BY sessions.created_at, sessions.session_id`,
+      )
+      .all() as unknown as {
+      readonly session_id: string;
+      readonly attempt_id: string;
+      readonly generation: number;
+      readonly task_id: string;
+    }[];
+    const rebuilt: RestartSnapshotRebuildReport["rebuilt"][number][] = [];
+    const skippedForDataGap: RestartSnapshotRebuildReport["skippedForDataGap"][number][] = [];
+
+    for (const row of rows) {
+      if (this.#snapshotCoordinator.read(row.session_id, row.generation) !== null) continue;
+      try {
+        const snapshot = await this.createSessionSnapshot(row.session_id);
+        const item = {
+          attemptId: row.attempt_id,
+          sessionId: row.session_id,
+          generation: row.generation,
+          coversThroughSeq: snapshot.coversThroughSeq,
+        };
+        rebuilt.push(item);
+        transact(
+          this.#db,
+          () => {
+            this.#appendLifecycleEvent({
+              taskId: row.task_id,
+              attemptId: row.attempt_id,
+              sessionId: row.session_id,
+              type: "snapshot-rebuilt-after-reconciliation",
+              payload: {
+                sessionId: row.session_id,
+                generation: row.generation,
+                coversThroughSeq: snapshot.coversThroughSeq,
+              },
+            });
+          },
+          this.#now,
+        );
+      } catch (error) {
+        if (!(error instanceof DataIntegrityFailure)) throw error;
+        const item = {
+          attemptId: row.attempt_id,
+          sessionId: row.session_id,
+          generation: row.generation,
+        };
+        skippedForDataGap.push(item);
+        transact(
+          this.#db,
+          () => {
+            this.#appendLifecycleEvent({
+              taskId: row.task_id,
+              attemptId: row.attempt_id,
+              sessionId: row.session_id,
+              type: "snapshot-rebuild-skipped-data-gap",
+              payload: {
+                sessionId: row.session_id,
+                generation: row.generation,
+              },
+            });
+          },
+          this.#now,
+        );
+      }
+    }
+    return { rebuilt, skippedForDataGap };
   }
 
   readDurableFrame(frame: DurableFrameRef): Uint8Array | null {
@@ -1579,6 +1755,21 @@ export class SessionRuntime implements SessionRuntimeContract {
           exitCode: event.exitCode,
           signal: event.signal,
         });
+        const exited = this.#db
+          .prepare("SELECT role FROM sessions WHERE session_id = ?")
+          .get(prepared.plannedSessionId) as { readonly role: string } | undefined;
+        if (exited?.role === "PrimaryAgent") {
+          const primaryOutcome =
+            event.exitCode === 0 && event.signal === 0 ? "Succeeded" : "Failed";
+          this.#db
+            .prepare(
+              `UPDATE attempts
+               SET primary_outcome = ?, primary_exit_code = ?, primary_exit_signal = ?
+               WHERE attempt_id = ? AND primary_outcome IS NULL`,
+            )
+            .run(primaryOutcome, event.exitCode, event.signal, prepared.attemptId);
+        }
+        this.#settleAttemptIfComplete(prepared);
       },
       this.#now,
     );
@@ -2095,6 +2286,7 @@ export class SessionRuntime implements SessionRuntimeContract {
           )
           .run(reason, JSON.stringify(result), now, prepared.launchNonce);
         this.#transitionAttempt(prepared.attemptId, "Failed");
+        this.#setAttemptTerminalReason(prepared.attemptId, reason);
         this.#db
           .prepare("UPDATE slot_leases SET released_at = ? WHERE slot_lease_id = ?")
           .run(now, prepared.slotLeaseId);
@@ -2120,6 +2312,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       () => {
         const now = new Date(this.#now()).toISOString();
         this.#transitionAttempt(prepared.attemptId, "Uncertain");
+        this.#setAttemptTerminalReason(prepared.attemptId, reason);
         this.#db
           .prepare(
             "UPDATE launch_intents SET result_json = ?, updated_at = ? WHERE launch_nonce = ?",
@@ -2200,6 +2393,53 @@ export class SessionRuntime implements SessionRuntimeContract {
          WHERE attempt_id = ?`,
       )
       .run(to, attemptId);
+  }
+
+  #setAttemptTerminalReason(attemptId: string, reason: string | null): void {
+    this.#db
+      .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+      .run(reason, attemptId);
+  }
+
+  #settleAttemptIfComplete(prepared: PreparedLaunch): void {
+    const attempt = this.#db
+      .prepare(
+        `SELECT status, primary_outcome
+         FROM attempts
+         WHERE attempt_id = ?`,
+      )
+      .get(prepared.attemptId) as
+      | {
+          readonly status: Attempt.AttemptStatus;
+          readonly primary_outcome: PrimaryOutcome | null;
+        }
+      | undefined;
+    if (attempt === undefined || attempt.primary_outcome === null) return;
+    if (Attempt.isTerminalAttempt(attempt.status)) return;
+
+    const blocking = this.#db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM sessions
+         WHERE attempt_id = ?
+           AND completion_policy = 'BlocksAttemptCompletion'
+           AND availability = 'Alive'`,
+      )
+      .get(prepared.attemptId) as { readonly count: number };
+    if (blocking.count > 0) return;
+
+    const settlement =
+      attempt.status === "Stopping"
+        ? STOPPING_SETTLEMENT
+        : PRIMARY_OUTCOME_SETTLEMENTS[attempt.primary_outcome];
+    this.#transitionAttempt(prepared.attemptId, settlement.status);
+    this.#setAttemptTerminalReason(prepared.attemptId, settlement.reason);
+    const now = new Date(this.#now()).toISOString();
+    this.#releaseSlot(prepared.attemptId, now);
+    this.#appendEvent(prepared, settlement.eventType, {
+      primaryOutcome: attempt.primary_outcome,
+      reason: settlement.reason,
+    });
   }
 
   #ownedProcessesForAttempt(attemptId: string): OwnedProcess[] {
@@ -2305,6 +2545,57 @@ export class SessionRuntime implements SessionRuntimeContract {
       },
       this.#now,
     );
+  }
+
+  #recordStorageDataGaps(dataGaps: readonly StoreDataGap[]): ReadonlySet<string> {
+    const attemptIds = new Set<string>();
+    for (const gap of dataGaps) {
+      const owner = this.#db
+        .prepare(
+          `SELECT sessions.attempt_id, attempts.task_id
+           FROM sessions
+           JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+           WHERE sessions.session_id = ? AND sessions.generation = ?`,
+        )
+        .get(gap.sessionId, gap.generation) as
+        | { readonly attempt_id: string; readonly task_id: string }
+        | undefined;
+      if (owner === undefined) continue;
+      attemptIds.add(owner.attempt_id);
+      const payload = {
+        kind: "chunk",
+        sessionId: gap.sessionId,
+        generation: gap.generation,
+        seq: gap.seq,
+        reason: gap.reason,
+        missingByteCount: gap.byteLength,
+      };
+      const serialized = JSON.stringify(payload);
+      const exists = this.#db
+        .prepare(
+          `SELECT 1 AS present
+           FROM domain_events
+           WHERE task_id = ? AND attempt_id = ? AND session_id = ?
+             AND type = 'data-gap-detected' AND payload_json = ?
+           LIMIT 1`,
+        )
+        .get(owner.task_id, owner.attempt_id, gap.sessionId, serialized);
+      if (exists !== undefined) continue;
+      transact(
+        this.#db,
+        () => {
+          this.#appendLifecycleEvent({
+            taskId: owner.task_id,
+            attemptId: owner.attempt_id,
+            sessionId: gap.sessionId,
+            type: "data-gap-detected",
+            payload,
+          });
+        },
+        this.#now,
+      );
+    }
+    return attemptIds;
   }
 
   #appendEvent(prepared: PreparedLaunch, type: string, payload: unknown): void {
