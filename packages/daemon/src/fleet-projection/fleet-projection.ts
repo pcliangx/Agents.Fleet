@@ -216,13 +216,20 @@ export class FleetProjection implements FleetProjectionContract {
           : lastSource;
     const dataGap = this.#db
       .prepare(
-        `SELECT COUNT(*) AS count, MAX(i.created_at) AS observed_at
-         FROM input_intents i
-         JOIN sessions s ON s.session_id = i.session_id
-         JOIN attempts a ON a.attempt_id = s.attempt_id
-         WHERE a.task_id = ? AND i.data_gap = 1`,
+        `SELECT COUNT(*) AS count, MAX(observed_at) AS observed_at
+         FROM (
+           SELECT i.created_at AS observed_at
+           FROM input_intents i
+           JOIN sessions s ON s.session_id = i.session_id
+           JOIN attempts a ON a.attempt_id = s.attempt_id
+           WHERE a.task_id = ? AND i.data_gap = 1
+           UNION ALL
+           SELECT e.observed_at
+           FROM domain_events e
+           WHERE e.task_id = ? AND e.type = 'data-gap-detected'
+         )`,
       )
-      .get(taskId) as unknown as CountRow;
+      .get(taskId, taskId) as unknown as CountRow;
     const needsUserAction =
       currentAttempt?.status === "Waiting" ||
       (currentAttempt === null &&

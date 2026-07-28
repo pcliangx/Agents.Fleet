@@ -141,6 +141,24 @@ export interface RestartReconciliationReport {
   };
 }
 
+export interface RebuiltSessionSnapshot {
+  readonly attemptId: string;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly coversThroughSeq: number;
+}
+
+export interface SnapshotRebuildSkippedForDataGap {
+  readonly attemptId: string;
+  readonly sessionId: string;
+  readonly generation: number;
+}
+
+export interface RestartSnapshotRecoveryReport {
+  readonly rebuilt: readonly RebuiltSessionSnapshot[];
+  readonly skippedForDataGap: readonly SnapshotRebuildSkippedForDataGap[];
+}
+
 export interface SessionRuntime {
   launch(prepared: PreparedLaunch, validation: LaunchValidation): Promise<LaunchSessionResult>;
   attach(sessionId: string): AttachResult;
@@ -175,4 +193,5 @@ export interface SessionRuntime {
   inspectSession(sessionId: string): SessionRuntimeRecord | null;
   readDurableFrame(frame: DurableFrameRef): Uint8Array | null;
   reconcileAfterRestart(): RestartReconciliationReport;
+  rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRecoveryReport>;
 }

@@ -36,6 +36,7 @@ import {
   ProcessDisposition,
   type ResizeSessionRequest,
   type RestartReconciliationReport,
+  type RestartSnapshotRecoveryReport,
   type ResumableAttemptStatus,
   type Seq,
   type SessionDeltaBatch,
@@ -54,7 +55,7 @@ import { canonicalSha256 } from "../crypto/canonical-hash.js";
 import { transact } from "../storage/database.js";
 import { appendDomainEvent } from "../storage/domain-event-store.js";
 import { StoreError } from "../storage/task-store.js";
-import { ByteJournal } from "./byte-journal.js";
+import { ByteJournal, DataIntegrityFailure } from "./byte-journal.js";
 import { durableWriteContentObject } from "./content-object-io.js";
 import {
   type InputIntentStep,
@@ -67,7 +68,7 @@ import type {
   SupervisedPtyProcess,
 } from "./process-supervisor.js";
 import { SnapshotCoordinator } from "./snapshot-coordinator.js";
-import { reconcileStore } from "./store-reconciliation.js";
+import { reconcileStore, type StoreDataGap } from "./store-reconciliation.js";
 
 const DEFAULT_BOOTSTRAP = join(dirname(fileURLToPath(import.meta.url)), "bootstrap.mjs");
 const CONTROL_LEASE_TTL_MS = 15_000;
@@ -1107,6 +1108,7 @@ export class SessionRuntime implements SessionRuntimeContract {
   reconcileAfterRestart(): RestartReconciliationReport {
     const storage = reconcileStore(this.#storeDir, this.#db);
     const inputs = reconcileInputIntents(this.#storeDir, this.#db);
+    this.#recordStorageDataGaps(storage.dataGaps);
     const alive = this.#db
       .prepare(
         `SELECT sessions.session_id, sessions.attempt_id, sessions.process_pid,
@@ -1217,6 +1219,9 @@ export class SessionRuntime implements SessionRuntimeContract {
             .run(now, row.session_id);
           this.#db.prepare("DELETE FROM control_leases WHERE session_id = ?").run(row.session_id);
           this.#transitionAttempt(row.attempt_id, resolution.status);
+          this.#db
+            .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+            .run(resolution.reason, row.attempt_id);
           this.#db
             .prepare(
               `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
@@ -1351,6 +1356,84 @@ export class SessionRuntime implements SessionRuntimeContract {
         isolatedInputOrphanCount: inputs.isolatedOrphans.length,
       },
     };
+  }
+
+  async rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRecoveryReport> {
+    const rows = this.#db
+      .prepare(
+        `SELECT sessions.session_id, sessions.attempt_id, sessions.generation,
+                attempts.task_id
+         FROM sessions
+         JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+         JOIN session_snapshots
+           ON session_snapshots.session_id = sessions.session_id
+          AND session_snapshots.generation = sessions.generation
+         ORDER BY sessions.created_at, sessions.session_id`,
+      )
+      .all() as unknown as {
+      readonly session_id: string;
+      readonly attempt_id: string;
+      readonly generation: number;
+      readonly task_id: string;
+    }[];
+    const rebuilt: RestartSnapshotRecoveryReport["rebuilt"][number][] = [];
+    const skippedForDataGap: RestartSnapshotRecoveryReport["skippedForDataGap"][number][] = [];
+
+    for (const row of rows) {
+      if (this.#snapshotCoordinator.read(row.session_id, row.generation) !== null) continue;
+      try {
+        const snapshot = await this.createSessionSnapshot(row.session_id);
+        const item = {
+          attemptId: row.attempt_id,
+          sessionId: row.session_id,
+          generation: row.generation,
+          coversThroughSeq: snapshot.coversThroughSeq,
+        };
+        rebuilt.push(item);
+        transact(
+          this.#db,
+          () => {
+            this.#appendLifecycleEvent({
+              taskId: row.task_id,
+              attemptId: row.attempt_id,
+              sessionId: row.session_id,
+              type: "snapshot-rebuilt-after-reconciliation",
+              payload: {
+                sessionId: row.session_id,
+                generation: row.generation,
+                coversThroughSeq: snapshot.coversThroughSeq,
+              },
+            });
+          },
+          this.#now,
+        );
+      } catch (error) {
+        if (!(error instanceof DataIntegrityFailure)) throw error;
+        const item = {
+          attemptId: row.attempt_id,
+          sessionId: row.session_id,
+          generation: row.generation,
+        };
+        skippedForDataGap.push(item);
+        transact(
+          this.#db,
+          () => {
+            this.#appendLifecycleEvent({
+              taskId: row.task_id,
+              attemptId: row.attempt_id,
+              sessionId: row.session_id,
+              type: "snapshot-rebuild-skipped-data-gap",
+              payload: {
+                sessionId: row.session_id,
+                generation: row.generation,
+              },
+            });
+          },
+          this.#now,
+        );
+      }
+    }
+    return { rebuilt, skippedForDataGap };
   }
 
   readDurableFrame(frame: DurableFrameRef): Uint8Array | null {
@@ -1579,6 +1662,15 @@ export class SessionRuntime implements SessionRuntimeContract {
           exitCode: event.exitCode,
           signal: event.signal,
         });
+        const primaryOutcome = event.exitCode === 0 && event.signal === 0 ? "Succeeded" : "Failed";
+        this.#db
+          .prepare(
+            `UPDATE attempts
+             SET primary_outcome = ?, primary_exit_code = ?, primary_exit_signal = ?
+             WHERE attempt_id = ? AND primary_outcome IS NULL`,
+          )
+          .run(primaryOutcome, event.exitCode, event.signal, prepared.attemptId);
+        this.#settleAttemptAfterPrimaryExit(prepared);
       },
       this.#now,
     );
@@ -2096,6 +2188,9 @@ export class SessionRuntime implements SessionRuntimeContract {
           .run(reason, JSON.stringify(result), now, prepared.launchNonce);
         this.#transitionAttempt(prepared.attemptId, "Failed");
         this.#db
+          .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+          .run(reason, prepared.attemptId);
+        this.#db
           .prepare("UPDATE slot_leases SET released_at = ? WHERE slot_lease_id = ?")
           .run(now, prepared.slotLeaseId);
         this.#appendEvent(prepared, "launch-aborted", { reason });
@@ -2120,6 +2215,9 @@ export class SessionRuntime implements SessionRuntimeContract {
       () => {
         const now = new Date(this.#now()).toISOString();
         this.#transitionAttempt(prepared.attemptId, "Uncertain");
+        this.#db
+          .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+          .run(reason, prepared.attemptId);
         this.#db
           .prepare(
             "UPDATE launch_intents SET result_json = ?, updated_at = ? WHERE launch_nonce = ?",
@@ -2200,6 +2298,61 @@ export class SessionRuntime implements SessionRuntimeContract {
          WHERE attempt_id = ?`,
       )
       .run(to, attemptId);
+  }
+
+  #settleAttemptAfterPrimaryExit(prepared: PreparedLaunch): void {
+    const attempt = this.#db
+      .prepare(
+        `SELECT status, primary_outcome
+         FROM attempts
+         WHERE attempt_id = ?`,
+      )
+      .get(prepared.attemptId) as
+      | {
+          readonly status: Attempt.AttemptStatus;
+          readonly primary_outcome: "Succeeded" | "Failed" | "Uncertain" | null;
+        }
+      | undefined;
+    if (attempt === undefined || attempt.primary_outcome === null) return;
+    if (Attempt.isTerminalAttempt(attempt.status)) return;
+
+    const blocking = this.#db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM sessions
+         WHERE attempt_id = ?
+           AND completion_policy = 'BlocksAttemptCompletion'
+           AND availability = 'Alive'`,
+      )
+      .get(prepared.attemptId) as { readonly count: number };
+    if (blocking.count > 0) return;
+
+    const terminal =
+      attempt.status === "Stopping"
+        ? "Cancelled"
+        : attempt.primary_outcome === "Succeeded"
+          ? "Succeeded"
+          : attempt.primary_outcome === "Failed"
+            ? "Failed"
+            : "Uncertain";
+    this.#transitionAttempt(prepared.attemptId, terminal);
+    const reason =
+      terminal === "Failed"
+        ? "AgentExited"
+        : terminal === "Cancelled"
+          ? "StopRequested"
+          : terminal === "Uncertain"
+            ? "AgentOutcomeUncertain"
+            : null;
+    this.#db
+      .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+      .run(reason, prepared.attemptId);
+    const now = new Date(this.#now()).toISOString();
+    this.#releaseSlot(prepared.attemptId, now);
+    this.#appendEvent(prepared, `attempt-${terminal.toLowerCase()}`, {
+      primaryOutcome: attempt.primary_outcome,
+      reason,
+    });
   }
 
   #ownedProcessesForAttempt(attemptId: string): OwnedProcess[] {
@@ -2305,6 +2458,54 @@ export class SessionRuntime implements SessionRuntimeContract {
       },
       this.#now,
     );
+  }
+
+  #recordStorageDataGaps(dataGaps: readonly StoreDataGap[]): void {
+    for (const gap of dataGaps) {
+      const owner = this.#db
+        .prepare(
+          `SELECT sessions.attempt_id, attempts.task_id
+           FROM sessions
+           JOIN attempts ON attempts.attempt_id = sessions.attempt_id
+           WHERE sessions.session_id = ? AND sessions.generation = ?`,
+        )
+        .get(gap.sessionId, gap.generation) as
+        | { readonly attempt_id: string; readonly task_id: string }
+        | undefined;
+      if (owner === undefined) continue;
+      const payload = {
+        kind: "chunk",
+        sessionId: gap.sessionId,
+        generation: gap.generation,
+        seq: gap.seq,
+        reason: gap.reason,
+        missingByteCount: gap.byteLength,
+      };
+      const serialized = JSON.stringify(payload);
+      const exists = this.#db
+        .prepare(
+          `SELECT 1 AS present
+           FROM domain_events
+           WHERE task_id = ? AND attempt_id = ? AND session_id = ?
+             AND type = 'data-gap-detected' AND payload_json = ?
+           LIMIT 1`,
+        )
+        .get(owner.task_id, owner.attempt_id, gap.sessionId, serialized);
+      if (exists !== undefined) continue;
+      transact(
+        this.#db,
+        () => {
+          this.#appendLifecycleEvent({
+            taskId: owner.task_id,
+            attemptId: owner.attempt_id,
+            sessionId: gap.sessionId,
+            type: "data-gap-detected",
+            payload,
+          });
+        },
+        this.#now,
+      );
+    }
   }
 
   #appendEvent(prepared: PreparedLaunch, type: string, payload: unknown): void {
