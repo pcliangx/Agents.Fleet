@@ -154,7 +154,7 @@ export interface SnapshotRebuildSkippedForDataGap {
   readonly generation: number;
 }
 
-export interface RestartSnapshotRecoveryReport {
+export interface RestartSnapshotRebuildReport {
   readonly rebuilt: readonly RebuiltSessionSnapshot[];
   readonly skippedForDataGap: readonly SnapshotRebuildSkippedForDataGap[];
 }
@@ -193,5 +193,5 @@ export interface SessionRuntime {
   inspectSession(sessionId: string): SessionRuntimeRecord | null;
   readDurableFrame(frame: DurableFrameRef): Uint8Array | null;
   reconcileAfterRestart(): RestartReconciliationReport;
-  rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRecoveryReport>;
+  rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRebuildReport>;
 }

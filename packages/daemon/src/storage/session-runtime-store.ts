@@ -148,7 +148,7 @@ export const SESSION_RUNTIME_MIGRATIONS: readonly Migration[] = [
     up: (db) => {
       db.exec(`
         ALTER TABLE attempts ADD COLUMN primary_outcome TEXT
-          CHECK (primary_outcome IN ('Succeeded','Failed','Uncertain'));
+          CHECK (primary_outcome IN ('Succeeded','Failed','Interrupted','Uncertain'));
         ALTER TABLE attempts ADD COLUMN primary_exit_code INTEGER;
         ALTER TABLE attempts ADD COLUMN primary_exit_signal INTEGER;
       `);

@@ -6,7 +6,7 @@
 import type {
   LaunchSessionResult,
   RestartReconciliationReport,
-  RestartSnapshotRecoveryReport,
+  RestartSnapshotRebuildReport,
   SessionRuntime,
 } from "@agents-fleet/contracts";
 
@@ -19,8 +19,9 @@ export interface ResumedPreparedLaunch {
 
 export interface StartupReconciliationReport {
   readonly reconciliation: RestartReconciliationReport;
-  readonly snapshotRecovery: RestartSnapshotRecoveryReport;
+  readonly snapshotRebuild: RestartSnapshotRebuildReport;
   readonly resumedLaunches: readonly ResumedPreparedLaunch[];
+  readonly hasFindings: boolean;
 }
 
 export const runStartupReconciliation = async (options: {
@@ -31,7 +32,7 @@ export const runStartupReconciliation = async (options: {
   readonly revalidateAcceptedAttempt: (attemptId: string) => Promise<boolean>;
 }): Promise<StartupReconciliationReport> => {
   const reconciliation = options.sessions.reconcileAfterRestart();
-  const snapshotRecovery = await options.sessions.rebuildInvalidSnapshotsAfterRestart();
+  const snapshotRebuild = await options.sessions.rebuildInvalidSnapshotsAfterRestart();
   const resumedLaunches: ResumedPreparedLaunch[] = [];
   for (const item of reconciliation.actions) {
     if (item.action !== "resume-prepared") continue;
@@ -45,5 +46,17 @@ export const runStartupReconciliation = async (options: {
       result,
     });
   }
-  return { reconciliation, snapshotRecovery, resumedLaunches };
+  const integrity = reconciliation.dataIntegrity;
+  const hasFindings =
+    reconciliation.actions.length > 0 ||
+    resumedLaunches.length > 0 ||
+    snapshotRebuild.rebuilt.length > 0 ||
+    snapshotRebuild.skippedForDataGap.length > 0 ||
+    integrity.adoptedOrphanCount > 0 ||
+    integrity.isolatedOrphanCount > 0 ||
+    integrity.dataGapCount > 0 ||
+    integrity.uncertainInputIntentCount > 0 ||
+    integrity.inputDataGapCount > 0 ||
+    integrity.isolatedInputOrphanCount > 0;
+  return { reconciliation, snapshotRebuild, resumedLaunches, hasFindings };
 };

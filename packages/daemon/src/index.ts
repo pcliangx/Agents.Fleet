@@ -147,18 +147,9 @@ if (opened.kind === "ready") {
       await launches.revalidateAcceptedAttempt(attemptId),
   });
   const integrity = startup.reconciliation.dataIntegrity;
-  if (
-    startup.reconciliation.actions.length > 0 ||
-    startup.resumedLaunches.length > 0 ||
-    integrity.adoptedOrphanCount > 0 ||
-    integrity.isolatedOrphanCount > 0 ||
-    integrity.dataGapCount > 0 ||
-    integrity.uncertainInputIntentCount > 0 ||
-    integrity.inputDataGapCount > 0 ||
-    integrity.isolatedInputOrphanCount > 0
-  ) {
+  if (startup.hasFindings) {
     process.stderr.write(
-      `<daemon reconciliation actions=${startup.reconciliation.actions.length} resumed=${startup.resumedLaunches.length} dataGaps=${integrity.dataGapCount + integrity.inputDataGapCount}>\n`,
+      `<daemon reconciliation actions=${startup.reconciliation.actions.length} resumed=${startup.resumedLaunches.length} snapshotsRebuilt=${startup.snapshotRebuild.rebuilt.length} snapshotDataGaps=${startup.snapshotRebuild.skippedForDataGap.length} dataGaps=${integrity.dataGapCount + integrity.inputDataGapCount}>\n`,
     );
   }
   router = new RuntimeCommandRouter({

@@ -77,7 +77,7 @@ export type {
   ResizeSessionRequest,
   RestartReconciliationAction,
   RestartReconciliationReport,
-  RestartSnapshotRecoveryReport,
+  RestartSnapshotRebuildReport,
   ResumableAttemptStatus,
   SessionRuntime,
   SessionRuntimeRecord,

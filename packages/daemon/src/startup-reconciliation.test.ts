@@ -189,6 +189,7 @@ describe("runStartupReconciliation", () => {
           },
         },
       ]);
+      expect(report.hasFindings).toBe(true);
       await waitFor(() => existsSync(markerPath));
       expect(readFileSync(markerPath, "utf8")).toBe("x");
     } finally {

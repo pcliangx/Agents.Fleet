@@ -36,7 +36,7 @@ import {
   ProcessDisposition,
   type ResizeSessionRequest,
   type RestartReconciliationReport,
-  type RestartSnapshotRecoveryReport,
+  type RestartSnapshotRebuildReport,
   type ResumableAttemptStatus,
   type Seq,
   type SessionDeltaBatch,
@@ -160,6 +160,136 @@ type ProcessProbe =
     }
   | { readonly kind: "absent" }
   | { readonly kind: "unavailable" };
+
+type PrimaryOutcome = "Succeeded" | "Failed" | "Interrupted" | "Uncertain";
+
+interface AttemptSettlement {
+  readonly status: PrimaryOutcome | "Cancelled";
+  readonly reason: string | null;
+  readonly eventType:
+    | "attempt-succeeded"
+    | "attempt-failed"
+    | "attempt-cancelled"
+    | "attempt-interrupted"
+    | "attempt-uncertain";
+}
+
+const PRIMARY_OUTCOME_SETTLEMENTS = {
+  Succeeded: {
+    status: "Succeeded",
+    reason: null,
+    eventType: "attempt-succeeded",
+  },
+  Failed: {
+    status: "Failed",
+    reason: "AgentExited",
+    eventType: "attempt-failed",
+  },
+  Interrupted: {
+    status: "Interrupted",
+    reason: "AgentInterrupted",
+    eventType: "attempt-interrupted",
+  },
+  Uncertain: {
+    status: "Uncertain",
+    reason: "AgentOutcomeUncertain",
+    eventType: "attempt-uncertain",
+  },
+} as const satisfies Record<PrimaryOutcome, AttemptSettlement>;
+
+const STOPPING_SETTLEMENT = {
+  status: "Cancelled",
+  reason: "StopRequested",
+  eventType: "attempt-cancelled",
+} as const satisfies AttemptSettlement;
+
+interface RestartAliveSessionRow {
+  readonly session_id: string;
+  readonly attempt_id: string;
+  readonly task_id: string;
+  readonly status: Attempt.AttemptStatus;
+  readonly generation: number;
+  readonly process_pid: number | null;
+  readonly process_pgid: number | null;
+  readonly process_started_at: string | null;
+  readonly process_command: string | null;
+}
+
+interface RestartSessionObservation {
+  readonly row: RestartAliveSessionRow;
+  readonly disposition: "OrphanFound" | "Probing" | "ConfirmedAbsent";
+  readonly reason: string;
+}
+
+interface RestartAttemptResolution {
+  readonly status: "Interrupted" | "Uncertain";
+  readonly disposition: "OrphanFound" | "Probing" | "ConfirmedAbsent";
+  readonly reason: string;
+}
+
+const classifyRestartSession = (
+  row: RestartAliveSessionRow,
+  probe: ProcessProbe,
+): RestartSessionObservation => {
+  const recordedIdentityIsFull =
+    row.process_pgid !== null && row.process_started_at !== null && row.process_command !== null;
+  const identityMatches =
+    probe.kind === "observed" &&
+    recordedIdentityIsFull &&
+    probe.identity.pgid === row.process_pgid &&
+    probe.identity.lstart === row.process_started_at &&
+    probe.identity.command === row.process_command;
+  if (identityMatches) {
+    return {
+      row,
+      disposition: "OrphanFound",
+      reason: "orphan-process-identity-matched",
+    };
+  }
+  if (probe.kind === "unavailable") {
+    return { row, disposition: "Probing", reason: "process-identity-unavailable" };
+  }
+  if (probe.kind === "observed" && !recordedIdentityIsFull) {
+    return {
+      row,
+      disposition: "Probing",
+      reason: "recorded-process-identity-incomplete",
+    };
+  }
+  return {
+    row,
+    disposition: "ConfirmedAbsent",
+    reason: probe.kind === "absent" ? "process-confirmed-absent" : "process-identity-mismatch",
+  };
+};
+
+const resolveRestartAttempt = (
+  observations: readonly RestartSessionObservation[],
+  hasDataGap: boolean,
+): RestartAttemptResolution => {
+  const orphan = observations.find(({ disposition }) => disposition === "OrphanFound");
+  if (orphan !== undefined) {
+    return { status: "Uncertain", disposition: "OrphanFound", reason: orphan.reason };
+  }
+  const probing = observations.find(({ disposition }) => disposition === "Probing");
+  if (probing !== undefined) {
+    return { status: "Uncertain", disposition: "Probing", reason: probing.reason };
+  }
+  if (hasDataGap) {
+    return {
+      status: "Uncertain",
+      disposition: "ConfirmedAbsent",
+      reason: "evidence-gap-with-confirmed-absent",
+    };
+  }
+  return {
+    status: "Interrupted",
+    disposition: "ConfirmedAbsent",
+    reason: observations.some(({ reason }) => reason === "process-identity-mismatch")
+      ? "process-identity-mismatch"
+      : "process-confirmed-absent",
+  };
+};
 
 const sleep = async (milliseconds: number): Promise<void> =>
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1108,28 +1238,20 @@ export class SessionRuntime implements SessionRuntimeContract {
   reconcileAfterRestart(): RestartReconciliationReport {
     const storage = reconcileStore(this.#storeDir, this.#db);
     const inputs = reconcileInputIntents(this.#storeDir, this.#db);
-    this.#recordStorageDataGaps(storage.dataGaps);
+    const attemptsWithDataGaps = this.#recordStorageDataGaps(storage.dataGaps);
     const alive = this.#db
       .prepare(
         `SELECT sessions.session_id, sessions.attempt_id, sessions.process_pid,
                 sessions.process_pgid, sessions.process_started_at, sessions.process_command,
-                attempts.task_id, attempts.status
+                sessions.generation, attempts.task_id, attempts.status
          FROM sessions
          JOIN attempts ON attempts.attempt_id = sessions.attempt_id
          WHERE sessions.availability = 'Alive'
          ORDER BY sessions.created_at, sessions.session_id`,
       )
-      .all() as unknown as {
-      readonly session_id: string;
-      readonly attempt_id: string;
-      readonly task_id: string;
-      readonly status: Attempt.AttemptStatus;
-      readonly process_pid: number | null;
-      readonly process_pgid: number | null;
-      readonly process_started_at: string | null;
-      readonly process_command: string | null;
-    }[];
+      .all() as unknown as RestartAliveSessionRow[];
     const actions: RestartReconciliationReport["actions"][number][] = [];
+    const observationsByAttempt = new Map<string, RestartSessionObservation[]>();
 
     for (const row of alive) {
       transact(
@@ -1159,69 +1281,51 @@ export class SessionRuntime implements SessionRuntimeContract {
         row.process_pid === null
           ? ({ kind: "unavailable" } as const)
           : this.#processProbe(row.process_pid);
-      const identityMatches =
-        probe.kind === "observed" &&
-        row.process_pgid !== null &&
-        row.process_started_at !== null &&
-        row.process_command !== null &&
-        probe.identity.pgid === row.process_pgid &&
-        probe.identity.lstart === row.process_started_at &&
-        probe.identity.command === row.process_command;
-      const recordedIdentityIsFull =
-        row.process_pgid !== null &&
-        row.process_started_at !== null &&
-        row.process_command !== null;
-      const resolution:
-        | {
-            readonly status: "Uncertain";
-            readonly disposition: "OrphanFound" | "Probing";
-            readonly reason: string;
-          }
-        | {
-            readonly status: "Interrupted";
-            readonly disposition: "ConfirmedAbsent";
-            readonly reason: string;
-          } = identityMatches
-        ? {
-            status: "Uncertain",
-            disposition: "OrphanFound",
-            reason: "orphan-process-identity-matched",
-          }
-        : probe.kind === "unavailable"
-          ? {
-              status: "Uncertain",
-              disposition: "Probing",
-              reason: "process-identity-unavailable",
-            }
-          : probe.kind === "observed" && !recordedIdentityIsFull
-            ? {
-                status: "Uncertain",
-                disposition: "Probing",
-                reason: "recorded-process-identity-incomplete",
-              }
-            : {
-                status: "Interrupted",
-                disposition: "ConfirmedAbsent",
-                reason:
-                  probe.kind === "absent"
-                    ? "process-confirmed-absent"
-                    : "process-identity-mismatch",
-              };
+      const observation = classifyRestartSession(row, probe);
+      const attemptObservations = observationsByAttempt.get(row.attempt_id) ?? [];
+      attemptObservations.push(observation);
+      observationsByAttempt.set(row.attempt_id, attemptObservations);
+    }
 
+    for (const [attemptId, observations] of observationsByAttempt) {
+      const first = observations[0];
+      if (first === undefined) continue;
+      const resolution = resolveRestartAttempt(observations, attemptsWithDataGaps.has(attemptId));
       transact(
         this.#db,
         () => {
           const now = new Date(this.#now()).toISOString();
-          this.#db
-            .prepare(
-              "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
-            )
-            .run(now, row.session_id);
-          this.#db.prepare("DELETE FROM control_leases WHERE session_id = ?").run(row.session_id);
-          this.#transitionAttempt(row.attempt_id, resolution.status);
-          this.#db
-            .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
-            .run(resolution.reason, row.attempt_id);
+          for (const observation of observations) {
+            this.#db
+              .prepare(
+                "UPDATE sessions SET availability = 'Lost', updated_at = ? WHERE session_id = ? AND availability = 'Alive'",
+              )
+              .run(now, observation.row.session_id);
+            this.#db
+              .prepare("DELETE FROM control_leases WHERE session_id = ?")
+              .run(observation.row.session_id);
+            this.#appendLifecycleEvent({
+              taskId: observation.row.task_id,
+              attemptId,
+              sessionId: observation.row.session_id,
+              type: "session-lost",
+              payload: {
+                reason: observation.reason,
+                processDisposition: observation.disposition,
+              },
+            });
+          }
+          if (!Attempt.isTerminalAttempt(first.row.status)) {
+            this.#transitionAttempt(attemptId, resolution.status);
+            this.#setAttemptTerminalReason(attemptId, resolution.reason);
+            this.#db
+              .prepare(
+                `UPDATE attempts
+                 SET primary_outcome = COALESCE(primary_outcome, ?)
+                 WHERE attempt_id = ?`,
+              )
+              .run(resolution.status, attemptId);
+          }
           this.#db
             .prepare(
               `INSERT INTO process_dispositions (attempt_id, disposition, updated_at)
@@ -1229,28 +1333,20 @@ export class SessionRuntime implements SessionRuntimeContract {
                ON CONFLICT (attempt_id) DO UPDATE
                SET disposition = excluded.disposition, updated_at = excluded.updated_at`,
             )
-            .run(row.attempt_id, resolution.disposition, now);
+            .run(attemptId, resolution.disposition, now);
           if (!ProcessDisposition.dispositionHoldsSlot(resolution.disposition)) {
-            this.#releaseSlot(row.attempt_id, now);
+            this.#releaseSlot(attemptId, now);
           }
-          this.#appendLifecycleEvent({
-            taskId: row.task_id,
-            attemptId: row.attempt_id,
-            sessionId: row.session_id,
-            type: "session-lost",
-            payload: {
-              reason: resolution.reason,
-              processDisposition: resolution.disposition,
-            },
-          });
         },
         this.#now,
       );
-      actions.push({
-        action: "marked-lost",
-        attemptId: row.attempt_id,
-        sessionId: row.session_id,
-      });
+      for (const observation of observations) {
+        actions.push({
+          action: "marked-lost",
+          attemptId,
+          sessionId: observation.row.session_id,
+        });
+      }
     }
 
     const prepared = this.#db
@@ -1358,16 +1454,13 @@ export class SessionRuntime implements SessionRuntimeContract {
     };
   }
 
-  async rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRecoveryReport> {
+  async rebuildInvalidSnapshotsAfterRestart(): Promise<RestartSnapshotRebuildReport> {
     const rows = this.#db
       .prepare(
         `SELECT sessions.session_id, sessions.attempt_id, sessions.generation,
                 attempts.task_id
          FROM sessions
          JOIN attempts ON attempts.attempt_id = sessions.attempt_id
-         JOIN session_snapshots
-           ON session_snapshots.session_id = sessions.session_id
-          AND session_snapshots.generation = sessions.generation
          ORDER BY sessions.created_at, sessions.session_id`,
       )
       .all() as unknown as {
@@ -1376,8 +1469,8 @@ export class SessionRuntime implements SessionRuntimeContract {
       readonly generation: number;
       readonly task_id: string;
     }[];
-    const rebuilt: RestartSnapshotRecoveryReport["rebuilt"][number][] = [];
-    const skippedForDataGap: RestartSnapshotRecoveryReport["skippedForDataGap"][number][] = [];
+    const rebuilt: RestartSnapshotRebuildReport["rebuilt"][number][] = [];
+    const skippedForDataGap: RestartSnapshotRebuildReport["skippedForDataGap"][number][] = [];
 
     for (const row of rows) {
       if (this.#snapshotCoordinator.read(row.session_id, row.generation) !== null) continue;
@@ -1662,15 +1755,21 @@ export class SessionRuntime implements SessionRuntimeContract {
           exitCode: event.exitCode,
           signal: event.signal,
         });
-        const primaryOutcome = event.exitCode === 0 && event.signal === 0 ? "Succeeded" : "Failed";
-        this.#db
-          .prepare(
-            `UPDATE attempts
-             SET primary_outcome = ?, primary_exit_code = ?, primary_exit_signal = ?
-             WHERE attempt_id = ? AND primary_outcome IS NULL`,
-          )
-          .run(primaryOutcome, event.exitCode, event.signal, prepared.attemptId);
-        this.#settleAttemptAfterPrimaryExit(prepared);
+        const exited = this.#db
+          .prepare("SELECT role FROM sessions WHERE session_id = ?")
+          .get(prepared.plannedSessionId) as { readonly role: string } | undefined;
+        if (exited?.role === "PrimaryAgent") {
+          const primaryOutcome =
+            event.exitCode === 0 && event.signal === 0 ? "Succeeded" : "Failed";
+          this.#db
+            .prepare(
+              `UPDATE attempts
+               SET primary_outcome = ?, primary_exit_code = ?, primary_exit_signal = ?
+               WHERE attempt_id = ? AND primary_outcome IS NULL`,
+            )
+            .run(primaryOutcome, event.exitCode, event.signal, prepared.attemptId);
+        }
+        this.#settleAttemptIfComplete(prepared);
       },
       this.#now,
     );
@@ -2187,9 +2286,7 @@ export class SessionRuntime implements SessionRuntimeContract {
           )
           .run(reason, JSON.stringify(result), now, prepared.launchNonce);
         this.#transitionAttempt(prepared.attemptId, "Failed");
-        this.#db
-          .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
-          .run(reason, prepared.attemptId);
+        this.#setAttemptTerminalReason(prepared.attemptId, reason);
         this.#db
           .prepare("UPDATE slot_leases SET released_at = ? WHERE slot_lease_id = ?")
           .run(now, prepared.slotLeaseId);
@@ -2215,9 +2312,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       () => {
         const now = new Date(this.#now()).toISOString();
         this.#transitionAttempt(prepared.attemptId, "Uncertain");
-        this.#db
-          .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
-          .run(reason, prepared.attemptId);
+        this.#setAttemptTerminalReason(prepared.attemptId, reason);
         this.#db
           .prepare(
             "UPDATE launch_intents SET result_json = ?, updated_at = ? WHERE launch_nonce = ?",
@@ -2300,7 +2395,13 @@ export class SessionRuntime implements SessionRuntimeContract {
       .run(to, attemptId);
   }
 
-  #settleAttemptAfterPrimaryExit(prepared: PreparedLaunch): void {
+  #setAttemptTerminalReason(attemptId: string, reason: string | null): void {
+    this.#db
+      .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
+      .run(reason, attemptId);
+  }
+
+  #settleAttemptIfComplete(prepared: PreparedLaunch): void {
     const attempt = this.#db
       .prepare(
         `SELECT status, primary_outcome
@@ -2310,7 +2411,7 @@ export class SessionRuntime implements SessionRuntimeContract {
       .get(prepared.attemptId) as
       | {
           readonly status: Attempt.AttemptStatus;
-          readonly primary_outcome: "Succeeded" | "Failed" | "Uncertain" | null;
+          readonly primary_outcome: PrimaryOutcome | null;
         }
       | undefined;
     if (attempt === undefined || attempt.primary_outcome === null) return;
@@ -2327,31 +2428,17 @@ export class SessionRuntime implements SessionRuntimeContract {
       .get(prepared.attemptId) as { readonly count: number };
     if (blocking.count > 0) return;
 
-    const terminal =
+    const settlement =
       attempt.status === "Stopping"
-        ? "Cancelled"
-        : attempt.primary_outcome === "Succeeded"
-          ? "Succeeded"
-          : attempt.primary_outcome === "Failed"
-            ? "Failed"
-            : "Uncertain";
-    this.#transitionAttempt(prepared.attemptId, terminal);
-    const reason =
-      terminal === "Failed"
-        ? "AgentExited"
-        : terminal === "Cancelled"
-          ? "StopRequested"
-          : terminal === "Uncertain"
-            ? "AgentOutcomeUncertain"
-            : null;
-    this.#db
-      .prepare("UPDATE attempts SET failure_reason = ? WHERE attempt_id = ?")
-      .run(reason, prepared.attemptId);
+        ? STOPPING_SETTLEMENT
+        : PRIMARY_OUTCOME_SETTLEMENTS[attempt.primary_outcome];
+    this.#transitionAttempt(prepared.attemptId, settlement.status);
+    this.#setAttemptTerminalReason(prepared.attemptId, settlement.reason);
     const now = new Date(this.#now()).toISOString();
     this.#releaseSlot(prepared.attemptId, now);
-    this.#appendEvent(prepared, `attempt-${terminal.toLowerCase()}`, {
+    this.#appendEvent(prepared, settlement.eventType, {
       primaryOutcome: attempt.primary_outcome,
-      reason,
+      reason: settlement.reason,
     });
   }
 
@@ -2460,7 +2547,8 @@ export class SessionRuntime implements SessionRuntimeContract {
     );
   }
 
-  #recordStorageDataGaps(dataGaps: readonly StoreDataGap[]): void {
+  #recordStorageDataGaps(dataGaps: readonly StoreDataGap[]): ReadonlySet<string> {
+    const attemptIds = new Set<string>();
     for (const gap of dataGaps) {
       const owner = this.#db
         .prepare(
@@ -2473,6 +2561,7 @@ export class SessionRuntime implements SessionRuntimeContract {
         | { readonly attempt_id: string; readonly task_id: string }
         | undefined;
       if (owner === undefined) continue;
+      attemptIds.add(owner.attempt_id);
       const payload = {
         kind: "chunk",
         sessionId: gap.sessionId,
@@ -2506,6 +2595,7 @@ export class SessionRuntime implements SessionRuntimeContract {
         this.#now,
       );
     }
+    return attemptIds;
   }
 
   #appendEvent(prepared: PreparedLaunch, type: string, payload: unknown): void {
