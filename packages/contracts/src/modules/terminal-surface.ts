@@ -4,7 +4,7 @@
 // depend on this seam; they never import xterm.js types or branch on a draw
 // path.
 
-import type { SessionStreamCursor } from "../protocol/stream.js";
+import type { InputSource, SessionStreamCursor } from "../protocol/stream.js";
 
 // RT-T-19 — the active cell cursor, 0-indexed. The deterministic observable
 // both draw paths must agree on. Named (not an inline {row, col}) so the
@@ -12,6 +12,11 @@ import type { SessionStreamCursor } from "../protocol/stream.js";
 export interface CellCursor {
   readonly row: number;
   readonly col: number;
+}
+
+export interface TerminalInput {
+  readonly bytes: Uint8Array;
+  readonly source: InputSource;
 }
 
 // RT-TERM-02 — feed PTY bytes at their stream identity; the applied cursor
@@ -33,6 +38,18 @@ export interface TerminalSurface {
    * (RT-TERM-09; value from RuntimeLimitProfile).
    */
   feed(bytes: Uint8Array, frame: SessionStreamCursor): Promise<void>;
+
+  /**
+   * RT-TERM-07 — restore the validated app-owned Snapshot document only when
+   * its producer identity matches the Attachment that requested the restore.
+   */
+  restoreSnapshot(
+    bytes: Uint8Array,
+    expected: Pick<SessionStreamCursor, "sessionId" | "generation">,
+  ): Promise<SessionStreamCursor>;
+
+  /** RT-TERM-06 — encoded xterm input, without exposing the xterm instance. */
+  onInput(listener: (input: TerminalInput) => void): () => void;
 
   /** RT-TERM-02 — the largest seq whose write has completed, or undefined. */
   appliedCursor(): SessionStreamCursor | undefined;

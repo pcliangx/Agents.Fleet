@@ -12,6 +12,14 @@ const sid = "s1" as SessionId;
 const gen = 1 as Generation;
 
 describe("RT-TERM-02 headless terminal surface (@xterm/headless)", () => {
+  it("fails loudly when input is requested from a non-interactive Surface", () => {
+    const surface = new HeadlessTerminalSurface({ cols: 80, rows: 24 });
+
+    expect(() => surface.onInput(() => {})).toThrow(
+      "terminal input is unavailable on this Surface",
+    );
+  });
+
   it("advances appliedCursor to the fed seq once the bytes are parsed", async () => {
     const surface = new HeadlessTerminalSurface({ cols: 80, rows: 24 });
     expect(surface.appliedCursor()).toBeUndefined();

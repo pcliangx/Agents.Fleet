@@ -7,6 +7,7 @@
 
 import type { CellCursor, SessionStreamCursor, TerminalSurface } from "@agents-fleet/contracts";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { TERMINAL_PACKAGE_SET } from "./allowlist.js";
 
 export interface TerminalSurfaceOptions {
   readonly cols: number;
@@ -40,6 +41,20 @@ interface ReadableXtermTerminal {
 interface UnicodeConfigurable {
   loadAddon(addon: unknown): void;
   unicode: { activeVersion: string };
+}
+
+interface SnapshotDocument {
+  readonly schemaVersion: number;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly coversThroughSeq: number;
+  readonly terminalPackageSet: unknown;
+  readonly producer: { readonly receivedPtyHandle: boolean };
+  readonly terminal: { readonly serialized: string };
+  readonly checkpoint: {
+    readonly parserGround: boolean;
+    readonly utf8DecoderEmpty: boolean;
+  };
 }
 
 // RT-TERM-01 — load the identical Unicode 11 width/grapheme tables on any
@@ -113,6 +128,50 @@ export abstract class BaseTerminalSurface implements TerminalSurface {
       this.term.write(bytes, () => {
         this.appliedStreamCursor = frame;
         resolve();
+      });
+    });
+  }
+
+  onInput(_listener: Parameters<TerminalSurface["onInput"]>[0]): () => void {
+    throw new Error("terminal input is unavailable on this Surface");
+  }
+
+  restoreSnapshot(
+    bytes: Uint8Array,
+    expected: Pick<SessionStreamCursor, "sessionId" | "generation">,
+  ): Promise<SessionStreamCursor> {
+    let document: SnapshotDocument;
+    try {
+      document = JSON.parse(new TextDecoder().decode(bytes)) as SnapshotDocument;
+    } catch {
+      return Promise.reject(new Error("invalid terminal Snapshot JSON"));
+    }
+    if (
+      document.schemaVersion !== 1 ||
+      typeof document.sessionId !== "string" ||
+      document.sessionId !== expected.sessionId ||
+      !Number.isSafeInteger(document.generation) ||
+      document.generation < 1 ||
+      document.generation !== expected.generation ||
+      !Number.isSafeInteger(document.coversThroughSeq) ||
+      document.coversThroughSeq < 0 ||
+      JSON.stringify(document.terminalPackageSet) !== JSON.stringify(TERMINAL_PACKAGE_SET) ||
+      document.producer?.receivedPtyHandle !== false ||
+      typeof document.terminal?.serialized !== "string" ||
+      document.checkpoint?.parserGround !== true ||
+      document.checkpoint.utf8DecoderEmpty !== true
+    ) {
+      return Promise.reject(new Error("terminal Snapshot is incompatible or malformed"));
+    }
+    const cursor = {
+      sessionId: document.sessionId,
+      generation: document.generation,
+      seq: document.coversThroughSeq,
+    } as SessionStreamCursor;
+    return new Promise<SessionStreamCursor>((resolve) => {
+      this.term.write(new TextEncoder().encode(document.terminal.serialized), () => {
+        this.appliedStreamCursor = cursor;
+        resolve(cursor);
       });
     });
   }

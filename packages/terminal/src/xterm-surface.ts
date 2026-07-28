@@ -7,6 +7,7 @@
 // WebGL2-vs-DOM draw-path identity (RT-T-19) is verified by the browser harness
 // (S5c); the detached div here does not run a real renderer in unit tests.
 
+import type { TerminalInput } from "@agents-fleet/contracts";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
@@ -19,6 +20,8 @@ import {
 export type TerminalDrawMode = "WebGL2" | "DOM";
 
 export interface XtermTerminalOptions extends TerminalSurfaceOptions {
+  /** Renderer-owned mount point. Defaults to a detached element for tests. */
+  readonly element?: HTMLElement;
   /**
    * RT-TERM-04 — prefer the WebGL2 draw path (default true). On init failure or
    * context loss the WebGL addon is released and the same Terminal instance
@@ -35,7 +38,7 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
   constructor(opts: XtermTerminalOptions) {
     const term = new Terminal({ cols: opts.cols, rows: opts.rows, allowProposedApi: true });
     configureUnicode11(term);
-    const element = document.createElement("div");
+    const element = opts.element ?? document.createElement("div");
     term.open(element);
     super(term, opts.maxPendingWriteBytes ?? Number.POSITIVE_INFINITY);
     this.element = element;
@@ -48,6 +51,20 @@ export class XtermTerminalSurface extends BaseTerminalSurface {
   /** RT-TERM-04 — the active draw path; DOM after any WebGL2 fallback. */
   drawMode(): TerminalDrawMode {
     return this.drawModeValue;
+  }
+
+  override onInput(listener: (input: TerminalInput) => void): () => void {
+    const data = this.rendererTerm.onData((value) => {
+      listener({ bytes: new TextEncoder().encode(value), source: "Keyboard" });
+    });
+    const binary = this.rendererTerm.onBinary((value) => {
+      const bytes = Uint8Array.from(value, (character) => character.charCodeAt(0) & 0xff);
+      listener({ bytes, source: "Keyboard" });
+    });
+    return () => {
+      data.dispose();
+      binary.dispose();
+    };
   }
 
   /**

@@ -40,6 +40,8 @@ export interface CommandEnvelope<P = unknown> {
 // runtime list beside the type lets ControlDispatcher reject unknown kinds
 // before routing instead of turning them into InternalFailure.
 export const COMMAND_KINDS = [
+  "CreateTask",
+  "GetFleetProjection",
   "Start",
   "Retry",
   "Resume",
@@ -49,6 +51,8 @@ export const COMMAND_KINDS = [
   "WriteSessionInput",
   "ResizeSession",
   "AcquireControl",
+  "RenewControl",
+  "CloseAttachment",
   "Attach",
   "DisposeWorktree",
   // R1-02 — Repository Trust production chain (RT-REPO-01..06).
@@ -80,6 +84,15 @@ export interface ResizeSessionPayload {
 export interface AttachPayload {
   readonly sessionId: SessionId;
   readonly fromSeq: number | undefined;
+}
+
+export interface CreateTaskPayload {
+  readonly spec: {
+    readonly goal: string;
+    readonly context?: string;
+    readonly constraints?: string;
+    readonly acceptanceCriteria?: string;
+  };
 }
 
 export type LaunchCommandKind = "Start" | "Retry" | "Resume";
@@ -187,6 +200,8 @@ export interface GetConfirmationChallengePayload {
 
 // Maps a CommandKind to its payload type. Unspecified kinds use EmptyPayload.
 export interface CommandPayloadMap {
+  readonly CreateTask: CreateTaskPayload;
+  readonly GetFleetProjection: EmptyPayload;
   readonly Start: LaunchCommandPayload;
   readonly Retry: LaunchCommandPayload;
   readonly Resume: LaunchCommandPayload;
@@ -196,6 +211,8 @@ export interface CommandPayloadMap {
   readonly WriteSessionInput: WriteSessionInputPayload;
   readonly ResizeSession: ResizeSessionPayload;
   readonly AcquireControl: EmptyPayload;
+  readonly RenewControl: EmptyPayload;
+  readonly CloseAttachment: EmptyPayload;
   readonly Attach: AttachPayload;
   readonly DisposeWorktree: DisposeWorktreePayload;
   readonly PrepareTrustCandidate: PrepareTrustCandidatePayload;

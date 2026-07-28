@@ -43,6 +43,8 @@ export interface CommandRouter {
   /** Route ownership, not a promise that the current daemon mode permits execution. */
   handles(kind: string): boolean;
   execute(kind: CommandKind, env: CommandEnvelope): Promise<unknown>;
+  /** RT-STATE-19 / RT-LEASE-06 — release only the Attachments owned by this control connection. */
+  onControlConnectionClosed?(attachmentIds: readonly string[]): void;
 }
 
 // RT-ERR-01 — stable code + user-readable message + retryability + commandId.
@@ -73,6 +75,8 @@ export class ControlDispatcher {
   private state: DispatcherState = "awaiting-hello";
   private selectedProtocolVersion: number | undefined;
   private transcript: ProofTranscript | undefined;
+  private readonly attachmentIds = new Set<string>();
+  private controlConnectionClosed = false;
 
   constructor(
     private readonly config: DaemonHandshakeConfig,
@@ -84,6 +88,15 @@ export class ControlDispatcher {
 
   get currentState(): DispatcherState {
     return this.state;
+  }
+
+  onControlConnectionClosed(): void {
+    if (this.controlConnectionClosed) return;
+    this.controlConnectionClosed = true;
+    this.state = "closed";
+    const attachmentIds = [...this.attachmentIds];
+    this.attachmentIds.clear();
+    this.router?.onControlConnectionClosed?.(attachmentIds);
   }
 
   async onLine(text: string): Promise<void> {
@@ -174,8 +187,28 @@ export class ControlDispatcher {
     if (this.router?.handles(kind)) {
       try {
         const result = await this.router.execute(kind as CommandKind, env);
+        if (kind === "Attach") {
+          const attachmentId =
+            typeof result === "object" &&
+            result !== null &&
+            typeof (result as { readonly attachmentId?: unknown }).attachmentId === "string"
+              ? (result as { readonly attachmentId: string }).attachmentId
+              : null;
+          if (attachmentId === null) {
+            throw new Error("Attach result did not contain an Attachment identity");
+          }
+          if (this.controlConnectionClosed) {
+            this.router.onControlConnectionClosed?.([attachmentId]);
+            return;
+          }
+          this.attachmentIds.add(attachmentId);
+        } else if (kind === "CloseAttachment" && typeof env.attachmentId === "string") {
+          this.attachmentIds.delete(env.attachmentId);
+        }
+        if (this.controlConnectionClosed) return;
         this.sink.send({ commandId, result });
       } catch (e) {
+        if (this.controlConnectionClosed) return;
         const err = toErrorShape(e, commandId as CommandId);
         this.sink.send({ error: err });
       }
