@@ -39,8 +39,14 @@ export interface TerminalSurface {
    */
   feed(bytes: Uint8Array, frame: SessionStreamCursor): Promise<void>;
 
-  /** RT-TERM-07 — restore the validated app-owned Snapshot document. */
-  restoreSnapshot(bytes: Uint8Array): Promise<SessionStreamCursor>;
+  /**
+   * RT-TERM-07 — restore the validated app-owned Snapshot document only when
+   * its producer identity matches the Attachment that requested the restore.
+   */
+  restoreSnapshot(
+    bytes: Uint8Array,
+    expected: Pick<SessionStreamCursor, "sessionId" | "generation">,
+  ): Promise<SessionStreamCursor>;
 
   /** RT-TERM-06 — encoded xterm input, without exposing the xterm instance. */
   onInput(listener: (input: TerminalInput) => void): () => void;

@@ -133,10 +133,13 @@ export abstract class BaseTerminalSurface implements TerminalSurface {
   }
 
   onInput(_listener: Parameters<TerminalSurface["onInput"]>[0]): () => void {
-    return () => {};
+    throw new Error("terminal input is unavailable on this Surface");
   }
 
-  restoreSnapshot(bytes: Uint8Array): Promise<SessionStreamCursor> {
+  restoreSnapshot(
+    bytes: Uint8Array,
+    expected: Pick<SessionStreamCursor, "sessionId" | "generation">,
+  ): Promise<SessionStreamCursor> {
     let document: SnapshotDocument;
     try {
       document = JSON.parse(new TextDecoder().decode(bytes)) as SnapshotDocument;
@@ -146,8 +149,10 @@ export abstract class BaseTerminalSurface implements TerminalSurface {
     if (
       document.schemaVersion !== 1 ||
       typeof document.sessionId !== "string" ||
+      document.sessionId !== expected.sessionId ||
       !Number.isSafeInteger(document.generation) ||
       document.generation < 1 ||
+      document.generation !== expected.generation ||
       !Number.isSafeInteger(document.coversThroughSeq) ||
       document.coversThroughSeq < 0 ||
       JSON.stringify(document.terminalPackageSet) !== JSON.stringify(TERMINAL_PACKAGE_SET) ||

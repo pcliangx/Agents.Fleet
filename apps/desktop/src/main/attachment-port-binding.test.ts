@@ -9,14 +9,14 @@ import type { CommandResponse, OutgoingCommand } from "./daemon-client.js";
 import { DesktopBridgeCore } from "./desktop-bridge.js";
 
 class FakePort implements MainMessagePort {
-  readonly sent: { readonly message: unknown; readonly transfer: readonly ArrayBuffer[] }[] = [];
+  readonly sent: unknown[] = [];
   readonly messageListeners: ((event: { readonly data: unknown }) => void)[] = [];
   readonly closeListeners: (() => void)[] = [];
   started = false;
   closed = false;
 
-  postMessage(message: unknown, transfer: readonly ArrayBuffer[] = []): void {
-    this.sent.push({ message, transfer });
+  postMessage(message: unknown): void {
+    this.sent.push(message);
   }
   on(event: "message" | "close", listener: ((event: { data: unknown }) => void) | (() => void)) {
     if (event === "message") {
@@ -98,7 +98,7 @@ describe("AttachmentPortBinding", () => {
 
     expect(port.started).toBe(true);
     expect(port.sent).toHaveLength(1);
-    expect(port.sent[0]?.message).toMatchObject({
+    expect(port.sent[0]).toMatchObject({
       type: "session-frame",
       attachmentId: "att_1",
       sessionId: "se_1",
@@ -106,7 +106,8 @@ describe("AttachmentPortBinding", () => {
       rendererFrameIdentity: "frame:7",
       seq: 1,
     });
-    expect(new Uint8Array(port.sent[0]?.transfer[0] ?? new ArrayBuffer(0))).toEqual(wire);
+    const sent = port.sent[0] as { readonly bytes: ArrayBuffer };
+    expect(new Uint8Array(sent.bytes)).toEqual(wire);
 
     stream.frame?.(
       encodeFrame(
@@ -194,5 +195,132 @@ describe("AttachmentPortBinding", () => {
       "RenewControl",
       "CloseAttachment",
     ]);
+  });
+
+  it("keeps the Attachment stream open but stops Lease renewal while hidden", async () => {
+    const commands: OutgoingCommand[] = [];
+    let scheduled: (() => void) | undefined;
+    let scheduleCount = 0;
+    let cancelled = false;
+    let resolveRenewal: ((response: CommandResponse) => void) | undefined;
+    const renewal = new Promise<CommandResponse>((resolve) => {
+      resolveRenewal = resolve;
+    });
+    const bridge = new DesktopBridgeCore({
+      sender: {
+        async sendCommand(command): Promise<CommandResponse> {
+          commands.push(command);
+          if (command.payload.kind === "RenewControl") return await renewal;
+          return { commandId: command.commandId, result: { closed: true } };
+        },
+      },
+    });
+    const port = new FakePort();
+    const stream = new FakeStream();
+    const binding = new AttachmentPortBinding({
+      attached: {
+        attachmentId: "att_1" as never,
+        mode: "Live",
+        sessionId: "se_1" as never,
+        generation: 3 as never,
+        snapshot: { coversThroughSeq: 0 as never, bytes: new Uint8Array() },
+      },
+      rendererFrameIdentity: "frame:7",
+      port,
+      stream,
+      bridge,
+      now: () => 0,
+      schedule: (callback) => {
+        scheduleCount += 1;
+        scheduled = callback;
+        return () => {
+          cancelled = true;
+        };
+      },
+    });
+    binding.start();
+    binding.holdControl({
+      sessionId: "se_1" as never,
+      generation: 3 as never,
+      attachmentId: "att_1" as never,
+      fencingToken: 9 as never,
+      expiresAt: 15_000,
+    });
+    scheduled?.();
+    await Promise.resolve();
+
+    port.receive({
+      type: "terminal-visibility",
+      attachmentId: "att_1",
+      sessionId: "se_1",
+      generation: 3,
+      visible: false,
+    });
+    binding.holdControl({
+      sessionId: "se_1" as never,
+      generation: 3 as never,
+      attachmentId: "att_1" as never,
+      fencingToken: 10 as never,
+      expiresAt: 20_000,
+    });
+    resolveRenewal?.({
+      commandId: commands[0]?.commandId ?? "renew",
+      result: {
+        sessionId: "se_1",
+        generation: 3,
+        attachmentId: "att_1",
+        fencingToken: 10,
+        expiresAt: 20_000,
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(cancelled).toBe(true);
+    expect(port.closed).toBe(false);
+    expect(stream.closed).toBe(false);
+    expect(scheduleCount).toBe(1);
+    expect(commands.map((command) => command.payload.kind)).toEqual(["RenewControl"]);
+  });
+
+  it("closes on a cross-Attachment visibility message", async () => {
+    const commands: OutgoingCommand[] = [];
+    const bridge = new DesktopBridgeCore({
+      sender: {
+        async sendCommand(command): Promise<CommandResponse> {
+          commands.push(command);
+          return { commandId: command.commandId, result: { closed: true } };
+        },
+      },
+    });
+    const port = new FakePort();
+    const stream = new FakeStream();
+    const binding = new AttachmentPortBinding({
+      attached: {
+        attachmentId: "att_1" as never,
+        mode: "Live",
+        sessionId: "se_1" as never,
+        generation: 3 as never,
+        snapshot: { coversThroughSeq: 0 as never, bytes: new Uint8Array() },
+      },
+      rendererFrameIdentity: "frame:7",
+      port,
+      stream,
+      bridge,
+    });
+    binding.start();
+
+    port.receive({
+      type: "terminal-visibility",
+      attachmentId: "att_other",
+      sessionId: "se_1",
+      generation: 3,
+      visible: false,
+    });
+    await Promise.resolve();
+
+    expect(port.closed).toBe(true);
+    expect(stream.closed).toBe(true);
+    expect(commands.map((command) => command.payload.kind)).toEqual(["CloseAttachment"]);
   });
 });

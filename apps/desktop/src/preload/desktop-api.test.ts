@@ -34,9 +34,8 @@ describe("Desktop preload capability boundary", () => {
     const calls: { channel: string; args: unknown[] }[] = [];
     const terminalPort = {
       postMessage() {},
-      start() {},
       close() {},
-      onmessage: null,
+      onMessage: () => () => {},
     } as RendererMessagePort;
     const api = createDesktopApi(
       async (channel, ...args) => {

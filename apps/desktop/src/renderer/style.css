@@ -195,6 +195,11 @@ aside textarea {
   color: #ffb0b8;
 }
 
+.status-attention {
+  background: #4b371b;
+  color: #f4bd72;
+}
+
 #projection-warning {
   margin-top: 1rem;
   color: #f4bd72;

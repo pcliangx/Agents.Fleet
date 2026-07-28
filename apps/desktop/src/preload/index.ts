@@ -4,6 +4,28 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { createDesktopApi, type RendererMessagePort } from "./desktop-api.js";
 
+interface IsolatedMessagePort {
+  postMessage(message: unknown): void;
+  start?(): void;
+  close(): void;
+  onmessage: ((event: { readonly data: unknown }) => void) | null;
+}
+
+const exposeMessagePort = (port: IsolatedMessagePort): RendererMessagePort => {
+  port.start?.();
+  return {
+    postMessage: (message) => port.postMessage(message),
+    close: () => port.close(),
+    onMessage(listener) {
+      const receive = (event: { readonly data: unknown }) => listener(event.data);
+      port.onmessage = receive;
+      return () => {
+        if (port.onmessage === receive) port.onmessage = null;
+      };
+    },
+  };
+};
+
 const arrivedPorts = new Map<string, RendererMessagePort>();
 const portWaiters = new Map<string, (port: RendererMessagePort) => void>();
 
@@ -14,11 +36,12 @@ ipcRenderer.on("af:terminal-port", (event, message: unknown) => {
     typeof (message as { attachmentId?: unknown }).attachmentId === "string"
       ? (message as { attachmentId: string }).attachmentId
       : null;
-  const port = event.ports[0] as unknown as RendererMessagePort | undefined;
-  if (attachmentId === null || port === undefined) {
-    port?.close();
+  const isolatedPort = event.ports[0] as unknown as IsolatedMessagePort | undefined;
+  if (attachmentId === null || isolatedPort === undefined) {
+    isolatedPort?.close();
     return;
   }
+  const port = exposeMessagePort(isolatedPort);
   const waiter = portWaiters.get(attachmentId);
   if (waiter !== undefined) {
     portWaiters.delete(attachmentId);

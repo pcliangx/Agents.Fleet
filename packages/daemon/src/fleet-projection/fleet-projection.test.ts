@@ -58,6 +58,7 @@ describe("FleetProjection", () => {
         },
         currentAttempt: null,
         lastAttempt: null,
+        observedAt: "2026-07-28T01:02:03.000Z",
         freshness: "Fresh",
         generatedAt: "2026-07-28T01:02:03.000Z",
       });
@@ -280,6 +281,149 @@ describe("FleetProjection", () => {
     }
   });
 
+  it("preserves a live current Attempt when cancellation has been requested", () => {
+    const root = mkdtempSync(join(tmpdir(), "agents-fleet-projection-"));
+    roots.push(root);
+    const opened = openDatabase({
+      path: join(root, "fleet.db"),
+      migrations: ALL_MIGRATIONS,
+    });
+    if (opened.kind !== "ready") throw new Error(opened.reason);
+
+    try {
+      const store = new TaskStore(opened.db);
+      const task = store.createTask({ workspaceId: "ws_1", spec: { goal: "Cancel safely" } });
+      store.startTask(task.taskId);
+      const attempt = store.listAttempts(task.taskId)[0];
+      if (attempt === undefined) throw new Error("expected running Attempt");
+      opened.db
+        .prepare("UPDATE attempts SET status = 'Running' WHERE attempt_id = ?")
+        .run(attempt.attemptId);
+      store.cancelTask(task.taskId);
+
+      const projection = new FleetProjection(opened.db).projectTask(task.taskId);
+
+      expect(projection).toMatchObject({
+        taskLifecycle: { value: "Cancelled" },
+        taskView: {
+          status: { value: "Running" },
+          currentAttemptId: { value: attempt.attemptId },
+          currentAttemptStatus: { value: "Running" },
+          noFurtherAttempts: { value: true },
+          cancellationRequested: { value: true },
+        },
+        currentAttempt: { attemptId: attempt.attemptId, status: "Running" },
+      });
+    } finally {
+      opened.db.close();
+    }
+  });
+
+  it("selects a newer Retry Attempt as current without mutating the source Attempt", () => {
+    const root = mkdtempSync(join(tmpdir(), "agents-fleet-projection-"));
+    roots.push(root);
+    const opened = openDatabase({
+      path: join(root, "fleet.db"),
+      migrations: ALL_MIGRATIONS,
+    });
+    if (opened.kind !== "ready") throw new Error(opened.reason);
+
+    try {
+      const store = new TaskStore(opened.db);
+      const task = store.createTask({ workspaceId: "ws_1", spec: { goal: "Retry safely" } });
+      store.startTask(task.taskId);
+      const first = store.listAttempts(task.taskId)[0];
+      if (first === undefined) throw new Error("expected source Attempt");
+      opened.db
+        .prepare(
+          "UPDATE attempts SET status = 'Failed', failure_reason = 'AgentExited' WHERE attempt_id = ?",
+        )
+        .run(first.attemptId);
+      opened.db
+        .prepare(
+          `INSERT INTO attempts
+           (attempt_id, task_id, status, spec_snapshot_json, task_spec_version,
+            created_seq, created_at, command_kind, source_attempt_id)
+           SELECT 'at_retry', task_id, 'Queued', spec_snapshot_json, task_spec_version,
+                  created_seq + 1, '2026-07-28T05:00:00.000Z', 'Retry', attempt_id
+           FROM attempts WHERE attempt_id = ?`,
+        )
+        .run(first.attemptId);
+
+      const projection = new FleetProjection(opened.db).projectTask(task.taskId);
+
+      expect(projection.currentAttempt).toMatchObject({
+        attemptId: "at_retry",
+        status: "Queued",
+        commandKind: "Retry",
+        sourceAttemptId: first.attemptId,
+      });
+      expect(projection.lastAttempt).toMatchObject({
+        attemptId: "at_retry",
+        status: "Queued",
+      });
+      expect(
+        opened.db.prepare("SELECT status FROM attempts WHERE attempt_id = ?").get(first.attemptId),
+      ).toEqual({ status: "Failed" });
+    } finally {
+      opened.db.close();
+    }
+  });
+
+  it("projects persisted input uncertainty as a Task and Fleet data gap", () => {
+    const root = mkdtempSync(join(tmpdir(), "agents-fleet-projection-"));
+    roots.push(root);
+    const opened = openDatabase({
+      path: join(root, "fleet.db"),
+      migrations: ALL_MIGRATIONS,
+    });
+    if (opened.kind !== "ready") throw new Error(opened.reason);
+
+    try {
+      const store = new TaskStore(opened.db);
+      const task = store.createTask({ workspaceId: "ws_1", spec: { goal: "Keep provenance" } });
+      store.startTask(task.taskId);
+      const attempt = store.listAttempts(task.taskId)[0];
+      if (attempt === undefined) throw new Error("expected Attempt");
+      opened.db
+        .prepare(
+          `INSERT INTO sessions
+           (session_id, attempt_id, availability, role, completion_policy, generation,
+            created_at, updated_at)
+           VALUES ('se_gap', ?, 'Alive', 'PrimaryAgent', 'BlocksAttemptCompletion', 1, ?, ?)`,
+        )
+        .run(attempt.attemptId, "2026-07-28T05:00:00.000Z", "2026-07-28T05:00:00.000Z");
+      opened.db
+        .prepare(
+          `INSERT INTO attachments
+           (attachment_id, session_id, generation, status, created_at, updated_at)
+           VALUES ('att_gap', 'se_gap', 1, 'Closed', ?, ?)`,
+        )
+        .run("2026-07-28T05:00:00.000Z", "2026-07-28T05:00:00.000Z");
+      opened.db
+        .prepare(
+          `INSERT INTO input_intents
+           (input_intent_id, command_id, session_id, generation, attachment_id, fencing_token,
+            source, content_ref, sha256, byte_length, redacted_preview, status, data_gap,
+            created_at, dispatched_at)
+           VALUES ('ii_gap', 'cmd_gap', 'se_gap', 1, 'att_gap', 1, 'Keyboard',
+                   'inputs/ii_gap.bin', 'sha256', 1, '<redacted>', 'Uncertain', 1, ?, NULL)`,
+        )
+        .run("2026-07-28T05:00:00.000Z");
+
+      const projection = new FleetProjection(opened.db);
+      const taskView = projection.projectTask(task.taskId);
+      const fleetView = projection.projectFleet("ws_1");
+
+      expect(taskView.dataGap).toBe(true);
+      expect(taskView.observedAt).toBe("2026-07-28T05:00:00.000Z");
+      expect(fleetView.dataGap).toBe(true);
+      expect(fleetView.tasks[0]?.dataGap).toBe(true);
+    } finally {
+      opened.db.close();
+    }
+  });
+
   it("returns a workspace-scoped Fleet view in stable creation order", () => {
     const root = mkdtempSync(join(tmpdir(), "agents-fleet-projection-"));
     roots.push(root);
@@ -376,19 +520,19 @@ describe("FleetProjection", () => {
   });
 
   it.each([
-    ["Queued", "Queued", null, true],
-    ["Starting", "Running", "Starting", true],
-    ["Running", "Running", null, true],
-    ["Waiting", "Waiting", null, true],
-    ["Stopping", "Waiting", "Stopping", true],
-    ["Succeeded", "Succeeded", null, false],
-    ["Failed", "Failed", null, false],
-    ["Cancelled", "Cancelled", null, false],
-    ["Interrupted", "Interrupted", null, false],
-    ["Uncertain", "Uncertain", null, false],
+    ["Queued", "Queued", null, true, false],
+    ["Starting", "Running", "Starting", true, false],
+    ["Running", "Running", null, true, false],
+    ["Waiting", "Waiting", null, true, true],
+    ["Stopping", "Waiting", "Stopping", true, false],
+    ["Succeeded", "Succeeded", null, false, false],
+    ["Failed", "Failed", null, false, true],
+    ["Cancelled", "Cancelled", null, false, false],
+    ["Interrupted", "Interrupted", null, false, true],
+    ["Uncertain", "Uncertain", null, false, true],
   ] as const)(
     "projects Attempt %s as TaskView %s without merging phase or current identity",
-    (attemptStatus, expectedStatus, expectedPhase, hasCurrentAttempt) => {
+    (attemptStatus, expectedStatus, expectedPhase, hasCurrentAttempt, needsUserAction) => {
       const root = mkdtempSync(join(tmpdir(), "agents-fleet-projection-"));
       roots.push(root);
       const opened = openDatabase({
@@ -418,6 +562,10 @@ describe("FleetProjection", () => {
           hasCurrentAttempt ? attempt.attemptId : null,
         );
         expect(projection.taskView.lastAttemptId.value).toBe(attempt.attemptId);
+        expect(projection.needsUserAction).toMatchObject({
+          value: needsUserAction,
+          source: { confidence: "authoritative", attemptId: attempt.attemptId },
+        });
       } finally {
         opened.db.close();
       }

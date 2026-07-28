@@ -4,6 +4,7 @@
 import "@xterm/xterm/css/xterm.css";
 import { XtermTerminalSurface } from "@agents-fleet/terminal/renderer";
 import { decodeFrame } from "@agents-fleet/transport/binary-frame";
+import { markProjectionStale } from "./projection-state.js";
 
 const api = window.agentsFleet;
 const connectionStatus = document.getElementById("status");
@@ -36,14 +37,14 @@ const addText = (parent, className, text) => {
   return element;
 };
 
-const renderTasks = (projection, locallyStale = false) => {
+const renderTasks = (projection) => {
   tasksElement.replaceChildren();
-  const stale = locallyStale || projection.freshness === "Stale";
-  projectionWarning.textContent = stale
-    ? "Projection is stale — lifecycle facts below may be out of date."
-    : projection.dataGap
-      ? "Projection has a data gap. Missing history is not inferred."
-      : "";
+  projectionWarning.textContent =
+    projection.freshness === "Stale"
+      ? "Projection is stale — lifecycle facts below may be out of date."
+      : projection.dataGap
+        ? "Projection has a data gap. Missing history is not inferred."
+        : "";
   fleetMeta.textContent = `${projection.tasks.length} Tasks · v${projection.stateVersion}`;
 
   for (const task of projection.tasks) {
@@ -55,6 +56,9 @@ const renderTasks = (projection, locallyStale = false) => {
     id.textContent = task.taskId;
     heading.append(id);
     addText(heading, `status status-${task.taskView.status.value.toLowerCase()}`, statusText(task));
+    if (task.needsUserAction.value) {
+      addText(heading, "status status-attention", "Needs attention");
+    }
     article.append(heading);
 
     const attempt = task.currentAttempt ?? task.lastAttempt;
@@ -120,7 +124,10 @@ const refreshProjection = async () => {
   const result = await api.getFleetProjection(workspaceId);
   if (!result.ok) {
     projectionWarning.textContent = `${result.error.code}: ${result.error.message}`;
-    if (lastProjection !== null) renderTasks(lastProjection, true);
+    if (lastProjection !== null) {
+      lastProjection = markProjectionStale(lastProjection);
+      renderTasks(lastProjection);
+    }
     return;
   }
   lastProjection = result.result;
@@ -132,6 +139,7 @@ const closeActiveTerminal = async () => {
   const terminal = activeTerminal;
   activeTerminal = null;
   terminal.disposeInput();
+  terminal.disposePortMessage();
   terminal.port.close();
   await api.closeTerminal(terminal.attached.attachmentId);
   terminalElement.replaceChildren();
@@ -156,7 +164,10 @@ const attachTerminal = async (sessionId) => {
     maxPendingWriteBytes: 4_194_304,
   });
   try {
-    await surface.restoreSnapshot(attached.snapshot.bytes);
+    await surface.restoreSnapshot(attached.snapshot.bytes, {
+      sessionId: attached.sessionId,
+      generation: attached.generation,
+    });
   } catch (error) {
     opened.port.close();
     terminalMeta.textContent = `Snapshot rejected: ${String(error)}`;
@@ -170,13 +181,13 @@ const attachTerminal = async (sessionId) => {
     lease: null,
     apply: Promise.resolve(),
     disposeInput: () => {},
+    disposePortMessage: () => {},
   };
   state.disposeInput = surface.onInput((input) => {
     if (state.lease === null) return;
     void api.writeTerminalInput({ lease: state.lease, ...input });
   });
-  opened.port.onmessage = (event) => {
-    const message = event.data;
+  state.disposePortMessage = opened.port.onMessage((message) => {
     if (
       typeof message !== "object" ||
       message === null ||
@@ -207,8 +218,7 @@ const attachTerminal = async (sessionId) => {
         opened.port.close();
         terminalMeta.textContent = `Terminal stream stopped: ${String(error)}`;
       });
-  };
-  opened.port.start();
+  });
   activeTerminal = state;
   terminalMeta.textContent = `${attached.sessionId} · generation ${attached.generation} · ObserveOnly`;
   acquireControlButton.disabled = false;
@@ -237,6 +247,12 @@ acquireControlButton.addEventListener("click", () => {
       terminalMeta.textContent = `${result.error.code}: ${result.error.message}`;
       return;
     }
+    if (document.visibilityState === "hidden") {
+      activeTerminal.lease = null;
+      terminalMeta.textContent = `${result.result.sessionId} · generation ${result.result.generation} · ObserveOnly · hidden`;
+      acquireControlButton.disabled = true;
+      return;
+    }
     activeTerminal.lease = result.result;
     terminalMeta.textContent = `${result.result.sessionId} · generation ${result.result.generation} · Control`;
     acquireControlButton.disabled = true;
@@ -245,17 +261,23 @@ acquireControlButton.addEventListener("click", () => {
 window.addEventListener("beforeunload", () => {
   if (activeTerminal !== null) {
     activeTerminal.disposeInput();
+    activeTerminal.disposePortMessage();
     activeTerminal.port.close();
   }
 });
 document.addEventListener("visibilitychange", () => {
-  if (
-    document.visibilityState === "hidden" &&
-    activeTerminal !== null &&
-    activeTerminal.lease !== null
-  ) {
-    void closeActiveTerminal();
-  }
+  if (activeTerminal === null) return;
+  const visible = document.visibilityState !== "hidden";
+  activeTerminal.port.postMessage({
+    type: "terminal-visibility",
+    attachmentId: activeTerminal.attached.attachmentId,
+    sessionId: activeTerminal.attached.sessionId,
+    generation: activeTerminal.attached.generation,
+    visible,
+  });
+  if (!visible) activeTerminal.lease = null;
+  acquireControlButton.disabled = !visible;
+  terminalMeta.textContent = `${activeTerminal.attached.sessionId} · generation ${activeTerminal.attached.generation} · ObserveOnly${visible ? "" : " · hidden"}`;
 });
 
 const pollConnection = async () => {

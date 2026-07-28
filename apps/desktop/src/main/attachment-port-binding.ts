@@ -9,7 +9,7 @@ import { decodeFrame } from "@agents-fleet/transport";
 import type { DesktopBridgeCore } from "./desktop-bridge.js";
 
 export interface MainMessagePort {
-  postMessage(message: unknown, transfer?: readonly ArrayBuffer[]): void;
+  postMessage(message: unknown): void;
   on(
     event: "message" | "close",
     listener: ((event: { readonly data: unknown }) => void) | (() => void),
@@ -44,6 +44,14 @@ interface AppliedMessage {
   readonly seq: number;
 }
 
+interface VisibilityMessage {
+  readonly type: "terminal-visibility";
+  readonly attachmentId: string;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly visible: boolean;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -67,6 +75,7 @@ export class AttachmentPortBinding {
   #lease: ControlLease | undefined;
   #started = false;
   #closed = false;
+  #visible = true;
 
   constructor(options: AttachmentPortBindingOptions) {
     this.#attached = options.attached;
@@ -99,8 +108,10 @@ export class AttachmentPortBinding {
       this.close();
       return;
     }
-    this.#lease = lease;
-    this.#scheduleRenewal();
+    if (this.#visible) {
+      this.#lease = lease;
+      this.#scheduleRenewal();
+    }
   }
 
   close(): void {
@@ -152,22 +163,24 @@ export class AttachmentPortBinding {
     const buffer = owned.buffer as ArrayBuffer;
     this.#pending.set(seq, owned.byteLength);
     this.#pendingBytes += owned.byteLength;
-    this.#port.postMessage(
-      {
-        type: "session-frame",
-        attachmentId: this.#attached.attachmentId,
-        sessionId: this.#attached.sessionId,
-        generation: this.#attached.generation,
-        rendererFrameIdentity: this.#rendererFrameIdentity,
-        seq,
-        bytes: buffer,
-      },
-      [buffer],
-    );
+    this.#port.postMessage({
+      type: "session-frame",
+      attachmentId: this.#attached.attachmentId,
+      sessionId: this.#attached.sessionId,
+      generation: this.#attached.generation,
+      rendererFrameIdentity: this.#rendererFrameIdentity,
+      seq,
+      bytes: buffer,
+    });
   }
 
   #onPortMessage(value: unknown): void {
-    if (!isRecord(value) || value.type !== "frame-applied") return;
+    if (!isRecord(value)) return;
+    if (value.type === "terminal-visibility") {
+      this.#onVisibility(value as unknown as VisibilityMessage);
+      return;
+    }
+    if (value.type !== "frame-applied") return;
     const message = value as unknown as AppliedMessage;
     if (
       message.attachmentId !== this.#attached.attachmentId ||
@@ -185,6 +198,23 @@ export class AttachmentPortBinding {
     this.#pendingBytes -= bytes;
   }
 
+  #onVisibility(message: VisibilityMessage): void {
+    if (
+      message.attachmentId !== this.#attached.attachmentId ||
+      message.sessionId !== this.#attached.sessionId ||
+      message.generation !== this.#attached.generation ||
+      typeof message.visible !== "boolean"
+    ) {
+      this.close();
+      return;
+    }
+    this.#visible = message.visible;
+    if (message.visible) return;
+    this.#lease = undefined;
+    this.#cancelRenewal?.();
+    this.#cancelRenewal = undefined;
+  }
+
   #scheduleRenewal(): void {
     this.#cancelRenewal?.();
     const lease = this.#lease;
@@ -197,7 +227,7 @@ export class AttachmentPortBinding {
     const lease = this.#lease;
     if (this.#closed || lease === undefined) return;
     const renewed = await this.#bridge.renewControl(lease);
-    if (this.#closed) return;
+    if (this.#closed || !this.#visible) return;
     if (!renewed.ok) {
       this.close();
       return;

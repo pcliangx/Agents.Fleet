@@ -63,9 +63,12 @@ export interface TaskProjection {
     readonly noFurtherAttempts: ProjectedField<boolean>;
     readonly cancellationRequested: ProjectedField<boolean>;
   };
+  /** Explicit attention signal; the Renderer must not infer this from prose or colours. */
+  readonly needsUserAction: ProjectedField<boolean>;
   readonly currentAttempt: AttemptProjectionSummary | null;
   readonly lastAttempt: AttemptProjectionSummary | null;
   readonly recentObservation: RecentObservation | null;
+  readonly observedAt: string;
   readonly stateVersion: number;
   readonly freshness: "Fresh" | "Stale";
   readonly dataGap: boolean;

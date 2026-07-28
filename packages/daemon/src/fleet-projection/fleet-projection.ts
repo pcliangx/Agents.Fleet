@@ -44,6 +44,11 @@ interface ObservationRow {
   readonly timeline_seq: number;
 }
 
+interface CountRow {
+  readonly count: number;
+  readonly observed_at: string | null;
+}
+
 const agentProfileSnapshot = (
   attempt: AttemptRow,
 ): AttemptProjectionSummary["agentProfileSnapshot"] => {
@@ -111,7 +116,7 @@ export class FleetProjection implements FleetProjectionContract {
       tasks,
       stateVersion: tasks.reduce((version, task) => version + task.stateVersion, 0),
       freshness: "Fresh",
-      dataGap: false,
+      dataGap: tasks.some((task) => task.dataGap),
       generatedAt: new Date(this.#now()).toISOString(),
     };
   }
@@ -209,6 +214,27 @@ export class FleetProjection implements FleetProjectionContract {
         : task.lifecycle === "Cancelled" || task.lifecycle === "Draft"
           ? taskSource
           : lastSource;
+    const dataGap = this.#db
+      .prepare(
+        `SELECT COUNT(*) AS count, MAX(i.created_at) AS observed_at
+         FROM input_intents i
+         JOIN sessions s ON s.session_id = i.session_id
+         JOIN attempts a ON a.attempt_id = s.attempt_id
+         WHERE a.task_id = ? AND i.data_gap = 1`,
+      )
+      .get(taskId) as unknown as CountRow;
+    const needsUserAction =
+      currentAttempt?.status === "Waiting" ||
+      (currentAttempt === null &&
+        (lastAttempt?.status === "Failed" ||
+          lastAttempt?.status === "Interrupted" ||
+          lastAttempt?.status === "Uncertain"));
+    const observedAt = [
+      task.updated_at,
+      ...attempts.map((attempt) => attempt.observed_at),
+      ...(observation === undefined ? [] : [observation.observed_at]),
+      ...(dataGap.observed_at === null ? [] : [dataGap.observed_at]),
+    ].reduce((latest, candidate) => (candidate > latest ? candidate : latest));
 
     return {
       taskId: task.task_id,
@@ -226,9 +252,11 @@ export class FleetProjection implements FleetProjectionContract {
         noFurtherAttempts: { value: taskView.noFurtherAttempts, source: taskSource },
         cancellationRequested: { value: taskView.cancellationRequested, source: taskSource },
       },
+      needsUserAction: { value: needsUserAction, source: statusSource },
       currentAttempt,
       lastAttempt,
       recentObservation,
+      observedAt,
       stateVersion:
         task.state_version +
         attempts.reduce(
@@ -240,9 +268,10 @@ export class FleetProjection implements FleetProjectionContract {
             (attempt.worktree_id === null ? 0 : 1),
           0,
         ) +
-        (observation?.timeline_seq ?? 0),
+        (observation?.timeline_seq ?? 0) +
+        dataGap.count,
       freshness: "Fresh",
-      dataGap: false,
+      dataGap: dataGap.count > 0,
       generatedAt,
     };
   }

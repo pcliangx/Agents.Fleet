@@ -81,10 +81,9 @@ export interface DesktopApi {
 }
 
 export interface RendererMessagePort {
-  postMessage(message: unknown, transfer?: readonly ArrayBuffer[]): void;
-  start(): void;
+  postMessage(message: unknown): void;
   close(): void;
-  onmessage: ((event: { readonly data: unknown }) => void) | null;
+  onMessage(listener: (message: unknown) => void): () => void;
 }
 
 export type TerminalAttachmentResult =

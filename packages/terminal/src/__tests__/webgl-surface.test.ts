@@ -69,7 +69,7 @@ describe("RT-TERM-04 WebGL2 surface — draw path + fallback", () => {
       }),
     );
 
-    await surface.restoreSnapshot(snapshot);
+    await surface.restoreSnapshot(snapshot, { sessionId: sid, generation: gen });
 
     expect(surface.renderText()).toBe("restored");
     expect(surface.appliedCursor()).toEqual({
@@ -77,6 +77,40 @@ describe("RT-TERM-04 WebGL2 surface — draw path + fallback", () => {
       generation: gen,
       seq: 7,
     });
+  });
+
+  it("rejects a Snapshot from a different Session without rendering it", async () => {
+    const surface = new XtermTerminalSurface({
+      cols: 80,
+      rows: 24,
+      preferWebGL2: false,
+    });
+    const snapshot = new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 1,
+        sessionId: "s_other",
+        generation: 1,
+        coversThroughSeq: 7,
+        terminalPackageSet: TERMINAL_PACKAGE_SET,
+        producer: { kind: "InitialState", receivedPtyHandle: false },
+        terminal: {
+          cols: 80,
+          rows: 24,
+          serialized: "must not render",
+          cursor: { row: 0, col: 15 },
+          title: "",
+        },
+        checkpoint: { parserGround: true, utf8DecoderEmpty: true },
+        truncated: false,
+      }),
+    );
+
+    await expect(
+      surface.restoreSnapshot(snapshot, { sessionId: sid, generation: gen }),
+    ).rejects.toThrow("incompatible or malformed");
+
+    expect(surface.renderText()).toBe("");
+    expect(surface.appliedCursor()).toBeUndefined();
   });
 
   it("falls back to DOM and still renders when WebGL2 init fails (no WebGL context)", async () => {
